@@ -64,33 +64,39 @@ class Region(NamedTuple):
     voices: tuple[str, ...]
 
 
+# `languages` is what the Firefox build for that region announces by default, taken
+# from Firefox's own table (intl/locale/rust/locale_service_glue at 156.0.1), not
+# from how the locale is usually written: there is no de-AT or nl-BE Firefox, so
+# Austria and Belgium run the "de" and "nl" builds, and Australia and Ireland the
+# British one. `locale` is the operating system's region — what dates and numbers
+# are formatted for.
 REGIONS: dict[str, Region] = {
     "DE": Region(
         "DE",
         "Europe/Berlin",
         "de-DE",
-        ("de-DE", "de", "en-US", "en"),
+        ("de", "en-US", "en"),
         ("Microsoft Hedda - German (Germany)", "Microsoft Stefan - German (Germany)"),
     ),
     "AT": Region(
         "AT",
         "Europe/Vienna",
         "de-AT",
-        ("de-AT", "de", "en-US", "en"),
+        ("de", "en-US", "en"),
         ("Microsoft Michael - German (Austria)",),
     ),
     "CH": Region(
         "CH",
         "Europe/Zurich",
         "de-CH",
-        ("de-CH", "de", "en-US", "en"),
+        ("de", "en-US", "en"),
         ("Microsoft Karsten - German (Switzerland)",),
     ),
     "NL": Region(
         "NL",
         "Europe/Amsterdam",
         "nl-NL",
-        ("nl-NL", "nl", "en-US", "en"),
+        ("nl", "en-US", "en"),
         ("Microsoft Frank - Dutch (Netherlands)",),
     ),
     "SE": Region(
@@ -104,7 +110,7 @@ REGIONS: dict[str, Region] = {
         "FR",
         "Europe/Paris",
         "fr-FR",
-        ("fr-FR", "fr", "en-US", "en"),
+        ("fr", "fr-FR", "en-US", "en"),
         ("Microsoft Paul - French (France)", "Microsoft Hortense - French (France)"),
     ),
     "FI": Region(
@@ -118,14 +124,14 @@ REGIONS: dict[str, Region] = {
         "NO",
         "Europe/Oslo",
         "nb-NO",
-        ("nb-NO", "nb", "en-US", "en"),
+        ("nb-NO", "nb", "no-NO", "no", "nn-NO", "nn", "en-US", "en"),
         ("Microsoft Jon - Norwegian (Bokmal)",),
     ),
     "DK": Region(
         "DK",
         "Europe/Copenhagen",
         "da-DK",
-        ("da-DK", "da", "en-US", "en"),
+        ("da", "en-US", "en"),
         ("Microsoft Helle - Danish (Denmark)",),
     ),
     "GB": Region(
@@ -149,7 +155,7 @@ REGIONS: dict[str, Region] = {
         "AU",
         "Australia/Sydney",
         "en-AU",
-        ("en-AU", "en-GB", "en"),
+        ("en-GB", "en"),
         ("Microsoft Catherine - English (Australia)", "Microsoft James - English (Australia)"),
     ),
     "CA": Region(
@@ -177,28 +183,28 @@ REGIONS: dict[str, Region] = {
         "PL",
         "Europe/Warsaw",
         "pl-PL",
-        ("pl-PL", "pl", "en-US", "en"),
+        ("pl", "en-US", "en"),
         ("Microsoft Paulina - Polish (Poland)",),
     ),
     "CZ": Region(
         "CZ",
         "Europe/Prague",
         "cs-CZ",
-        ("cs-CZ", "cs", "en-US", "en"),
+        ("cs", "sk", "en-US", "en"),
         ("Microsoft Jakub - Czech (Czech Republic)",),
     ),
     "IE": Region(
         "IE",
         "Europe/Dublin",
         "en-IE",
-        ("en-IE", "en-GB", "en"),
+        ("en-GB", "en"),
         ("Microsoft Sean - English (Ireland)",),
     ),
     "BE": Region(
         "BE",
         "Europe/Brussels",
         "nl-BE",
-        ("nl-BE", "nl", "fr-BE", "en-US", "en"),
+        ("nl", "en-US", "en"),
         ("Microsoft Bart - Dutch (Belgium)",),
     ),
 }
@@ -335,9 +341,49 @@ def ua_for(engine_version: str) -> str:
 
 
 def accept_language_for(languages: tuple[str, ...] | list[str]) -> str:
+    """The header Firefox 156 builds from a language list: each further language
+    0.1 lower, never below 0.1 (netwerk/base/rust-helper, rust_prepare_accept_languages).
+
+    For display only. The header itself is never sent from here: the engine is
+    given the list and Firefox writes the header, so it is Firefox's own format
+    on whichever version is installed. Sending our own string put a q-pattern on
+    the wire (0.9, 0.7, 0.5) that no browser produces.
+    """
     parts = [languages[0]]
-    q = 9
-    for lang in languages[1:]:
-        parts.append(f"{lang};q=0.{q}")
-        q = max(1, q - 2)
+    for index, lang in enumerate(languages[1:], start=1):
+        parts.append(f"{lang};q=0.{max(10 - min(index, 10), 1)}")
     return ",".join(parts)
+
+
+ENGLISH = ("en-US", "en")
+
+# Builds whose name is not simply the first language they announce.
+_BUILD_NAMES = {"fi-FI": "fi", "it-IT": "it"}
+
+
+def firefox_build(locale: str) -> str:
+    """The localized Firefox a profile's region runs: "de", "sv-SE", "en-GB" …
+
+    Also the name of Mozilla's language pack for it. "en-US" where the region is
+    unknown, which needs no pack.
+    """
+    region = next((r for r in REGIONS.values() if r.locale == locale), None)
+    if region is None:
+        return "en-US"
+    return _BUILD_NAMES.get(region.languages[0], region.languages[0])
+
+
+def browser_languages(locale: str, stored: list[str], mode: str = "local") -> list[str]:
+    """The language list the browser announces.
+
+    local    what the Firefox build for the profile's region ships as its default
+             (intl/locale/rust/locale_service_glue): German Firefox says
+             "de, en-US, en" — not "de-DE", which is how Chrome spells it.
+    english  an English-language Firefox used in that region: "en-US, en". The
+             engine *is* an en-US build, so this is the one setting under which
+             nothing about language is spoofed at all.
+    """
+    if mode == "english":
+        return list(ENGLISH)
+    region = next((r for r in REGIONS.values() if r.locale == locale), None)
+    return list(region.languages) if region else list(stored)

@@ -1,7 +1,7 @@
 # kiwi.manifest — app metadata for kiwi-updater
 NAME=kiwi-fox
 DESCRIPTION=Isolated Windows 11 browser identities in rootless Podman
-VERSION=0.1.1
+VERSION=0.1.2
 AUTHOR=derlocke-ng
 HOMEPAGE=https://github.com/derlocke-ng/kiwi-fox
 LICENSE=GPL-3.0-or-later
@@ -13,7 +13,7 @@ TAGS=browser fingerprint proxy privacy identity profile podman antidetect
 SCOPES=user
 
 ICON=data/kiwi-fox.svg
-SCREENSHOTS=data/screenshots/1-profiles.png data/screenshots/2-new-profile.png data/screenshots/3-gpu-series.png data/screenshots/4-edit-profile.png
+SCREENSHOTS=data/screenshots/1-profiles.png data/screenshots/2-new-profile.png data/screenshots/3-graphics-card.png data/screenshots/4-edit-profile.png
 ABOUT=README.md
 
 # Checked with `command -v` before installing. Images and the browser engine are

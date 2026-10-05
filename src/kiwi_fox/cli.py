@@ -37,8 +37,8 @@ def cmd_new(a: argparse.Namespace) -> int:
         return _fail("no engine installed; run `kiwi-fox engine fetch` first")
 
     try:
-        mode, series = _webgl_choice(
-            a.webgl, a.series, a.webgl_vendor, a.webgl_renderer, family=a.gpu_family
+        mode, card, series = _webgl_choice(
+            a.webgl, a.card, a.series, a.webgl_vendor, a.webgl_renderer, family=a.gpu_family
         )
     except ValueError as exc:
         return _fail(str(exc))
@@ -88,9 +88,12 @@ def cmd_new(a: argparse.Namespace) -> int:
     )
     profile.webgl = mode  # type: ignore[assignment]
     profile.webgl_series = series
+    profile.webgl_card = card
+    profile.webgl_exact = bool(a.exact) and mode in ("host", "preset")
     profile.webgl_vendor = a.webgl_vendor if mode == "custom" else None
     profile.webgl_renderer = a.webgl_renderer if mode == "custom" else None
     profile.appearance = a.appearance
+    profile.language = a.language
     store.save(profile)
     for issue in validate_webgl(mode, profile.webgl_vendor, profile.webgl_renderer, series):
         _p(f"  {issue}")
@@ -137,6 +140,9 @@ def cmd_show(a: argparse.Namespace) -> int:
     _p(f"  engine    camoufox {fp.engine_version} (buildID {fp.build_id})")
     _p(f"  ua        {p.user_agent or fp.ua}{'  (custom)' if p.user_agent else ''}")
     _p(f"  looks     {p.appearance}")
+    said = w11.browser_languages(fp.locale, fp.languages, p.language)
+    build = w11.firefox_build(fp.locale) if p.language == "local" else "en-US"
+    _p(f"  language  {build} Firefox, announcing {w11.accept_language_for(said)}")
     _p(
         f"  machine   {fp.form_factor} / {fp.hardware_concurrency} cores / touch={fp.max_touch_points}"
     )
@@ -150,7 +156,7 @@ def cmd_show(a: argparse.Namespace) -> int:
         _p(f"  {line}")
     _p(f"  audio     {fp.audio.sample_rate} Hz, seed {fp.audio.seed}")
     _p(f"  canvas    seed {fp.canvas_seed}")
-    _p(f"  locale    {fp.locale} / {fp.timezone} / {fp.accept_language}")
+    _p(f"  region    {fp.locale} / {fp.timezone}")
     _p(f"  fonts     {len(fp.fonts)} families, {len(fp.font_files)} files")
     return 0
 
@@ -459,102 +465,138 @@ def cmd_compare(a: argparse.Namespace) -> int:
 
 def _webgl_choice(
     mode: str | None,
+    card: str | None,
     series: str | None,
     vendor: str | None,
     renderer: str | None,
     *,
     family: str | None = None,
     current: str = "host",
-) -> tuple[str, str | None]:
-    """-> (mode, series key). What was given decides the mode when it is not stated."""
+) -> tuple[str, str | None, str | None]:
+    """-> (mode, card name, series key). What was given decides the mode when it
+    is not stated."""
     if mode is None:
-        if series or family:
+        if card or series or family:
             mode = "preset"
         elif vendor or renderer:
             mode = "custom"
         else:
             mode = current
-    if series and mode != "preset":
-        raise ValueError(f"--series picks a GPU for `preset`; it means nothing with `{mode}`")
+    if (card or series) and mode != "preset":
+        raise ValueError(f"a card can only be chosen for `preset`, not `{mode}`")
     if (vendor or renderer) and mode != "custom":
         raise ValueError(f"vendor and renderer strings are for `custom`, not `{mode}`")
-    return mode, (webgl.find(series).key if series else None)
+    if card:
+        chosen = webgl.find_card(card)
+        return mode, chosen.name, chosen.series.key
+    return mode, None, (webgl.find(series).key if series else None)
 
 
 def _webgl_lines(profile: Profile, fp: Fingerprint) -> list[str]:
-    """What a page is told about the GPU, in the words of the profile's mode."""
-    from .core.engines.camoufox import webgl_config, webgl_series
+    """What a page is told about the graphics card, and why it reads the way it does."""
+    from .core.engines.camoufox import webgl_report
 
     if profile.webgl == "off":
-        return ["webgl     off — pages get no WebGL context at all"]
+        return ["webgl     off — pages get no WebGL at all"]
     if profile.webgl == "raw":
-        return ["webgl     raw — this machine's real strings and limits, nothing spoofed"]
-    series = webgl_series(fp, profile)
-    cfg = webgl_config(fp, profile)
-    known = webgl.host_series()[1]
-    how = {
-        "host": "host (no GPU here to go by — the profile's own series)"
-        if known == "unknown"
-        else f"host ({known})",
-        "preset": "preset",
-        "custom": "custom",
-    }[profile.webgl]
-    lines = [
-        f"webgl     {how}: {series.label if series else '?'}",
-        f"          vendor   {cfg.get('webGl:vendor')}",
-        f"          renderer {cfg.get('webGl:renderer')}",
-    ]
-    if profile.webgl == "custom" and series:
-        lines.append(f"          limits and extensions of: {series.label}")
+        return [
+            "webgl     raw — nothing changed: pages get this machine's Linux strings and",
+            "          limits. For measuring and testing; it does not look like Windows.",
+        ]
+    told = webgl_report(fp, profile)
+    assert told is not None
+    if profile.webgl == "custom":
+        lines = ["webgl     custom text"]
+    elif profile.webgl == "host":
+        known = webgl.host_series()[1]
+        what = told.card or {
+            "family": "this machine's card (model not measured yet — run `kiwi-fox doctor`)",
+            "unknown": "no GPU found on this machine — using the profile's own",
+        }.get(known, "this machine's card")
+        lines = [f"webgl     my card: {what}"]
+    else:
+        lines = [f"webgl     chosen card: {told.card or told.series.label}"]
+    if told.exact:
+        lines += [
+            f"          pages see  {told.masked}",
+            f"          and, in the debug field, the exact model:  {told.unmasked}",
+        ]
+    else:
+        lines.append(f"          pages see  {told.unmasked}")
+        if profile.webgl != "custom":
+            lines.append(
+                f"          Firefox never shows the exact model. It reports this text for: {told.series.covers}."
+            )
+    if profile.webgl == "custom":
+        lines.append(f"          limits and extensions of: {told.series.label}")
     return lines
 
 
 def cmd_gpus(a: argparse.Namespace) -> int:
-    host, how = webgl.host_series()
-    _p("Firefox never tells a page the card, only the series it belongs to. These are")
-    _p("the series a Windows Firefox reports, most common first:")
+    mine = webgl.host_card()
+    _p("Cards a profile can be given. Firefox does not tell a page the exact model:")
+    _p("it reports the group a card is in, the same text for every card in the group.")
+    _p("So choosing between two cards of one group changes nothing a page can see,")
+    _p("unless the profile is told to show the exact model (--exact).")
+    for series in webgl.SERIES:
+        cards = [c for c in webgl.CARDS if c.series is series]
+        _p("")
+        _p(f"Firefox shows:  {series.renderer}")
+        _p(f"                ({webgl.share(series) * 100:.0f}% of Windows Firefox users)")
+        line = "   "
+        for card in cards:
+            name = card.short + (
+                "  <- like yours"
+                if mine and series_of(mine) is series and card.name == mine
+                else ""
+            )
+            if len(line) + len(name) > 92:
+                _p(line.rstrip(" ,"))
+                line = "   "
+            line += name + ", "
+        _p(line.rstrip(" ,"))
     _p("")
-    for s in webgl.SERIES:
-        mark = "*" if host is s else " "
-        kind = "integrated" if s.kind == "igpu" else "discrete"
-        _p(f" {mark} {s.key:16} {webgl.share(s) * 100:4.1f}%  {kind:10}  {s.label}")
-        _p(f"     covers  {s.covers}")
-        _p(f"     reports {s.renderer}")
-    _p("")
-    if host:
-        note = {
-            "measured": "measured on this machine",
-            "family": "by vendor only — `kiwi-fox selfcheck <profile> --host` measures it",
-        }[how]
-        _p(f"* this machine ({note}); `--webgl host` uses it")
+    if mine:
+        told = webgl.series_for(webgl.exact_renderer(mine))
+        _p(f"This machine: {mine}")
+        _p(f"  -> Firefox shows it as: {told.renderer if told else '(not a known group)'}")
     else:
-        _p("this machine's GPU could not be identified; `--webgl host` falls back to the")
-        _p("series stored in each profile")
+        _p("This machine's card has not been measured yet; `kiwi-fox doctor` does that.")
+    _p("")
+    _p('choose with:  kiwi-fox webgl NAME --card "RTX 3060"     (or --mode host for your own)')
     return 0
+
+
+def series_of(card_name: str):
+    return webgl.series_for(webgl.exact_renderer(card_name))
 
 
 def cmd_webgl(a: argparse.Namespace) -> int:
     profile = store.resolve_ref(a.ref)
     fp = store.load_fingerprint(profile.id)
-    changing = any(v is not None for v in (a.mode, a.series, a.vendor, a.renderer))
+    given = (a.mode, a.card, a.series, a.vendor, a.renderer, a.exact)
+    changing = any(v is not None for v in given)
     if changing:
         try:
-            mode, series = _webgl_choice(
-                a.mode, a.series, a.vendor, a.renderer, current=profile.webgl
+            mode, card, series = _webgl_choice(
+                a.mode, a.card, a.series, a.vendor, a.renderer, current=profile.webgl
             )
         except ValueError as exc:
             return _fail(str(exc))
         vendor = renderer = None
-        if mode == "preset":
-            series = series or profile.webgl_series
+        if mode == "preset" and not (card or series):
+            card, series = profile.webgl_card, profile.webgl_series
         elif mode == "custom":
             vendor = a.vendor or profile.webgl_vendor
             renderer = a.renderer or profile.webgl_renderer
+        exact = profile.webgl_exact if a.exact is None else a.exact
         issues = validate_webgl(mode, vendor, renderer, series)
         if hard := errors(issues):
             return _fail("; ".join(i.message for i in hard))
         profile.webgl = mode  # type: ignore[assignment]
+        profile.webgl_card = card if mode == "preset" else None
         profile.webgl_series = series if mode == "preset" else None
+        profile.webgl_exact = bool(exact) and mode in ("host", "preset")
         profile.webgl_vendor, profile.webgl_renderer = vendor, renderer
         store.save(profile)
         for issue in issues:
@@ -608,6 +650,8 @@ def cmd_set(a: argparse.Namespace) -> int:
         updates["name"] = a.name
     if a.appearance:
         updates["appearance"] = a.appearance
+    if a.language:
+        updates["language"] = a.language
     if a.user_agent:
         updates["user_agent"] = a.user_agent
     if a.default_user_agent:
@@ -763,14 +807,23 @@ def build_parser() -> argparse.ArgumentParser:
     n.add_argument(
         "--webgl",
         choices=WEBGL_MODES,
-        help="host (default): the GPU series this machine really has; "
-        "preset: the series given with --series; custom: your own strings; "
-        "off: no WebGL; raw: spoof nothing (names Linux)",
+        help="host (default): this machine's own card, as Windows Firefox shows it; "
+        "preset: the card given with --card; custom: your own text; off: no WebGL; "
+        "raw: change nothing (Linux values, for testing)",
+    )
+    n.add_argument("--card", help="a graphics card, e.g. 'RTX 3060'; see `kiwi-fox gpus`")
+    n.add_argument("--series", help=argparse.SUPPRESS)
+    n.add_argument(
+        "--exact",
+        action="store_true",
+        help="let the debug field name the exact model instead of the card's group",
     )
     n.add_argument(
-        "--series",
-        help="GPU series for --webgl preset: a key from `kiwi-fox gpus`, or a card "
-        "name such as 'RTX 3060' (Firefox reports the series that card is in)",
+        "--language",
+        choices=["local", "english"],
+        default="local",
+        help="local (default): the Firefox of the profile's region, in its language; "
+        "english: an English Firefox used there",
     )
     n.add_argument("--webgl-vendor", help="custom mode only")
     n.add_argument("--webgl-renderer", help="custom mode only")
@@ -889,6 +942,11 @@ def build_parser() -> argparse.ArgumentParser:
     se.add_argument("--font-add", action="append", metavar="FAMILY")
     se.add_argument("--font-remove", action="append", metavar="FAMILY")
     se.add_argument("--appearance", choices=["host", "light", "dark"])
+    se.add_argument(
+        "--language",
+        choices=["local", "english"],
+        help="local: the region's own Firefox, in its language; english: an English one",
+    )
     se.add_argument("--user-agent", help="replace the user agent (warned about when it lies)")
     se.add_argument("--default-user-agent", action="store_true", help="back to the engine's own")
     se.add_argument("--endpoint", help="a different SOCKS5 exit")
@@ -903,7 +961,14 @@ def build_parser() -> argparse.ArgumentParser:
     wg = sub.add_parser("webgl", help="show or change what a profile reports as its GPU")
     wg.add_argument("ref")
     wg.add_argument("--mode", choices=WEBGL_MODES)
-    wg.add_argument("--series", help="a key from `kiwi-fox gpus` or a card name; implies preset")
+    wg.add_argument("--card", help="a card, e.g. 'RTX 3060' (see `kiwi-fox gpus`); implies preset")
+    wg.add_argument("--series", help=argparse.SUPPRESS)
+    wg.add_argument(
+        "--exact",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="let the debug field name the exact model instead of the card's group",
+    )
     wg.add_argument("--vendor", help="custom vendor string; implies custom")
     wg.add_argument("--renderer", help="custom renderer string; implies custom")
     wg.set_defaults(func=cmd_webgl)

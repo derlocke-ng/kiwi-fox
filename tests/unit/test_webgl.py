@@ -162,14 +162,19 @@ def test_engine_config_is_one_coherent_record(series):
     json.dumps(cfg, allow_nan=False)
 
 
-def test_custom_strings_replace_both_renderers_and_keep_the_limits():
+def test_custom_text_goes_out_verbatim_and_firefox_decides_the_plain_renderer():
     series = webgl.BY_KEY["intel-hd-400"]
     cfg = webgl.engine_config(series, vendor="V", renderer="R")
     assert (cfg["webGl:vendor"], cfg["webGl:renderer"]) == ("V", "R")
-    assert cfg["webGl:parameters"]["7937"] == cfg["webGl2:parameters"]["7937"] == "R"
+    # Plain RENDERER is always Firefox's sanitiser at work; text it recognises
+    # nothing in becomes its fallback, on every engine version.
+    assert cfg["webGl:parameters"]["7937"] == cfg["webGl2:parameters"]["7937"] == "Generic Renderer"
     assert cfg["webGl:parameters"]["7936"] == "Mozilla"
     plain = webgl.engine_config(series)
     assert cfg["webGl2:supportedExtensions"] == plain["webGl2:supportedExtensions"]
+    # a series string in, the same series string in both places
+    same = webgl.engine_config(series, renderer=series.renderer)
+    assert same["webGl:parameters"]["7937"] == same["webGl:renderer"] == series.renderer
 
 
 def test_resolve_by_mode(monkeypatch):
@@ -227,3 +232,97 @@ def test_a_custom_driver_string_is_passed_on_as_it_is():
     # Firefox would report the series for it, which is what a real one does
     assert webgl.sanitize_renderer(card) == webgl.BY_KEY["geforce-gtx-980"].renderer
     assert webgl.driver_string("Some Free Text") == "Some Free Text"
+
+
+# ----------------------------------------------------------------------- cards
+def test_every_card_on_offer_belongs_to_a_series_with_a_record():
+    assert len({c.name for c in webgl.CARDS}) == len(webgl.CARDS)
+    for card in webgl.CARDS:
+        raw = webgl.exact_renderer(card.name)
+        series = card.series
+        assert series in webgl.SERIES, card.name
+        assert series.family == card.family, card.name
+        # Firefox's sanitiser turns the card's own driver string into the series
+        assert webgl.sanitize_renderer(raw) == series.renderer, card.name
+    used = {c.series.key for c in webgl.CARDS}
+    assert used == set(webgl.BY_KEY), "a series nobody can pick a card for"
+
+
+@pytest.mark.parametrize(
+    "typed,name",
+    [
+        ("rtx 4060", "NVIDIA GeForce RTX 4060"),
+        ("RTX 4060 laptop gpu", "NVIDIA GeForce RTX 4060 Laptop GPU"),
+        ("rx 6600", "AMD Radeon RX 6600"),  # not the XT
+        ("680m", "AMD Radeon(TM) 680M"),
+        ("iris xe", "Intel(R) Iris(R) Xe Graphics"),
+        ("UHD 620", "Intel(R) UHD Graphics 620"),
+        ("Intel(R) Iris(R) Xe Graphics", "Intel(R) Iris(R) Xe Graphics"),
+    ],
+)
+def test_find_card(typed, name):
+    assert webgl.find_card(typed).name == name
+
+
+@pytest.mark.parametrize("typed", ["rtx", "voodoo", ""])
+def test_find_card_refuses_what_is_ambiguous_or_unknown(typed):
+    with pytest.raises(ValueError):
+        webgl.find_card(typed)
+
+
+def test_a_card_and_its_group_are_the_same_thing_to_a_page():
+    a = webgl.report("preset", card="NVIDIA GeForce RTX 4060")
+    b = webgl.report("preset", card="NVIDIA GeForce GTX 1650")
+    assert (a.masked, a.unmasked, a.vendor) == (b.masked, b.unmasked, b.vendor)
+    assert a.masked == a.unmasked == webgl.BY_KEY["geforce-gtx-980"].renderer
+    assert not a.exact and a.card == "NVIDIA GeForce RTX 4060"
+
+
+def test_exact_names_the_card_in_the_debug_field_only():
+    # What a Firefox with webgl.sanitize-unmasked-renderer off does: the debug
+    # extension names the card, plain RENDERER still names the group.
+    told = webgl.report("preset", card="NVIDIA GeForce RTX 4060", exact=True)
+    assert told.exact and "RTX 4060" in told.unmasked and told.unmasked.count(", ") == 2
+    assert told.masked == webgl.BY_KEY["geforce-gtx-980"].renderer
+    assert webgl.firefox_masked(told.unmasked) == told.masked
+    cfg = webgl.engine_config(
+        told.series, vendor=told.vendor, renderer=told.unmasked, masked=told.masked
+    )
+    assert cfg["webGl:renderer"] == told.unmasked
+    assert cfg["webGl:parameters"]["7937"] == cfg["webGl2:parameters"]["7937"] == told.masked
+
+
+def test_host_reports_the_measured_card(monkeypatch):
+    from kiwi_fox.core import gpu
+
+    assert webgl.host_card() is None
+    seen = {
+        "kind": "mesa",
+        "accelerated": True,
+        "renderer": "NVIDIA GeForce RTX 4060 Laptop GPU/PCIe/SSE2",
+    }
+    monkeypatch.setattr(gpu, "measurement", lambda: seen)
+    assert webgl.host_card() == "NVIDIA GeForce RTX 4060 Laptop GPU"
+    told = webgl.report("host")
+    assert told.card == "NVIDIA GeForce RTX 4060 Laptop GPU"
+    assert told.masked == told.unmasked == webgl.BY_KEY["geforce-gtx-980"].renderer
+    assert "RTX 4060 Laptop GPU" in webgl.report("host", exact=True).unmasked
+    # software is not a card
+    monkeypatch.setattr(
+        gpu, "measurement", lambda: {"kind": "mesa", "accelerated": False, "renderer": "llvmpipe"}
+    )
+    assert webgl.host_card() is None
+
+
+@pytest.mark.parametrize(
+    "linux,windows",
+    [
+        ("NVIDIA GeForce RTX 4060 Laptop GPU/PCIe/SSE2", "NVIDIA GeForce RTX 4060 Laptop GPU"),
+        ("AMD Radeon 660M (radeonsi, rembrandt, LLVM 21.1.8, DRM 3.64)", "AMD Radeon(TM) 660M"),
+        ("AMD Radeon Graphics (radeonsi, renoir, LLVM 19.1.0)", "AMD Radeon(TM) Graphics"),
+        ("AMD Radeon RX 6600 (radeonsi, navi23, LLVM 19.1.0)", "AMD Radeon RX 6600"),
+        ("Mesa Intel(R) UHD Graphics 620 (KBL GT2)", "Intel(R) UHD Graphics 620"),
+    ],
+)
+def test_linux_driver_names_become_the_windows_ones(linux, windows):
+    assert webgl.windows_name(linux) == windows

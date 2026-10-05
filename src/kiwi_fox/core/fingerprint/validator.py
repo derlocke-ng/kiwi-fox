@@ -336,10 +336,12 @@ def _check_locale(fp: Fingerprint, exit_country: str | None) -> list[Issue]:
                     f"exit country {exit_country.upper()} does not match locale {fp.locale}",
                 )
             )
-    if not fp.languages or fp.languages[0] != fp.locale:
-        out.append(_err("languages.head", "navigator.languages must start with the locale"))
-    if not fp.accept_language.startswith(fp.locale):
-        out.append(_err("accept_language", "Accept-Language must start with the locale"))
+    # The list starts with the build's own language: "de" for a German Firefox
+    # whose region is de-DE or de-AT. Same language, not the same string.
+    if not fp.languages or fp.languages[0].split("-")[0] != fp.locale.split("-")[0]:
+        out.append(
+            _err("languages.head", "the language list must start with the locale's language")
+        )
     return out
 
 
@@ -376,18 +378,28 @@ def _check_prefs(prefs: dict[str, object], allowed: set[str]) -> list[Issue]:
 def validate_against(fp: Fingerprint, others: list[Fingerprint]) -> list[Issue]:
     """Two profiles sharing a machine-identifying value defeat the point."""
     out: list[Issue] = []
+    fonts = machine = 0
     for other in others:
         if other.seed == fp.seed:
             out.append(_err("dup.seed", "another profile has the same seed"))
             continue
-        if other.fonts == fp.fonts:
-            out.append(_warn("dup.fonts", "another profile exposes the identical font set"))
-        if other.webgl.renderer == fp.webgl.renderer and other.screen == fp.screen:
-            out.append(
-                _warn("dup.machine", "another profile has the same GPU string and screen block")
-            )
+        fonts += other.fonts == fp.fonts
+        machine += other.webgl.renderer == fp.webgl.renderer and other.screen == fp.screen
         if other.canvas_seed == fp.canvas_seed:
             out.append(_err("dup.canvas", "another profile has the same canvas seed"))
+
+    # Once each, with a count: ten profiles used to print the same line nine times.
+    def many(n: int) -> str:
+        return "another profile" if n == 1 else f"{n} other profiles"
+
+    if fonts:
+        verb = "exposes" if fonts == 1 else "expose"
+        out.append(_warn("dup.fonts", f"{many(fonts)} {verb} the identical font set"))
+    if machine:
+        verb = "has" if machine == 1 else "have"
+        out.append(
+            _warn("dup.machine", f"{many(machine)} {verb} the same GPU string and screen block")
+        )
     return out
 
 

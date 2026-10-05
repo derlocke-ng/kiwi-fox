@@ -52,22 +52,58 @@ def _chooser():
     return GraphicsChooser(Adw.PreferencesGroup())
 
 
-def test_each_mode_shows_only_what_it_needs():
+def _with_host_card(monkeypatch, name="NVIDIA GeForce RTX 4060 Laptop GPU"):
+    from kiwi_fox.core.fingerprint import webgl
+
+    monkeypatch.setattr(webgl, "host_card", lambda: name)
+    monkeypatch.setattr(webgl, "host_series", lambda: (webgl.BY_NAME[name].series, "measured"))
+
+
+def test_each_choice_shows_only_what_it_needs(monkeypatch):
+    _with_host_card(monkeypatch)
     chooser = _chooser()
     expect = {
-        # mode: (series list, custom fields)
-        "host": (False, False),
-        "preset": (True, False),
-        "custom": (False, True),
-        "off": (False, False),
-        "raw": (False, False),
+        # choice: (card list, exact switch, custom fields)
+        "host": (False, True, False),
+        "preset": (True, True, False),
+        "custom": (False, False, True),
+        "off": (False, False, False),
+        "raw": (False, False, False),
     }
-    for mode, (series, custom) in expect.items():
+    for mode, (cards, exact, custom) in expect.items():
         chooser.set_mode(mode)
-        assert all(r.get_visible() == series for r in chooser.series_rows), mode
+        assert all(g.get_visible() == cards for g in chooser.card_groups), mode
+        assert chooser.exact_row.get_visible() == exact, mode
         assert chooser.vendor_row.get_visible() == custom, mode
         assert chooser.renderer_row.get_visible() == custom, mode
-        assert chooser.summary.get_subtitle(), f"{mode}: nothing says what pages will see"
+        assert chooser.summary.get_subtitle(), f"{mode}: nothing says what websites will see"
+
+
+def test_my_card_is_named_and_the_group_it_reads_as_is_explained(monkeypatch):
+    # "Why does it say GTX 980 and not my 4060?" has to be answered on screen.
+    _with_host_card(monkeypatch)
+    chooser = _chooser()
+    text = chooser.summary.get_subtitle()
+    assert "GeForce GTX 980" in text  # what websites see
+    assert "RTX 4060 Laptop GPU" in text  # the card it stands for
+    assert "never shows the exact model" in text
+    assert chooser.value() == {
+        "webgl": "host",
+        "webgl_card": None,
+        "webgl_series": None,
+        "webgl_exact": False,
+        "webgl_vendor": None,
+        "webgl_renderer": None,
+    }
+    chooser.exact_row.set_active(True)
+    assert chooser.value()["webgl_exact"] is True
+    assert "RTX 4060 Laptop GPU Direct3D11" in chooser.summary.get_subtitle()
+
+
+def test_without_a_measured_card_nothing_exact_is_offered():
+    chooser = _chooser()  # the hermetic test host has no GPU measured
+    assert not chooser.exact_row.get_visible()
+    assert "not measured yet" in chooser.summary.get_subtitle()
 
 
 def test_rows_show_text_literally(monkeypatch):
@@ -75,41 +111,44 @@ def test_rows_show_text_literally(monkeypatch):
     # into a custom field, and GTK drops the whole text: the row renders blank. Seen
     # on screen, invisible to every other test, because the property still holds
     # the string.
-    from kiwi_fox.core.fingerprint import webgl
     from kiwi_fox.ui import dialogs
 
-    host = webgl.BY_KEY["radeon-r9-200"]
-    for how in ("measured", "family"):
-        monkeypatch.setattr(webgl, "host_series", lambda how=how: (host, how))
-        chooser = _chooser()
-        assert not chooser.summary.get_use_markup()
-        assert all(not row.get_use_markup() for row in chooser.series_rows)
-        assert host.renderer in chooser.summary.get_subtitle()
+    _with_host_card(monkeypatch)
+    chooser = _chooser()
+    assert not chooser.summary.get_use_markup()
     chooser.set_mode("custom")
     chooser.renderer_row.set_text("ANGLE (AMD & <friends>)")
     assert "ANGLE (AMD & <friends>)" in chooser.summary.get_subtitle()
     assert not dialogs._row("t", "a < b & c").get_use_markup()
 
 
-def test_choosing_a_series_is_what_gets_saved():
+def test_choosing_a_card_is_what_gets_saved():
     from kiwi_fox.core.fingerprint import webgl
 
     chooser = _chooser()
     chooser.set_mode("preset")
-    assert len(chooser.series_rows) == len(webgl.SERIES)
-    for series in webgl.SERIES:
-        chooser._radios[series.key].set_active(True)
-        assert chooser.value() == {
-            "webgl": "preset",
-            "webgl_series": series.key,
-            "webgl_vendor": None,
-            "webgl_renderer": None,
-        }
-        assert chooser.summary.get_subtitle() == series.renderer
+    assert len(chooser._radios) == len(webgl.CARDS)
+    assert sum(len(list(webgl.CARDS)) for _ in [0]) > 40, "a proper list, not a handful"
+    for card in (
+        webgl.CARDS[5],
+        webgl.BY_NAME["AMD Radeon RX 6600"],
+        webgl.BY_NAME["Intel(R) UHD Graphics 620"],
+    ):
+        chooser.set_card(card.name)
+        got = chooser.value()
+        assert (got["webgl"], got["webgl_card"], got["webgl_series"]) == (
+            "preset",
+            card.name,
+            card.series.key,
+        )
+        assert card.series.renderer in chooser.summary.get_subtitle()
         assert chooser.problem() is None
-    # the choice only counts in the mode it belongs to
+        # the group the chosen card is under shows it without being opened
+        mine = next(g for g in chooser.card_groups if g.family == card.family)
+        assert mine.get_subtitle() == card.short
+    # the choice only counts for the option it belongs to
     chooser.set_mode("host")
-    assert chooser.value()["webgl_series"] is None
+    assert chooser.value()["webgl_card"] is None and chooser.value()["webgl_series"] is None
 
 
 def test_custom_has_fields_and_starts_from_a_valid_string():
@@ -129,12 +168,13 @@ def test_custom_has_fields_and_starts_from_a_valid_string():
     chooser.vendor_row.set_text("Google Inc. (NVIDIA)")
     chooser.renderer_row.set_text(card)
     assert chooser.problem() is None
-    assert chooser.value() == {
-        "webgl": "custom",
-        "webgl_series": None,
-        "webgl_vendor": "Google Inc. (NVIDIA)",
-        "webgl_renderer": card,
-    }
+    got = chooser.value()
+    assert (got["webgl"], got["webgl_vendor"], got["webgl_renderer"]) == (
+        "custom",
+        "Google Inc. (NVIDIA)",
+        card,
+    )
+    assert got["webgl_card"] is None and got["webgl_exact"] is False
     # allowed, but it says which string a real Firefox would send instead
     assert "GeForce GTX 980" in chooser.summary.get_subtitle()
 
@@ -143,7 +183,12 @@ def test_chooser_shows_an_existing_profiles_choice(profile):
     fp = _stored(profile)
     chooser = _chooser()
     for update in (
-        {"webgl": "preset", "webgl_series": "intel-hd"},
+        {
+            "webgl": "preset",
+            "webgl_card": "AMD Radeon RX 6600",
+            "webgl_series": "radeon-r9-200",
+            "webgl_exact": True,
+        },
         {"webgl": "custom", "webgl_vendor": "V", "webgl_renderer": "ANGLE (Intel, X)"},
         {"webgl": "off"},
         {"webgl": "host"},
@@ -151,9 +196,12 @@ def test_chooser_shows_an_existing_profiles_choice(profile):
         p = profile.model_copy(update=update)
         chooser.load(p, fp)
         got = chooser.value()
-        assert got["webgl"] == p.webgl
-        assert got["webgl_series"] == p.webgl_series
-        assert (got["webgl_vendor"], got["webgl_renderer"]) == (p.webgl_vendor, p.webgl_renderer)
+        for field in ("webgl", "webgl_card", "webgl_series", "webgl_vendor", "webgl_renderer"):
+            assert got[field] == getattr(p, field), (update, field)
+    # a profile from before cards existed: only its group is known
+    old = profile.model_copy(update={"webgl": "preset", "webgl_series": "intel-hd"})
+    chooser.load(old, fp)
+    assert chooser.value()["webgl_series"] == "intel-hd", "any card of that group reads the same"
 
 
 def _editor(profile):
@@ -212,13 +260,19 @@ def test_editor_saves_every_kind_of_change(profile):
     flip = edit.optional_fonts()[0]
     editor._font_rows[flip].set_active(flip not in fp.fonts)
     editor.graphics.set_mode("preset")
-    editor.graphics._radios["intel-hd-400"].set_active(True)
+    editor.graphics.set_card("Intel(R) UHD Graphics 620")
+    editor.language_row.set_selected(1)  # English Firefox
     editor._on_save()
     assert saved, editor.status_label.get_text()
 
     new, p = store.load_fingerprint(profile.id), store.load(profile.id)
     assert p.name == "renamed" and p.appearance == "dark"
-    assert (p.webgl, p.webgl_series) == ("preset", "intel-hd-400")
+    assert (p.webgl, p.webgl_card, p.webgl_series) == (
+        "preset",
+        "Intel(R) UHD Graphics 620",
+        "intel-hd-400",
+    )
+    assert p.language == "english"
     assert new.form_factor == other_form
     assert (new.screen.width, new.screen.height) == (wanted_screen.width, wanted_screen.height)
     assert new.hardware_concurrency == cores

@@ -239,6 +239,7 @@ def probe(profile: Profile, *, timeout: int = 70, raw: bool = False, skip: str =
             extra={"browser.startup.page": 0, "browser.sessionstore.resume_from_crash": False},
         )
         launch.seed_xulstore(subject, fp, data)
+        launch.install_langpack(subject, fp, data)
         launch.write_fontconfig(profile, fp)
 
         spec = launch.browser_spec(subject, fp, gateway, None)
@@ -318,7 +319,11 @@ def audit(report: dict, profile: Profile) -> list[str]:
             problems.append(f"{ctx}: no context — a Windows desktop without WebGL is rare")
             continue
         masked, unmasked = gl.get("renderer"), gl.get("unmaskedRenderer")
-        if masked != unmasked:
+        # With "show the exact model" the two differ on purpose, the way they do
+        # in a Firefox whose sanitiser was switched off: one names the card, the
+        # other the group that card is in.
+        deliberate = profile.webgl_exact and webgl.firefox_masked(str(unmasked)) == masked
+        if masked != unmasked and not deliberate:
             problems.append(
                 f"{ctx}: RENDERER {masked!r} differs from the unmasked {unmasked!r}; "
                 "in Firefox they are the same string"

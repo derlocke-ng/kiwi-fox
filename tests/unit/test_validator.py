@@ -205,3 +205,17 @@ def test_webgl_mode_checks():
     )
     assert codes(card) == {"webgl.custom.unreal"} and errors(card) == []
     assert "GeForce GTX 980" in card[0].message, "it should say what a real Firefox reports"
+
+
+def test_a_duplicate_is_reported_once_however_many_profiles_share_it(fp):
+    twins = [
+        fp.model_copy(update={"seed": f"dup-{n}", "canvas_seed": fp.canvas_seed + n})
+        for n in (1, 2, 3)
+    ]
+    issues = validate_against(fp, twins[:1])
+    assert [i.code for i in issues] == ["dup.fonts", "dup.machine"]
+    assert issues[0].message == "another profile exposes the identical font set"
+    issues = validate_against(fp, twins)
+    assert [i.code for i in issues] == ["dup.fonts", "dup.machine"]
+    assert issues[0].message == "3 other profiles expose the identical font set"
+    assert issues[1].message.startswith("3 other profiles have the same GPU string")

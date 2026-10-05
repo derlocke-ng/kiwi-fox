@@ -34,7 +34,8 @@ def test_region_drives_locale_and_timezone():
     fp = generate(engine_version=ENGINE, country="NL", seed="x")
     assert fp.locale == "nl-NL"
     assert fp.timezone == "Europe/Amsterdam"
-    assert fp.accept_language.startswith("nl-NL")
+    # the Dutch Firefox build announces "nl", not Chrome's "nl-NL"
+    assert fp.languages == ["nl", "en-US", "en"]
 
 
 def test_unknown_country_falls_back_without_crashing():

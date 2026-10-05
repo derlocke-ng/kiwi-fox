@@ -310,7 +310,7 @@ def test_preset_uses_the_chosen_series_over_the_fingerprints(engine, fp, profile
         assert engine.config(fp, p, None)["webGl:renderer"] == series.renderer
 
 
-def test_custom_strings_reach_both_renderer_values(engine, fp, profile):
+def test_a_custom_card_string_is_sanitised_like_firefox_would(engine, fp, profile):
     vendor = "Google Inc. (NVIDIA)"
     renderer = (
         "ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 Direct3D11 vs_5_0 ps_5_0, D3D11-32.0.15.6094)"
@@ -319,15 +319,29 @@ def test_custom_strings_reach_both_renderer_values(engine, fp, profile):
         update={"webgl": "custom", "webgl_vendor": vendor, "webgl_renderer": renderer}
     )
     gl = _gl(engine.config(fp, p, None))
-    assert gl["webGl:vendor"] == vendor
-    assert gl["webGl:renderer"] == gl["webGl:parameters"]["7937"] == renderer
-    # and the limits are NVIDIA's, not whatever the fingerprint was drawn with
     from kiwi_fox.core.fingerprint import webgl
 
-    assert gl["webGl2:parameters"] == {
-        **webgl.engine_config(webgl.BY_KEY["geforce-gtx-980"])["webGl2:parameters"],
-        "7937": renderer,
-    }
+    group = webgl.BY_KEY["geforce-gtx-980"]
+    assert (gl["webGl:vendor"], gl["webGl:renderer"]) == (vendor, renderer)
+    assert gl["webGl:parameters"]["7937"] == group.renderer  # plain RENDERER: the group
+    # and the limits are NVIDIA's, not whatever the fingerprint was drawn with
+    assert gl["webGl2:parameters"] == webgl.engine_config(group)["webGl2:parameters"]
+
+
+def test_a_chosen_card_and_the_exact_switch(engine, fp, profile):
+    from kiwi_fox.core.fingerprint import webgl
+
+    group = webgl.BY_KEY["radeon-r9-200"]
+    p = profile.model_copy(update={"webgl": "preset", "webgl_card": "AMD Radeon RX 6600"})
+    gl = _gl(engine.config(fp, p, None))
+    assert gl["webGl:renderer"] == gl["webGl:parameters"]["7937"] == group.renderer
+    exact = p.model_copy(update={"webgl_exact": True})
+    gl = _gl(engine.config(fp, exact, None))
+    assert "AMD Radeon RX 6600 Direct3D11" in gl["webGl:renderer"]
+    assert gl["webGl:parameters"]["7937"] == group.renderer
+    prefs = engine.prefs(fp, exact)
+    assert prefs["webgl.override-unmasked-renderer"] == gl["webGl:renderer"]
+    assert webgl.sanitize_renderer(prefs["webgl.override-unmasked-renderer"]) == group.renderer
 
 
 def test_a_profile_from_before_the_rework_launches_as_its_series(engine, fp, profile):
@@ -491,7 +505,7 @@ def test_only_keys_the_installed_engine_knows_are_sent(engine, fp, profile, tmp_
     monkeypatch.setattr(paths, "engines_dir", lambda: tmp_path)
     laptop = profile.model_copy(update={"webgl": "host"})
     everything = _env_config(engine, fp, laptop)  # no schema in the engine: nothing filtered
-    assert {"canvas:seed", "fonts:spacing_seed", "navigator.languages"} <= set(everything)
+    assert {"canvas:seed", "fonts:spacing_seed", "pdfViewerEnabled"} <= set(everything)
 
     schema_156 = Path(__file__).parent / "data" / "camoufox-properties-156.0.1.json"
     known = {e["property"] for e in json.loads(schema_156.read_text())}
@@ -503,7 +517,7 @@ def test_only_keys_the_installed_engine_knows_are_sent(engine, fp, profile, tmp_
     assert set(everything) - set(sent) >= {
         "canvas:seed",
         "fonts:spacing_seed",
-        "navigator.languages",
+        "pdfViewerEnabled",
     }
     # nothing that matters was lost on the way
     for key in ("navigator.userAgent", "headers.User-Agent", "screen.availHeight", "timezone",
@@ -531,3 +545,67 @@ def test_renderer_strings_also_go_through_firefoxs_own_prefs(engine, fp, profile
         update={"webgl": "custom", "webgl_vendor": "Google Inc. (NVIDIA)", "webgl_renderer": card}
     )
     assert engine.prefs(fp, custom)["webgl.override-unmasked-renderer"] == card
+
+
+# ------------------------------------------------------------------- language
+def test_language_is_left_to_firefox_to_announce(engine, fp, profile):
+    # Sending our own header put q=0.9, 0.7, 0.5 on the wire, which no browser
+    # writes, under a navigator.language ("de-DE") that is how Chrome spells it.
+    # Firefox is handed the list and derives navigator.language(s) and the header.
+    cfg = engine.config(fp, profile, None)
+    for key in ("navigator.language", "navigator.languages", "headers.Accept-Language"):
+        assert key not in cfg, key
+    assert cfg["locale:all"] == "de,en-US,en"
+    assert (cfg["locale:language"], cfg["locale:region"]) == ("de", "DE")
+    assert "intl.accept_languages" not in engine.prefs(fp, profile)
+
+
+def test_local_and_english_are_two_coherent_firefoxes(engine, fp, profile):
+    local = engine.prefs(fp, profile)
+    assert local["intl.locale.requested"] == "de"
+    assert local["intl.regional_prefs.use_os_locales"] is True
+    english = profile.model_copy(update={"language": "english"})
+    assert engine.config(fp, english, None)["locale:all"] == "en-US,en"
+    prefs = engine.prefs(fp, english)
+    assert prefs["intl.locale.requested"] == "en-US"
+    assert prefs["intl.regional_prefs.use_os_locales"] is False
+    # the operating system's region is the same either way
+    assert engine.config(fp, english, None)["locale:region"] == "DE"
+
+
+def test_scrollbars_take_no_width_like_windows_11(engine, fp, profile):
+    prefs = engine.prefs(fp, profile)
+    assert prefs["widget.gtk.overlay-scrollbars.enabled"] is True
+    assert "widget.non-native-theme.scrollbar.size" not in prefs
+
+
+def test_language_pack_follows_the_profile(fp, profile, tmp_path):
+    from kiwi_fox.core import launch
+    from kiwi_fox.core.fingerprint import edit
+
+    data = tmp_path / "browser-data"
+    assert launch.install_langpack(profile, fp, data) is None
+    pack = data / "extensions" / "langpack-de@firefox.mozilla.org.xpi"
+    assert pack.read_bytes() == b"langpack de 152.0.4"
+    # switching to an English Firefox takes it out again
+    english = profile.model_copy(update={"language": "english"})
+    assert launch.install_langpack(english, fp, data) is None
+    assert not pack.exists()
+    # and a region change replaces it rather than leaving two
+    launch.install_langpack(profile, fp, data)
+    launch.install_langpack(profile, edit.with_region(fp, "SE"), data)
+    assert [p.name for p in (data / "extensions").iterdir()] == [
+        "langpack-sv-SE@firefox.mozilla.org.xpi"
+    ]
+
+
+def test_a_missing_language_pack_is_a_note_not_a_failure(fp, profile, tmp_path, monkeypatch):
+    from kiwi_fox.core import launch
+    from kiwi_fox.core.engines import fetch
+
+    def offline(version, locale):
+        raise fetch.RepairError("no network")
+
+    monkeypatch.setattr(fetch, "langpack", offline)
+    note = launch.install_langpack(profile, fp, tmp_path / "browser-data")
+    assert note and "English" in note and "de" in note

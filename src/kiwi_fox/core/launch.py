@@ -127,6 +127,34 @@ def write_user_chrome(profile: Profile, fp: Fingerprint) -> Path:
     return path
 
 
+def install_langpack(profile: Profile, fp: Fingerprint, data_dir: Path | None = None) -> str | None:
+    """Put the region's language pack into the browser's data directory, or take
+    it out again for an English profile. Returns a note when the pack could not
+    be fetched — the launch goes on, with English built-in texts.
+    """
+    from .engines import fetch
+    from .fingerprint import windows11 as w11
+
+    extensions = (data_dir or browser_data_dir(profile)) / "extensions"
+    build = w11.firefox_build(fp.locale) if profile.language == "local" else "en-US"
+    wanted = None if build == "en-US" else f"langpack-{build}@firefox.mozilla.org.xpi"
+    if extensions.exists():
+        for stale in extensions.glob("langpack-*@firefox.mozilla.org.xpi"):
+            if stale.name != wanted:
+                stale.unlink()
+    if wanted is None:
+        return None
+    try:
+        source = fetch.langpack(fp.engine_version, build)
+    except fetch.RepairError as exc:
+        return f"no {build} language pack, built-in page texts stay English ({exc})"
+    target = extensions / wanted
+    if not target.exists() or target.stat().st_size != source.stat().st_size:
+        extensions.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(source.read_bytes())
+    return None
+
+
 def clear_stale_lock(profile: Profile) -> bool:
     """Remove a leftover profile lock from a hard-killed Firefox.
 
@@ -392,6 +420,8 @@ def launch(profile: Profile, *, strict: bool = False, start_url: str | None = No
     write_resolver_config(profile)
     write_user_js(profile, fp)
     write_user_chrome(profile, fp)
+    if note := install_langpack(profile, fp):
+        notes.append(note)
     reset_toolbar_layout(profile)
     seed_xulstore(profile, fp)
 

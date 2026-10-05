@@ -150,7 +150,7 @@ def plan(prefer: str | None = None) -> Plan:
                 (target.path, primary.path),
                 {"DRI_PRIME": f"{target.vendor[2:]}:{target.device[2:]}"},
                 target.family,
-                "the desktop runs on the NVIDIA GPU; drawing on the other GPU instead, "
+                "the desktop runs on the NVIDIA GPU; the other GPU is tried instead, "
                 + (
                     "as asked"
                     if cdi_nvidia()
@@ -301,6 +301,13 @@ def describe() -> str:
         # matters is what it ended up with, and why the plan could do no better.
         got = seen.get("renderer") or "; ".join(seen.get("warnings") or []) or "no GPU"
         why = f"the engine's probe got {got}" + (f" — {chosen.note}" if chosen.note else "")
+        if chosen.kind == "mesa-prime":
+            # A second GPU that is switched off, or powered down behind a mux,
+            # still has its node; only the probe finds out it cannot draw.
+            why += (
+                "; that GPU gave no hardware rendering either (disabled?). "
+                "Setting up nvidia-container-toolkit is what makes the NVIDIA one usable"
+            )
         return f"SOFTWARE — sites can tell, and it reads as a virtual machine ({why})"
     if chosen.kind == "software":
         return f"SOFTWARE — sites can tell, and it reads as a virtual machine ({chosen.note})"

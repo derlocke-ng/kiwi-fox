@@ -249,3 +249,14 @@ def test_before_156_the_two_separate_helpers_are_wanted(tmp_path):
 
     engine = _libxul(tmp_path, b"junk", b"glxtest", b"vaapitest")
     assert fetch.expected_gl_helpers(engine) == ["glxtest", "vaapitest"]
+
+
+def test_a_second_gpu_that_is_switched_off_is_not_called_drawing(host):
+    # A disabled GPU keeps its node, so the plan still tries it; what is said
+    # afterwards has to be what the probe found, not what the plan hoped for.
+    host(AMD, NVIDIA, primary=1)
+    gpu._remember({"kind": "mesa-prime", "accelerated": False, "renderer": "llvmpipe"})
+    said = gpu.describe()
+    assert said.startswith("SOFTWARE")
+    assert "tried instead" in said and "drawing on the other GPU" not in said
+    assert "no hardware rendering either" in said and "nvidia-container-toolkit" in said

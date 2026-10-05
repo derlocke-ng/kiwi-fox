@@ -11,7 +11,7 @@ from gi.repository import Adw, Gtk  # noqa: E402
 
 from ..core import dns, launch, proxy, secrets, store  # noqa: E402
 from ..core.engines import fetch as engine_fetch  # noqa: E402
-from ..core.engines.camoufox import webgl_config, webgl_series  # noqa: E402
+from ..core.engines.camoufox import webgl_report  # noqa: E402
 from ..core.fingerprint import (  # noqa: E402
     edit,
     generate,
@@ -27,42 +27,48 @@ from . import worker  # noqa: E402
 
 COUNTRIES = ["(from the exit)", "DE", "AT", "CH", "NL", "SE", "FR", "FI", "NO", "DK", "GB", "US"]
 
-# One control decides what a page is told about the GPU. Each mode shows only
-# what it needs underneath: nothing, a list of series, or two text fields.
+# One control decides what a page is told about the graphics card. Each choice
+# shows only what it needs underneath, and one row always says, in plain words,
+# what websites will see and why.
 WEBGL_MODES: list[tuple[str, str]] = [
-    ("host", "This machine's GPU"),
-    ("preset", "A GPU series I choose"),
-    ("custom", "Custom strings"),
+    ("host", "My graphics card"),
+    ("preset", "Another graphics card"),
+    ("custom", "Custom text"),
     ("off", "No WebGL"),
-    ("raw", "Raw — spoof nothing"),
+    ("raw", "Unchanged (testing)"),
 ]
 
-HOW = {
-    "measured": "measured on this machine",
-    "family": "matched by vendor; `kiwi-fox selfcheck NAME --host` measures the exact series",
-    "unknown": "this machine's GPU could not be identified",
-}
+CARD_GROUPS: list[tuple[str, str]] = [
+    ("nvidia", "NVIDIA GeForce"),
+    ("amd", "AMD Radeon"),
+    ("intel", "Intel (integrated)"),
+]
+
+
+def _shown_as(series) -> str:
+    """The short form of what Firefox reports for a series: "GTX 980, or similar"."""
+    return f"{series.device.removeprefix('NVIDIA GeForce ').removeprefix('Intel(R) ')}, or similar"
 
 
 class GraphicsChooser:
     """The graphics rows of a preferences group, and the choice they hold.
 
-    Firefox reports a GPU *series*, never a card, so that is what is chosen here.
-    The summary row always says, in the page's own terms, what will be reported.
+    People think in cards, so cards are what is chosen. Firefox tells a page only
+    the group a card is in, and the "Websites will see" row says so every time —
+    otherwise "I picked my RTX 4060, why does it say GTX 980?" has no answer on
+    screen.
     """
 
     def __init__(self, group: Adw.PreferencesGroup) -> None:
-        host, self._how = webgl.host_series()
-        self._host = host
-        self._series = (host or webgl.SERIES[0]).key
+        self._host_card = webgl.host_card()
+        self._card = (webgl.BY_NAME.get(self._host_card or "") or webgl.CARDS[0]).name
 
-        self.mode_row = Adw.ComboRow(title="Reported as")
+        self.mode_row = Adw.ComboRow(title="Graphics card")
         self.mode_row.set_model(Gtk.StringList.new([label for _key, label in WEBGL_MODES]))
         group.add(self.mode_row)
 
-        # Directly under the dropdown, so the consequence of a choice is always in
-        # view — below a six-row list it needed scrolling to find.
-        self.summary = Adw.ActionRow(title="Pages will see")
+        # Directly under the dropdown, so the consequence of a choice is in view.
+        self.summary = Adw.ActionRow(title="Websites will see")
         # Plain text, not markup: this row shows renderer strings and whatever was
         # typed into the custom fields, and one "<" or "&" in markup mode blanks
         # the whole row.
@@ -71,37 +77,46 @@ class GraphicsChooser:
         self.summary.set_subtitle_selectable(True)
         group.add(self.summary)
 
-        self.series_rows: list[Adw.ActionRow] = []
+        self.exact_row = Adw.SwitchRow(
+            title="Show the exact model",
+            subtitle="Off, like every Firefox: websites get the group the card is in. On: "
+            "one extra field names the card itself — only a Firefox with a hidden "
+            "setting changed does that, so it is rarer.",
+        )
+        self.exact_row.set_subtitle_lines(0)
+        self.exact_row.connect("notify::active", self._refresh)
+        group.add(self.exact_row)
+
+        self.card_groups: list[Adw.ExpanderRow] = []
         self._radios: dict[str, Gtk.CheckButton] = {}
         first: Gtk.CheckButton | None = None
-        for series in webgl.SERIES:
-            kind = "integrated" if series.kind == "igpu" else "discrete"
-            row = Adw.ActionRow(
-                title=series.label,
-                subtitle=f"{series.covers}\n{kind} · {webgl.share(series) * 100:.0f}% of "
-                "Windows Firefox users",
-            )
-            row.set_use_markup(False)
-            row.set_title_lines(2)
-            row.set_subtitle_lines(3)
-            radio = Gtk.CheckButton(valign=Gtk.Align.CENTER)
-            if first is None:
-                first = radio
-            else:
-                radio.set_group(first)
-            radio.set_active(series.key == self._series)
-            radio.connect("toggled", self._on_series, series.key)
-            row.add_prefix(radio)
-            row.set_activatable_widget(radio)
-            group.add(row)
-            self.series_rows.append(row)
-            self._radios[series.key] = radio
+        for family, title in CARD_GROUPS:
+            expander = Adw.ExpanderRow(title=title)
+            for card in (c for c in webgl.CARDS if c.family == family):
+                row = Adw.ActionRow(
+                    title=card.short, subtitle=f"Firefox shows: {_shown_as(card.series)}"
+                )
+                row.set_use_markup(False)
+                radio = Gtk.CheckButton(valign=Gtk.Align.CENTER)
+                if first is None:
+                    first = radio
+                else:
+                    radio.set_group(first)
+                radio.set_active(card.name == self._card)
+                radio.connect("toggled", self._on_card, card.name)
+                row.add_prefix(radio)
+                row.set_activatable_widget(radio)
+                expander.add_row(row)
+                self._radios[card.name] = radio
+            expander.family = family  # type: ignore[attr-defined]
+            group.add(expander)
+            self.card_groups.append(expander)
 
-        start = host or webgl.SERIES[0]
+        start = webgl.report("host") or webgl.report("preset", card=self._card)
         self.vendor_row = Adw.EntryRow(title="Vendor")
         self.vendor_row.set_text(start.vendor)
         self.renderer_row = Adw.EntryRow(title="Renderer")
-        self.renderer_row.set_text(start.renderer)
+        self.renderer_row.set_text(start.unmasked)
         for row in (self.vendor_row, self.renderer_row):
             row.connect("changed", self._refresh)
             group.add(row)
@@ -117,16 +132,32 @@ class GraphicsChooser:
     def set_mode(self, mode: str) -> None:
         self.mode_row.set_selected([key for key, _label in WEBGL_MODES].index(mode))
 
-    def value(self) -> dict[str, str | None]:
-        """-> the four Profile fields: webgl, webgl_series, webgl_vendor, webgl_renderer."""
+    def set_card(self, name: str) -> None:
+        self._radios[name].set_active(True)
+
+    def value(self) -> dict[str, object]:
+        """-> the Profile fields this control owns."""
         mode = self.mode
-        custom = mode == "custom"
+        custom, preset = mode == "custom", mode == "preset"
         return {
             "webgl": mode,
-            "webgl_series": self._series if mode == "preset" else None,
+            "webgl_card": self._card if preset else None,
+            "webgl_series": webgl.BY_NAME[self._card].series.key if preset else None,
+            "webgl_exact": self.exact_row.get_active() and mode in ("host", "preset"),
             "webgl_vendor": self.vendor_row.get_text().strip() or None if custom else None,
             "webgl_renderer": self.renderer_row.get_text().strip() or None if custom else None,
         }
+
+    def _told(self):
+        v = self.value()
+        return webgl.report(
+            v["webgl"],
+            card=v["webgl_card"],
+            series_key=v["webgl_series"],
+            exact=bool(v["webgl_exact"]),
+            custom_vendor=v["webgl_vendor"],
+            custom_renderer=v["webgl_renderer"],
+        )
 
     def problem(self) -> str | None:
         """Why this choice cannot be saved, or None."""
@@ -138,65 +169,85 @@ class GraphicsChooser:
 
     def load(self, profile, fp) -> None:
         """Show an existing profile's choice."""
-        frozen = webgl.BY_KEY.get(profile.webgl_series or "") or webgl.series_for(fp.webgl.renderer)
-        if frozen:
-            self._radios[frozen.key].set_active(True)
+        card = profile.webgl_card
+        if card not in self._radios:
+            # Chosen before cards could be: any card of the same group reads the same.
+            series = webgl.BY_KEY.get(profile.webgl_series or "") or webgl.series_for(
+                fp.webgl.renderer
+            )
+            card = next((c.name for c in webgl.CARDS if c.series is series), None)
+        if card:
+            self.set_card(card)
         if profile.webgl_vendor:
             self.vendor_row.set_text(profile.webgl_vendor)
         if profile.webgl_renderer:
             self.renderer_row.set_text(profile.webgl_renderer)
+        self.exact_row.set_active(profile.webgl_exact)
         self.set_mode(profile.webgl)
         self._refresh()
 
     # --------------------------------------------------------------- widgets
-    def _on_series(self, button: Gtk.CheckButton, key: str) -> None:
+    def _on_card(self, button: Gtk.CheckButton, name: str) -> None:
         if button.get_active():
-            self._series = key
+            self._card = name
             self._refresh()
 
     def _refresh(self, *_args) -> None:
         mode = self.mode
-        for row in self.series_rows:
-            row.set_visible(mode == "preset")
+        chosen = webgl.BY_NAME[self._card]
+        for expander in self.card_groups:
+            expander.set_visible(mode == "preset")
+            mine = expander.family == chosen.family  # type: ignore[attr-defined]
+            expander.set_subtitle(chosen.short if mine else "")
         for row in (self.vendor_row, self.renderer_row):
             row.set_visible(mode == "custom")
+        has_card = mode == "preset" or (mode == "host" and bool(self._host_card))
+        self.exact_row.set_visible(has_card)
         self.summary.set_subtitle(self._describe(mode))
 
     def _describe(self, mode: str) -> str:
         if mode == "off":
             return (
-                "No WebGL context at all, so nothing about the GPU. Rare on Windows — "
-                "it stands out more than any card would."
+                "No WebGL at all, so nothing about the graphics card. That is rare on "
+                "Windows and stands out more than any card would."
             )
         if mode == "raw":
             return (
-                "This machine's real WebGL strings, limits and extensions. On Linux "
-                "that is Mesa's wording under a Windows user agent: for measuring and "
-                "testing, not for browsing."
+                "Exactly what this Linux machine reports, nothing changed: Linux "
+                "wording and limits under a Windows browser. For measuring and "
+                "testing — it does not look like Windows."
             )
-        if mode == "host":
-            if not self._host:
-                return f"{HOW['unknown']}; the series stored in the profile is used instead."
-            return f"{self._host.renderer}\n{self._host.label} — {HOW[self._how]}."
-        if mode == "preset":
-            return webgl.BY_KEY[self._series].renderer
-        if problem := self.problem():
+        if mode == "custom" and (problem := self.problem()):
             return problem
-        v = self.value()
-        notes = check_webgl_mode("custom", v["webgl_vendor"], v["webgl_renderer"])
-        base = webgl.resolve("custom", custom_renderer=v["webgl_renderer"])
-        text = f"{v['webgl_renderer']}\nwith the limits and extensions of: {base.label}"
-        return text + "".join(f"\n{note.message}" for note in notes)
+        told = self._told()
+        if mode == "custom":
+            v = self.value()
+            notes = check_webgl_mode("custom", v["webgl_vendor"], v["webgl_renderer"])
+            text = f"{told.unmasked}\nwith the limits and extensions of: {told.series.label}"
+            return text + "".join(f"\n{note.message}" for note in notes)
+        if mode == "host":
+            card = self._host_card or "this machine's card (model not measured yet — run Setup)"
+        else:
+            card = told.card
+        if told.exact:
+            return f"{told.masked}\nand in the debug field, the exact model:\n{told.unmasked}"
+        return (
+            f"{told.unmasked}\n\n"
+            f"Why not “{card}”? Firefox never shows the exact model. It reports this "
+            f"same text for {told.series.covers} — a real one on Windows reads exactly "
+            "like this."
+        )
 
 
 def describe_graphics(profile, fp) -> str:
-    """What this profile reports as its GPU, for a details row."""
+    """What this profile reports as its graphics card, for a details row."""
     label = dict(WEBGL_MODES)[profile.webgl]
-    if profile.webgl in ("off", "raw"):
+    told = webgl_report(fp, profile)
+    if told is None:
         return label
-    series = webgl_series(fp, profile)
-    renderer = webgl_config(fp, profile).get("webGl:renderer", "")
-    return f"{label}: {series.label if series else '?'}\n{renderer}"
+    card = f" ({told.card})" if told.card else ""
+    text = f"{label}{card}\nWebsites see: {told.masked}"
+    return text + (f"\nDebug field: {told.unmasked}" if told.exact else "")
 
 
 class NewProfileDialog(Adw.Dialog):
@@ -226,6 +277,13 @@ class NewProfileDialog(Adw.Dialog):
         self.form_row = Adw.ComboRow(title="Machine")
         self.form_row.set_model(Gtk.StringList.new(["(random)", "desktop", "laptop"]))
         identity.add(self.form_row)
+
+        self.language_row = Adw.ComboRow(
+            title="Browser language",
+            subtitle="the region's own Firefox, or an English one used there",
+        )
+        self.language_row.set_model(Gtk.StringList.new([label for _key, label in LANGUAGES]))
+        identity.add(self.language_row)
         page.add(identity)
 
         graphics = Adw.PreferencesGroup(
@@ -303,6 +361,7 @@ class NewProfileDialog(Adw.Dialog):
         form = ["(random)", "desktop", "laptop"][self.form_row.get_selected()]
         form = None if form.startswith("(") else form
         graphics = self.graphics.value()
+        language = LANGUAGES[self.language_row.get_selected()][0]
         mode = "resolver" if self.dns_row.get_selected() == 0 else "remote"
         upstream = sorted(dns.UPSTREAMS)[self.upstream_row.get_selected()]
 
@@ -322,7 +381,7 @@ class NewProfileDialog(Adw.Dialog):
                 engine_version=version,
                 country=probed,
                 form_factor=form,
-                series=graphics["webgl_series"],
+                series=graphics["webgl_series"],  # the chosen card's group
                 timezone=exit_info.timezone if exit_info else None,
             )
             issues = validate(fp, engine_version=version, exit_country=probed)
@@ -343,6 +402,7 @@ class NewProfileDialog(Adw.Dialog):
             )
             for field, value in graphics.items():
                 setattr(profile, field, value)
+            profile.language = language  # type: ignore[assignment]
             store.save(profile)
             return profile, exit_info
 
@@ -357,6 +417,11 @@ class NewProfileDialog(Adw.Dialog):
 
         worker.run(work, done, failed)
 
+
+LANGUAGES: list[tuple[str, str]] = [
+    ("local", "Local"),
+    ("english", "English"),
+]
 
 APPEARANCES: list[tuple[str, str]] = [
     ("host", "Follow this desktop"),
@@ -468,6 +533,14 @@ class ProfileEditor(Adw.Dialog):
         self.timezone_row = Adw.EntryRow(title="Timezone")
         self.timezone_row.set_text(fp.timezone)
         group.add(self.timezone_row)
+        self.language_row = _combo(
+            "Browser language",
+            [label for _key, label in LANGUAGES],
+            [key for key, _label in LANGUAGES].index(profile.language),
+            "the region's own Firefox, or an English one used there",
+        )
+        self.language_row.set_subtitle_lines(0)
+        group.add(self.language_row)
         page.add(group)
 
         # -------------------------------------------------------------- fonts
@@ -616,6 +689,7 @@ class ProfileEditor(Adw.Dialog):
 
         updates: dict[str, object] = {"name": name, **self.graphics.value()}
         updates["appearance"] = APPEARANCES[self.appearance_row.get_selected()][0]
+        updates["language"] = LANGUAGES[self.language_row.get_selected()][0]
         ua = self.ua_row.get_text().strip()
         updates["user_agent"] = ua if ua and ua != new.ua else None
         updates["dns"] = profile.dns.model_copy(

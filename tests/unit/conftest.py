@@ -22,6 +22,14 @@ def _hermetic(tmp_path, monkeypatch):
     )
     monkeypatch.setattr("kiwi_fox.core.desktop.prefers_dark", lambda: None)
 
+    def langpack(version, locale):  # never the network: a stand-in for Mozilla's file
+        pack = tmp_path / "langpacks" / version / f"{locale}.xpi"
+        pack.parent.mkdir(parents=True, exist_ok=True)
+        pack.write_bytes(f"langpack {locale} {version}".encode())
+        return pack
+
+    monkeypatch.setattr("kiwi_fox.core.engines.fetch.langpack", langpack)
+
 
 @pytest.fixture
 def fp():

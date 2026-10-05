@@ -682,3 +682,34 @@ def install_gl_helpers_from_mozilla(engine_dir: Path, version: str) -> list[str]
     if not installed:
         raise RepairError(f"firefox-{version} tarball contained none of {', '.join(missing)}")
     return installed
+
+
+# -------------------------------------------------------------- language packs
+LANGPACK_URL = "https://ftp.mozilla.org/pub/firefox/releases/{v}/linux-x86_64/xpi/{locale}.xpi"
+
+
+def langpack(version: str, locale: str) -> Path:
+    """Mozilla's own language pack for this engine version, fetched once.
+
+    The engine ships an English interface only. With the pack for its region a
+    profile *is* that localized Firefox — menus, built-in page texts such as form
+    validation messages, the default language list — instead of an English one
+    announcing another language. Measured: "Please fill out this field." becomes
+    "Vul dit veld in.".
+    """
+    import urllib.request
+
+    cached = paths.engines_dir() / "langpacks" / version / f"{locale}.xpi"
+    if cached.exists() and cached.stat().st_size > 0:
+        return cached
+    cached.parent.mkdir(parents=True, exist_ok=True)
+    url = LANGPACK_URL.format(v=version, locale=locale)
+    tmp = cached.with_suffix(".part")
+    try:
+        with urllib.request.urlopen(url, timeout=60) as resp, tmp.open("wb") as out:  # noqa: S310
+            shutil.copyfileobj(resp, out)
+    except Exception as exc:
+        tmp.unlink(missing_ok=True)
+        raise RepairError(f"could not download {url}: {exc}") from exc
+    tmp.replace(cached)
+    return cached

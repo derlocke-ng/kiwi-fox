@@ -313,10 +313,24 @@ _VENDOR, _RENDERER = "7936", "7937"
 MASKED_VENDOR = "Mozilla"  # constant in every Firefox
 
 
+def firefox_masked(renderer: str) -> str:
+    """Plain RENDERER for a given unmasked string: Firefox's own sanitiser over the
+    driver's wording, "Generic Renderer" where it recognises nothing."""
+    return sanitize_renderer(driver_string(renderer)) or "Generic Renderer"
+
+
 def engine_config(
-    series: Series, *, vendor: str | None = None, renderer: str | None = None
+    series: Series,
+    *,
+    vendor: str | None = None,
+    renderer: str | None = None,
+    masked: str | None = None,
 ) -> dict[str, object]:
     """Camoufox config keys for one series; the strings may be overridden.
+
+    `renderer` is the unmasked string, verbatim. `masked` is plain RENDERER and
+    defaults to what Firefox would make of it — the two differ only when the
+    unmasked one names an exact card.
 
     The unmasked strings go in `webGl:vendor`/`webGl:renderer` and deliberately
     *not* in the parameter table: the table is consulted before Firefox checks
@@ -326,13 +340,14 @@ def engine_config(
     rec = record(series)
     vendor = vendor or series.vendor
     renderer = renderer or series.renderer
+    masked = masked or firefox_masked(renderer)
     pinned = CAPABILITIES | PLATFORM_DEFAULTS
     out: dict[str, object] = {"webGl:vendor": vendor, "webGl:renderer": renderer}
     for ctx in ("webGl", "webGl2"):
         table = rec[f"{ctx}:parameters"]
         params = {k: v for k, v in table.items() if int(k) in pinned and v is not None}
         params[_VENDOR] = MASKED_VENDOR
-        params[_RENDERER] = renderer
+        params[_RENDERER] = masked
         out[f"{ctx}:parameters"] = dict(sorted(params.items(), key=lambda kv: int(kv[0])))
         out[f"{ctx}:supportedExtensions"] = list(rec[f"{ctx}:supportedExtensions"])
         out[f"{ctx}:shaderPrecisionFormats"] = dict(rec[f"{ctx}:shaderPrecisionFormats"])
@@ -374,6 +389,221 @@ def firefox_prefs(
         "webgl.override-unmasked-vendor": vendor or series.vendor,
         "webgl.override-unmasked-renderer": driver_string(renderer or series.renderer),
     }
+
+
+# ---------------------------------------------------------------------- cards
+class Card(NamedTuple):
+    """A real graphics card, by the name its Windows driver reports."""
+
+    name: str
+    where: str  # "desktop" | "laptop" | "integrated"
+
+    @property
+    def family(self) -> str:
+        low = self.name.lower()
+        return "nvidia" if "nvidia" in low else "intel" if "intel" in low else "amd"
+
+    @property
+    def short(self) -> str:
+        """Without the vendor boilerplate, for a list under a vendor heading."""
+        text = self.name
+        for junk in ("NVIDIA GeForce ", "AMD ", "Intel(R) ", "(R)", "(TM)"):
+            text = text.replace(junk, "")
+        return text.strip()
+
+    @property
+    def series(self) -> Series:
+        return series_for(exact_renderer(self.name))  # type: ignore[return-value]
+
+
+def _cards(where: str, *names: str) -> tuple[Card, ...]:
+    return tuple(Card(name, where) for name in names)
+
+
+# People think in cards, so this is what is offered to choose from. What a page
+# is told is the card's *series* — tests check every one of these resolves to a
+# series there is a record for. Newest first within each group.
+CARDS: tuple[Card, ...] = (
+    *_cards(
+        "desktop",
+        "NVIDIA GeForce RTX 4090",
+        "NVIDIA GeForce RTX 4080 SUPER",
+        "NVIDIA GeForce RTX 4070 Ti",
+        "NVIDIA GeForce RTX 4070",
+        "NVIDIA GeForce RTX 4060 Ti",
+        "NVIDIA GeForce RTX 4060",
+        "NVIDIA GeForce RTX 3080",
+        "NVIDIA GeForce RTX 3070",
+        "NVIDIA GeForce RTX 3060 Ti",
+        "NVIDIA GeForce RTX 3060",
+        "NVIDIA GeForce RTX 3050",
+        "NVIDIA GeForce RTX 2070 SUPER",
+        "NVIDIA GeForce RTX 2060",
+        "NVIDIA GeForce GTX 1660 SUPER",
+        "NVIDIA GeForce GTX 1650",
+        "NVIDIA GeForce GTX 1080 Ti",
+        "NVIDIA GeForce GTX 1070",
+        "NVIDIA GeForce GTX 1060 6GB",
+        "NVIDIA GeForce GTX 1050 Ti",
+        "NVIDIA GeForce GTX 970",
+        "NVIDIA GeForce GTX 960",
+        "NVIDIA GeForce GTX 780",
+        "NVIDIA GeForce GTX 750 Ti",
+        "NVIDIA GeForce GT 730",
+    ),
+    *_cards(
+        "laptop",
+        "NVIDIA GeForce RTX 4070 Laptop GPU",
+        "NVIDIA GeForce RTX 4060 Laptop GPU",
+        "NVIDIA GeForce RTX 4050 Laptop GPU",
+        "NVIDIA GeForce RTX 3060 Laptop GPU",
+        "NVIDIA GeForce RTX 3050 Laptop GPU",
+        "NVIDIA GeForce GTX 1650 Ti",
+    ),
+    *_cards(
+        "desktop",
+        "AMD Radeon RX 7900 XT",
+        "AMD Radeon RX 7800 XT",
+        "AMD Radeon RX 7600",
+        "AMD Radeon RX 6800 XT",
+        "AMD Radeon RX 6700 XT",
+        "AMD Radeon RX 6600 XT",
+        "AMD Radeon RX 6600",
+        "AMD Radeon RX 5700 XT",
+        "Radeon RX 580 Series",
+        "Radeon RX 570 Series",
+    ),
+    *_cards(
+        "integrated",
+        "AMD Radeon 780M Graphics",
+        "AMD Radeon(TM) 680M",
+        "AMD Radeon(TM) 660M",
+        "AMD Radeon(TM) Vega 8 Graphics",
+        "AMD Radeon(TM) Graphics",
+        "Intel(R) Iris(R) Xe Graphics",
+        "Intel(R) UHD Graphics",
+        "Intel(R) UHD Graphics 770",
+        "Intel(R) UHD Graphics 730",
+        "Intel(R) UHD Graphics 630",
+        "Intel(R) UHD Graphics 620",
+        "Intel(R) Iris(R) Plus Graphics 640",
+        "Intel(R) HD Graphics 630",
+        "Intel(R) HD Graphics 620",
+        "Intel(R) HD Graphics 530",
+        "Intel(R) HD Graphics 520",
+    ),
+)
+
+
+def exact_renderer(card: str) -> str:
+    """The unsanitised string a Windows driver reports for a card, through ANGLE."""
+    low = card.lower()
+    family = (
+        "nvidia" if "nvidia" in low or "geforce" in low else "intel" if "intel" in low else "amd"
+    )
+    angle = {"nvidia": "NVIDIA", "intel": "Intel", "amd": "AMD"}[family]
+    return f"ANGLE ({angle}, {card} Direct3D11 vs_5_0 ps_5_0, {_DRIVER[family]})"
+
+
+BY_NAME = {card.name: card for card in CARDS}
+
+
+def _plain(text: str) -> str:
+    return " ".join(text.lower().replace("(r)", "").replace("(tm)", "").split())
+
+
+def find_card(query: str) -> Card:
+    """A card from what a person typed: "rtx 4060", "UHD 620", "iris xe"."""
+    if query in BY_NAME:
+        return BY_NAME[query]
+    wanted = _plain(query)
+    words = wanted.split()
+    if not words:
+        raise ValueError("which card? `kiwi-fox gpus` lists them")
+    exact = [c for c in CARDS if wanted in (_plain(c.name), _plain(c.short))]
+    hits = exact or [c for c in CARDS if all(w in _plain(c.short).split() for w in words)]
+    if not hits:
+        raise ValueError(f"no card matches {query!r}; `kiwi-fox gpus` lists them")
+    # "RX 6600" also fits "RX 6600 XT": the name with nothing extra is the one meant.
+    hits.sort(key=lambda c: len(c.short.split()))
+    if len(hits) == 1 or len(hits[0].short.split()) < len(hits[1].short.split()):
+        return hits[0]
+    raise ValueError(
+        f"{query!r} matches several cards: " + ", ".join(c.short for c in hits[:6]) + " …"
+    )
+
+
+_MESA_TAIL = re.compile(r"(\s\(.*\)|/PCIe?/SSE2)\s*$")
+_AMD_TM = re.compile(r"^AMD Radeon (Graphics|\d{3}M)\b")
+
+
+def windows_name(renderer: str) -> str:
+    """A Linux driver's renderer string, as the Windows driver names the same card."""
+    name = _MESA_TAIL.sub("", renderer).removeprefix("Mesa ").strip()
+    return _AMD_TM.sub(lambda m: f"AMD Radeon(TM) {m.group(1)}", name)
+
+
+def host_card() -> str | None:
+    """The card this machine really draws on, if it has been measured."""
+    from .. import gpu
+
+    seen = gpu.measurement() or {}
+    renderer = seen.get("renderer") if seen.get("accelerated") else None
+    return windows_name(renderer) if isinstance(renderer, str) and renderer else None
+
+
+class Report(NamedTuple):
+    """What a page is told about the graphics card, for one profile."""
+
+    series: Series
+    card: str | None  # the card this stands for, in the driver's words
+    vendor: str  # UNMASKED_VENDOR_WEBGL
+    unmasked: str  # UNMASKED_RENDERER_WEBGL
+    masked: str  # plain RENDERER
+
+    @property
+    def exact(self) -> bool:
+        return self.unmasked != self.masked
+
+
+def report(
+    mode: Mode,
+    *,
+    stored_renderer: str | None = None,
+    series_key: str | None = None,
+    card: str | None = None,
+    exact: bool = False,
+    custom_vendor: str | None = None,
+    custom_renderer: str | None = None,
+) -> Report | None:
+    """Resolve a profile's choice. None for "off" and "raw": nothing is reported.
+
+    Firefox sanitises every renderer to its series, for plain RENDERER always and
+    for the debug extension by default. So a card and its series are the same
+    thing to a page — unless `exact`, which reproduces a Firefox whose
+    webgl.sanitize-unmasked-renderer was switched off: the debug extension names
+    the card, plain RENDERER still names the series.
+    """
+    if mode in ("off", "raw"):
+        return None
+    if mode == "custom":
+        series = resolve("custom", stored_renderer=stored_renderer, custom_renderer=custom_renderer)
+        assert series is not None
+        unmasked = custom_renderer or series.renderer
+        return Report(
+            series, None, custom_vendor or series.vendor, unmasked, firefox_masked(unmasked)
+        )
+    if mode == "host":
+        card = host_card()
+        series = resolve("host", stored_renderer=stored_renderer, series_key=series_key)
+    else:
+        from_card = series_for(exact_renderer(card)) if card else None
+        series = from_card or resolve(
+            "preset", stored_renderer=stored_renderer, series_key=series_key
+        )
+    assert series is not None
+    unmasked = exact_renderer(card) if exact and card else series.renderer
+    return Report(series, card, series.vendor, unmasked, series.renderer)
 
 
 # ------------------------------------------------------------------- the host

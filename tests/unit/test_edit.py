@@ -141,3 +141,57 @@ def test_fonts_lists_what_a_profile_has(stored, fp, capsys):
     out = capsys.readouterr().out
     assert all(name in out for name in edit.optional_fonts())
     assert out.count("[x]") == len(set(fp.fonts) & set(edit.optional_fonts()))
+
+
+# -------------------------------------------------------------------- language
+def test_language_lists_are_the_ones_firefox_ships():
+    # From Firefox's own table (intl/locale/rust/locale_service_glue, 156.0.1).
+    expect = {
+        "DE": ["de", "en-US", "en"],
+        "AT": ["de", "en-US", "en"],  # there is no de-AT Firefox
+        "NL": ["nl", "en-US", "en"],
+        "SE": ["sv-SE", "sv", "en-US", "en"],
+        "FR": ["fr", "fr-FR", "en-US", "en"],
+        "FI": ["fi-FI", "fi", "en-US", "en"],
+        "NO": ["nb-NO", "nb", "no-NO", "no", "nn-NO", "nn", "en-US", "en"],
+        "CZ": ["cs", "sk", "en-US", "en"],
+        "GB": ["en-GB", "en"],
+        "US": ["en-US", "en"],
+        "CA": ["en-CA", "en-US", "en"],
+    }
+    for country, languages in expect.items():
+        assert list(w11.REGIONS[country].languages) == languages, country
+    for region in w11.REGIONS.values():
+        assert region.languages[0].split("-")[0] == region.locale.split("-")[0], region.country
+
+
+def test_which_firefox_build_a_region_runs():
+    builds = {c: w11.firefox_build(r.locale) for c, r in w11.REGIONS.items()}
+    assert builds["DE"] == builds["AT"] == builds["CH"] == "de"
+    assert (builds["FI"], builds["IT"], builds["SE"], builds["NO"]) == (
+        "fi",
+        "it",
+        "sv-SE",
+        "nb-NO",
+    )
+    assert builds["GB"] == builds["IE"] == "en-GB" and builds["US"] == "en-US"
+    assert w11.firefox_build("xx-XX") == "en-US"
+
+
+def test_accept_language_is_written_the_way_firefox_156_writes_it():
+    # the two examples in rust_prepare_accept_languages' own comment
+    assert w11.accept_language_for(["en", "ja"]) == "en,ja;q=0.9"
+    assert w11.accept_language_for(["en", "ja", "fr_CA"]) == "en,ja;q=0.9,fr_CA;q=0.8"
+    assert w11.accept_language_for(list(w11.REGIONS["NO"].languages)).endswith(
+        "en-US;q=0.4,en;q=0.3"
+    )
+    assert w11.accept_language_for([f"l{i}" for i in range(13)]).endswith(
+        "l10;q=0.1,l11;q=0.1,l12;q=0.1"
+    )
+
+
+def test_old_profiles_announce_the_firefox_list_not_the_one_they_stored():
+    old = ["de-DE", "de", "en-US", "en"]  # what earlier versions generated
+    assert w11.browser_languages("de-DE", old) == ["de", "en-US", "en"]
+    assert w11.browser_languages("de-DE", old, "english") == ["en-US", "en"]
+    assert w11.browser_languages("xx-XX", ["xx-XX", "xx"]) == ["xx-XX", "xx"]

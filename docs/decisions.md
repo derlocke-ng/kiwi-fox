@@ -101,6 +101,21 @@ randomisation. Per-call jitter is what noise detection catches.
 `media.navigator.enabled=false`, `browser.display.use_document_fonts=0` are each
 detectable by their absence and shrink the population to one.
 
+**Offer cards, report groups.** People think in cards ("my 4060"), Firefox reports
+groups ("GTX 980, or similar"). A list of six group names was correct and read as
+broken: the user's card was not on it and something older was shown instead. So the
+choice is a card, and every place that shows it also shows the text Firefox turns it
+into and says that Firefox does the turning. Naming the exact model is possible in
+one field and is a switch, off by default, because only a reconfigured Firefox does
+it.
+
+**A profile is a localized Firefox, not an English one with a foreign header.**
+Stock Firefox derives `Accept-Language`, `navigator.languages`, the `Intl` locale and
+its own strings from one build language; setting them one by one produced a
+combination no build has. Now the region decides the build, Mozilla's language pack
+makes the browser that build, and Firefox derives the rest. "English Firefox abroad"
+is the second option because it is also a thing real people run.
+
 ## Host integration
 
 **The browser container runs with `label=disable`.** The Wayland socket cannot be

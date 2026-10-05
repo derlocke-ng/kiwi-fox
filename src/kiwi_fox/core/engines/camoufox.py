@@ -95,7 +95,17 @@ class Camoufox:
             # Camoufox spoofs in C++. These would add their own tells.
             "privacy.resistFingerprinting": False,
             "privacy.fingerprintingProtection": False,
-            "intl.accept_languages": fp.accept_language,
+            # Dates and numbers follow the operating system's region, as they do
+            # for a Firefox whose own language matches it. This engine's UI is
+            # always English, so without this a Dutch profile formatted like the
+            # US. Off for "english": an English Firefox abroad really does that.
+            "intl.regional_prefs.use_os_locales": profile.language == "local",
+            # Which interface language to run. The region's own, when its language
+            # pack is in the profile (launch.install_langpack); Firefox falls back
+            # to English by itself when it is not.
+            "intl.locale.requested": w11.firefox_build(fp.locale)
+            if profile.language == "local"
+            else "en-US",
             # Rendering. With the render node passed through we want real
             # hardware GL: software-rendering performance against a claimed
             # discrete GPU is one of our documented residual tells, so
@@ -113,11 +123,12 @@ class Camoufox:
             # Our userChrome.css undoes Camoufox's minimalistic chrome. The cfg
             # already defaults this on; set it explicitly so it cannot drift.
             "toolkit.legacyUserProfileCustomizations.stylesheets": True,
-            # Measured 0 — GTK overlay scrollbars. Windows reports ~17px for
-            # offsetWidth-clientWidth, and a 0px scrollbar is a Linux giveaway.
-            "widget.non-native-theme.scrollbar.size": 17,
+            # Overlay scrollbars, which take no layout width: what Firefox uses on
+            # Windows 11 by default (WindowsUIUtils::ComputeOverlayScrollbars). An
+            # earlier pin to "17px like Windows" was right only for Windows 10 and
+            # came out as 12, which is neither.
             "widget.non-native-theme.enabled": True,
-            "widget.gtk.overlay-scrollbars.enabled": False,
+            "widget.gtk.overlay-scrollbars.enabled": True,
             # camoufox.cfg sets "never"; "newtab" is the Firefox default.
             "browser.toolbars.bookmarks.visibility": "newtab",
             # The engine ships a customised toolbar layout — its dirtyAreaCache
@@ -177,16 +188,12 @@ class Camoufox:
             "navigator.platform": fp.platform,
             "navigator.oscpu": fp.oscpu,
             "navigator.hardwareConcurrency": fp.hardware_concurrency,
-            "navigator.language": fp.locale,
-            # Inert at the pinned tag, measured by setting each to an absurd value:
-            # the page still saw the list from locale:all and Firefox's own frozen
-            # build id. Kept because they say what is reported anyway. Not emitted
-            # at all: navigator.maxTouchPoints, which is inert too and would claim
-            # a touchscreen the page never sees.
-            "navigator.languages": fp.languages,
+            # navigator.language(s) and the Accept-Language header are not set
+            # here: the engine is handed the list (locale:all) and Firefox derives
+            # all three itself, in its own format. navigator.maxTouchPoints is not
+            # set either — no patch read it on 152.
             "navigator.buildID": fp.build_id,
             "headers.User-Agent": ua,
-            "headers.Accept-Language": fp.accept_language,
             "screen.width": s.width,
             "screen.height": s.height,
             "screen.availWidth": s.avail_width,
@@ -209,7 +216,9 @@ class Camoufox:
             # navigator.languages came back as a single entry until this was set:
             # the engine derives the list from locale:*, not from
             # navigator.languages, and a one-entry list is unusual in itself.
-            "locale:all": ",".join(fp.languages),
+            "locale:all": ",".join(
+                w11.browser_languages(fp.locale, fp.languages, profile.language)
+            ),
             "fonts": fp.fonts,
             "fonts:spacing_seed": fp.font_spacing_seed,
             # Inert at the pinned tag (measured: two seeds and no seed give the
@@ -412,38 +421,38 @@ def user_js(prefs: dict[str, object]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def webgl_series(fp: Fingerprint, profile: Profile) -> webgl.Series | None:
-    """The GPU series this profile is launched as; None for "off" and "raw"."""
-    if profile.webgl in ("off", "raw"):
-        return None
-    return webgl.resolve(
+def webgl_report(fp: Fingerprint, profile: Profile) -> webgl.Report | None:
+    """What this profile tells pages about the graphics card; None: nothing."""
+    return webgl.report(
         profile.webgl,
         stored_renderer=fp.webgl.renderer,
         series_key=profile.webgl_series,
+        card=profile.webgl_card,
+        exact=profile.webgl_exact,
+        custom_vendor=profile.webgl_vendor,
         custom_renderer=profile.webgl_renderer,
     )
 
 
+def webgl_series(fp: Fingerprint, profile: Profile) -> webgl.Series | None:
+    told = webgl_report(fp, profile)
+    return told.series if told else None
+
+
 def webgl_config(fp: Fingerprint, profile: Profile) -> dict[str, object]:
-    series = webgl_series(fp, profile)
-    if series is None:
+    told = webgl_report(fp, profile)
+    if told is None:
         return {}
-    if profile.webgl == "custom":
-        return webgl.engine_config(
-            series, vendor=profile.webgl_vendor, renderer=profile.webgl_renderer
-        )
-    return webgl.engine_config(series)
+    return webgl.engine_config(
+        told.series, vendor=told.vendor, renderer=told.unmasked, masked=told.masked
+    )
 
 
 def webgl_prefs(fp: Fingerprint, profile: Profile) -> dict[str, object]:
-    series = webgl_series(fp, profile)
-    if series is None:
+    told = webgl_report(fp, profile)
+    if told is None:
         return {}
-    if profile.webgl == "custom":
-        return webgl.firefox_prefs(
-            series, vendor=profile.webgl_vendor, renderer=profile.webgl_renderer
-        )
-    return webgl.firefox_prefs(series)
+    return webgl.firefox_prefs(told.series, vendor=told.vendor, renderer=told.unmasked)
 
 
 def _media_devices(fp: Fingerprint) -> dict[str, object]:

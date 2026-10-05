@@ -153,6 +153,13 @@ class Profile(Strict):
     #           Windows user agent; it exists to measure the host and for testing.
     webgl: Literal["host", "preset", "custom", "off", "raw"] = "preset"
     webgl_series: str | None = None
+    # preset: the card that was chosen, by its Windows driver name. What a page
+    # is told is the card's series; the name is kept so the choice can be shown
+    # again, and for `webgl_exact`.
+    webgl_card: str | None = None
+    # host/preset: let the debug extension name the exact card instead of its
+    # series. Real Firefox does that only with a hidden setting changed.
+    webgl_exact: bool = False
     webgl_vendor: str | None = None
     webgl_renderer: str | None = None
     # Light or dark, for the browser's own chrome and for what pages are told
@@ -160,6 +167,11 @@ class Profile(Strict):
     # read at each launch — which is what stock Firefox does, and what it cannot
     # do by itself from inside a container.
     appearance: Literal["host", "light", "dark"] = "host"
+    # Which Firefox this is, language-wise. "local": the build for the profile's
+    # region, announcing that build's own language list and formatting dates the
+    # local way. "english": an English Firefox used there — "en-US, en", US formats
+    # unless the region is English-speaking. See windows11.browser_languages.
+    language: Literal["local", "english"] = "local"
     # Replaces the user agent in navigator and in the request header. None is the
     # engine's own: stock Firefox of its version, on Windows.
     user_agent: str | None = None

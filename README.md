@@ -54,29 +54,55 @@ the same user agent on Windows 10 and 11.
 
 ## Graphics
 
-Firefox never tells a page which graphics card you have — only the *series* it
-belongs to, and an RTX 4090 and a GTX 1650 are the same series. So that is what a
-profile reports, and what you choose from:
+Firefox does not tell a page which graphics card you have. It reports the *group*
+the card is in, with the same text for every card in the group — an RTX 4060 on
+real Windows reads `ANGLE (NVIDIA, NVIDIA GeForce GTX 980 Direct3D11 vs_5_0
+ps_5_0), or similar`, and so do a GTX 1650 and an RTX 4090. That text is what a
+profile reports, and you choose the card it is derived from:
 
 ```
-kiwi-fox gpus                                    # the six series, with real-world share
-kiwi-fox new work ENDPOINT                       # default: the series this machine really has
-kiwi-fox new work ENDPOINT --series "RTX 3060"   # any card name; you get the series it is in
-kiwi-fox webgl work --series intel-hd            # change it later; applies at the next launch
-kiwi-fox webgl work --mode off                   # no WebGL at all
+kiwi-fox gpus                                # every card, grouped by what Firefox shows for it
+kiwi-fox new work ENDPOINT                   # default: the card this machine really has
+kiwi-fox new work ENDPOINT --card "RTX 3060" # another card
+kiwi-fox webgl work --card "UHD 620"         # change it later; applies at the next launch
+kiwi-fox webgl work --exact                  # also name the exact model (see below)
+kiwi-fox webgl work --mode off               # no WebGL at all
 ```
 
-Also `--mode custom` with your own `--vendor`/`--renderer`, and `--mode raw` to
-spoof nothing. `docs/detection-notes.md` says what each mode reports and what none
-of them can change.
+| Setting | A page sees |
+| --- | --- |
+| My graphics card (`host`, default) | this machine's card, worded the way Firefox on Windows words it |
+| Another graphics card (`preset`) | the card you picked, worded the same way |
+| Custom text (`custom`) | your own `--vendor` / `--renderer` |
+| No WebGL (`off`) | no WebGL context; rare on Windows |
+| Unchanged (`raw`) | nothing rewritten: Linux wording and limits under a Windows browser. For measuring and testing only |
+
+**Show the exact model** (`--exact`) puts the card's own name into the one field
+that can carry it (`UNMASKED_RENDERER_WEBGL`). Stock Firefox only does that with a
+hidden setting changed, so it is the rarer choice; the main renderer field keeps
+the group text either way, because Firefox itself writes it.
+
+Whatever a profile claims, the frames are drawn by the GPU this machine has.
 
 The browser has to draw on a real GPU: frames drawn in software are how a virtual
 machine looks, whatever the profile says. `kiwi-fox doctor` measures it with the
 engine's own probe and says which GPU it got, or that it got none. Where the
 desktop runs on an NVIDIA card with the proprietary driver, that driver is brought
-into the container by `nvidia-container-toolkit` (CDI); without it kiwi-fox falls
-back to another GPU if there is one. `KIWI_FOX_GPU=mesa|nvidia|software` overrides
-the choice.
+into the container by `nvidia-container-toolkit` (CDI). Without it a second GPU is
+tried if the machine has one, and the measurement says whether that worked.
+`KIWI_FOX_GPU=mesa|nvidia|software` overrides the choice.
+
+## Language
+
+A profile is the Firefox of its region: a Dutch profile is a Dutch Firefox, with
+Dutch menus, Dutch form messages, `nl, en-US, en` as its languages and Dutch date
+formats — the list and the `Accept-Language` header are the ones that build of
+Firefox ships with. The language pack comes from Mozilla on first launch.
+
+```
+kiwi-fox set work --language english    # an English Firefox used in that region
+kiwi-fox set work --language local      # back to the region's own
+```
 
 ## How a profile is isolated
 
