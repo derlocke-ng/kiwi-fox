@@ -38,9 +38,14 @@ anyone else.
 
 ## Varies per profile
 
-Screen and avail geometry, DPR, core count, AudioContext sample rate, the audio and
-font-spacing seeds, the font set including families that appear on real probe
-lists, speech voices, media device counts, locale, timezone and `Accept-Language`.
+Core count, AudioContext sample rate, the audio seed, speech voices, media device
+counts, locale, timezone and `Accept-Language`.
+
+**Screen and fonts do not vary unless you choose so** (since 0.1.3). A new profile
+claims 1920x1080 at 100% and has the Windows 11 core font set with nothing added.
+Both used to be drawn per profile, on the idea that profiles should differ in what
+is measured. In use that lost to a simpler rule: rare values get flagged, common
+ones do not. See "What came back clean" below.
 
 **Graphics** vary only if you choose so. A profile is given a *card* — this
 machine's own by default, or one from `kiwi-fox gpus` — and reports what Firefox
@@ -103,9 +108,76 @@ ps_5_0, D3D11-31.0.15.3623)` there and the group text in plain `RENDERER`, the
 combination such a Firefox produces (measured on 156). It is a real configuration
 and a rare one, so it is off by default.
 
-Verified against <https://neoprint.dev/demo/>: with font variation on the probed
-list, two profiles report unique `id`, `stableId` and `weightedId`.
-`crossBrowserId` matches, as expected.
+Verified against <https://neoprint.dev/demo/> at the time fonts were still drawn
+per profile: with font variation on the probed list, two profiles report unique
+`id`, `stableId` and `weightedId`; `crossBrowserId` matches, as expected. With
+the core set only (the default now), expect profiles that also share screen and
+GPU group to share more of those ids — that is the trade for not being flagged,
+and `kiwi-fox new --extra-fonts` or the editor brings the variation back.
+
+## The window
+
+Reported window sizes are real: the engine does not spoof `outerWidth`,
+`innerWidth` and friends. So the real window has to be one the claimed screen
+could hold.
+
+Until 0.1.2 it was not, and the cause was in the engine. Its `browser-init.js`
+runs `window.resizeTo(1280, 1040)` on every start, whatever the profile saved;
+the size kiwi-fox seeded into `xulstore.json` never held, and a window the user
+resized came back at 1280x1040 the next time. Counting GTK's shadow that window
+reports `outerHeight` 1092, and a profile claiming 1920x1080 has 1032 usable:
+**a window taller than its own screen** on every launch, until resized by hand.
+
+From 156 the engine takes `window.outerWidth` / `window.outerHeight` and resizes
+the real window to them at startup (without pinning the content, which is what
+`window.inner*` does and why those are never sent). kiwi-fox sends the size the
+window was left at, else what Firefox's own first-window rule gives on the claimed
+screen (90% of the usable area, at most 1280x1040), and in both cases no more than
+the claimed screen holds once the 52 px of shadow are counted. Measured, real
+browser, 156.0.1:
+
+| Claimed screen | Asked | Page reads outer / inner |
+| --- | --- | --- |
+| 1920x1080 (1032 usable) | 1280x928 (default) | 1332x980 / 1280x843 |
+| 1920x1080 | 1424x733 (as left) | 1476x785 / 1424x648 |
+| 1920x1080 | left at 1900x1040, fitted to 1868x980 | 1868x980 / 1816x843 |
+| 2560x1440 | 1280x1040 | 1332x1092 / 1280x955 |
+| 1536x864 at 125% | 1280x734 | 1332x786 / 1280x649 |
+| 1366x768 | 1229x648 | 1281x700 / 1229x563 |
+
+Two saved states make that startup resize leave a window about 500x200, both
+reproduced: no saved size on a small claimed screen (Firefox's first-run rule
+maximises, the engine un-maximises and then asks for the size the window nominally
+already has), and a window the user left maximised. So before each launch the saved
+state is rewritten to "this size, not maximised".
+
+Not solved: a window the user maximises *during* a session is as large as the real
+monitor's work area. On a 1920x1080 panel under GNOME that is 1048 tall against a
+claimed 1032.
+
+## What came back clean
+
+Reported from use against fingerprint.com on a hybrid NVIDIA laptop, engine 156,
+October 2026 — observations, not controlled experiments:
+
+- Profiles with **no optional fonts** drew fewer "tampering" and "virtual machine"
+  flags than profiles with a drawn set of extras. Checked afterwards: with extras a
+  page can measure exactly the claimed families, no more (one exception, below), so
+  the set was coherent — it was just unusual.
+- **1920x1080** worked best, as in every earlier test: each other resolution on the
+  list has been flagged at least once.
+- A window **resized smaller** by hand worked better than the one the browser
+  opened with. That is the too-tall window above.
+- **No WebGL** raises a spoofing flag by itself.
+- The **GTX 900+ group and the AMD APU group** came back clean. "My graphics card"
+  was reported as flagged as a virtual machine — but on that machine it produces
+  the *identical* container, config and prefs as the GTX 980 preset (diffed, 0.1.1
+  and 0.1.2), so the setting cannot be the cause; the profiles compared also
+  differed in fonts and window. Not yet re-tested with only that setting changed.
+
+Found on the way: a profile given "Lato" cannot be seen to have it. The files are
+in the image and fontconfig lists them, but no page measurement detects the family.
+Open.
 
 ## Language
 
@@ -138,8 +210,9 @@ region — `en-US, en`, English strings, US formats, the region's timezone.
   where ANGLE on Windows gives `2147483647`.
 - Window chrome. `outerWidth − innerWidth` and `outerHeight − innerHeight` are
   52 × 137 for an unmaximised window, because GTK counts its client-side shadow
-  as part of the window; Windows gives about 16 × 90. Any window *size* is fine —
-  people resize all the time — and a maximised window has no shadow.
+  as part of the window; Windows gives about 16 × 90. A maximised window has no
+  shadow (0 × 85). And `screenX`/`screenY` are always 0: Wayland does not tell a
+  client where its window is.
 - The frame itself. `readPixels` output is this machine's GPU and driver whatever
   card the profile names.
 - `WEBGL_provoking_vertex` is listed because Windows has it; on a host whose Mesa
@@ -149,11 +222,11 @@ region — `en-US, en`, English strings, US formats, the region's timezone.
 
 ## Open
 
-- fingerprint.com, on a hybrid NVIDIA laptop with engine 156. While the browser
-  drew in software it raised "virtual machine", with WebGL on and off. At 0.1.1,
-  drawing on the GPU with the default graphics setting, the flag reported was
-  "tampering". The language and scrollbar mismatches above were found and fixed
-  after that; whether either flag is raised now has not been re-run. If tampering
-  still is, the stencil masks and the window chrome are the next suspects.
+- fingerprint.com with everything above in place (0.1.3 defaults: 1080p, core
+  fonts, a window that fits, language pack) has not been run yet.
+- Whether "My graphics card" is really treated differently from the identical
+  GTX 980 preset: flip that one setting on a profile that is otherwise clean.
+- Stencil mask defaults on 156, and the window-chrome deltas, are the known
+  remaining differences from a real Windows Firefox.
 - The new-tab button sits in the nav-bar because of the engine's built-in default
   placement, below the data layer the tweaks can reach.

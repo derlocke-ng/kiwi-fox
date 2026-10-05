@@ -111,7 +111,13 @@ def check_webgl_mode(
 
 def check_window_fits(fp: Fingerprint) -> list[Issue]:
     """Any window size is normal — people resize all the time. A window *larger
-    than the screen the profile claims* is the one case a page can notice."""
+    than the screen the profile claims* is the one case a page can notice.
+
+    Only engines before 156 can get there: they open a fixed window. Later ones
+    are told a size that fits (`windows11.window_size`).
+    """
+    if w11.engine_sizes_window(fp.engine_version):
+        return []
     height = w11.host_window_height()
     if height <= fp.screen.avail_height:
         return []
@@ -376,29 +382,33 @@ def _check_prefs(prefs: dict[str, object], allowed: set[str]) -> list[Issue]:
 
 
 def validate_against(fp: Fingerprint, others: list[Fingerprint]) -> list[Issue]:
-    """Two profiles sharing a machine-identifying value defeat the point."""
+    """Two profiles sharing a value that identifies a machine defeat the point.
+
+    Sharing a *common* value does not. The same GPU group and a 1920x1080 screen
+    is what a large share of all Windows machines report, and the bare Windows
+    font set is what every fresh install has; warning about those pushed
+    profiles towards rarer values, which is what detectors flag.
+    """
+    from . import fonts as font_catalogue
+
     out: list[Issue] = []
-    fonts = machine = 0
+    same_fonts = 0
+    stock = set(font_catalogue.all_core_families())
     for other in others:
         if other.seed == fp.seed:
             out.append(_err("dup.seed", "another profile has the same seed"))
             continue
-        fonts += other.fonts == fp.fonts
-        machine += other.webgl.renderer == fp.webgl.renderer and other.screen == fp.screen
+        same_fonts += other.fonts == fp.fonts and set(fp.fonts) != stock
         if other.canvas_seed == fp.canvas_seed:
             out.append(_err("dup.canvas", "another profile has the same canvas seed"))
-
-    # Once each, with a count: ten profiles used to print the same line nine times.
-    def many(n: int) -> str:
-        return "another profile" if n == 1 else f"{n} other profiles"
-
-    if fonts:
-        verb = "exposes" if fonts == 1 else "expose"
-        out.append(_warn("dup.fonts", f"{many(fonts)} {verb} the identical font set"))
-    if machine:
-        verb = "has" if machine == 1 else "have"
+    if same_fonts:
+        # Once, with a count: ten profiles used to print the same line nine times.
+        who = "another profile has" if same_fonts == 1 else f"{same_fonts} other profiles have"
         out.append(
-            _warn("dup.machine", f"{many(machine)} {verb} the same GPU string and screen block")
+            _warn(
+                "dup.fonts",
+                f"{who} the identical set of optional fonts, which is rare enough to link them",
+            )
         )
     return out
 

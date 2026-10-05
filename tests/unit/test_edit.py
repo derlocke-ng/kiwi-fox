@@ -96,7 +96,18 @@ def test_an_unmeasured_host_only_gets_screens_its_window_fits(monkeypatch):
         assert check_window_fits(fp) == []
     w11.remember_host_window_height(768)  # a small real monitor: smaller screens fit too
     heights = {generate(engine_version=ENGINE, seed=f"m{i}").screen.height for i in range(200)}
-    assert {1080, 1440} <= heights
+    assert heights == {1080}, "and then it is the one screen that never got flagged"
+
+
+def test_from_156_the_window_follows_the_screen_not_the_other_way_round():
+    # 156 opens the window at the size it is told, so nothing about the host's
+    # window limits which screen a profile may claim.
+    for i in range(60):
+        fp = generate(engine_version="156.0.1", seed=f"w{i}")
+        assert (fp.screen.width, fp.screen.height) == (1920, 1080)
+        assert check_window_fits(fp) == []
+    small = edit.with_screen(edit.with_form(fp, "laptop"), "1366x768")
+    assert check_window_fits(small) == []
 
 
 def test_a_window_taller_than_the_claimed_screen_is_pointed_out(fp):

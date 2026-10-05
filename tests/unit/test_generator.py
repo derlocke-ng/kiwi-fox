@@ -59,9 +59,25 @@ def test_screen_block_is_complete():
     assert s.width >= s.avail_width >= fp.window.outer_width >= fp.window.inner_width
 
 
-def test_font_set_varies_between_profiles():
-    sets = {tuple(generate(engine_version=ENGINE, seed=f"f{i}").fonts) for i in range(40)}
-    assert len(sets) > 1, "fonts are the per-profile lever; they must vary"
+def test_a_profile_has_the_windows_core_fonts_and_nothing_else_unless_asked():
+    # In use, profiles stripped to the core set drew fewer flags than the same
+    # profiles with a random set of extras. So that is what a new one gets.
+    from kiwi_fox.core.fingerprint import fonts
+
+    core = fonts.all_core_families()
+    for i in range(40):
+        assert generate(engine_version=ENGINE, seed=f"f{i}").fonts == core
+
+
+def test_extra_fonts_can_be_asked_for_and_then_vary():
+    from kiwi_fox.core.fingerprint import fonts
+
+    sets = {
+        tuple(generate(engine_version=ENGINE, seed=f"f{i}", extra_fonts=True).fonts)
+        for i in range(40)
+    }
+    assert len(sets) > 1
+    assert all(set(fonts.all_core_families()) < set(s) for s in sets)
 
 
 def test_fingerprint_round_trips_through_json():
@@ -89,7 +105,7 @@ def test_third_party_fonts_vary_and_are_the_probed_ones():
 
     sets = set()
     for i in range(40):
-        fp = generate(engine_version=ENGINE, seed=f"tp{i}")
+        fp = generate(engine_version=ENGINE, seed=f"tp{i}", extra_fonts=True)
         sets.add(tuple(f for f in fp.fonts if f in fonts.THIRD_PARTY))
     assert len(sets) > 1, "the fonts a fingerprinter probes for must differ per profile"
 

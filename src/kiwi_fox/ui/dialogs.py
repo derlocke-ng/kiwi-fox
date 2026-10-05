@@ -9,7 +9,7 @@ gi.require_version("Adw", "1")
 
 from gi.repository import Adw, Gtk  # noqa: E402
 
-from ..core import dns, launch, proxy, secrets, store  # noqa: E402
+from ..core import dns, geometry, launch, proxy, secrets, store  # noqa: E402
 from ..core.engines import fetch as engine_fetch  # noqa: E402
 from ..core.engines.camoufox import webgl_report  # noqa: E402
 from ..core.fingerprint import (  # noqa: E402
@@ -750,7 +750,9 @@ class ProfileDetails(Adw.Dialog):
         machine.add(
             _row("Screen", f"{fp.screen.width}x{fp.screen.height} @{fp.screen.device_pixel_ratio}")
         )
-        machine.add(_row("Window", f"{fp.window.outer_width}x{fp.window.outer_height}"))
+        window_row = _row("Window", geometry.describe(profile, fp))
+        window_row.set_subtitle_lines(0)
+        machine.add(window_row)
         machine.add(_row("Audio", f"{fp.audio.sample_rate} Hz"))
         machine.add(_row("Hardware rendering", "on" if profile.gpu_accel else "off"))
         machine.add(_row("Fonts", f"{len(fp.fonts)} families"))

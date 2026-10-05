@@ -7,7 +7,7 @@ import json
 import sys
 
 from . import __version__
-from .core import dns, gpu, launch, paths, podman, proxy, secrets, store
+from .core import dns, geometry, gpu, launch, paths, podman, proxy, secrets, store
 from .core.engines import fetch as engine_fetch
 from .core.fingerprint import edit, generate, validate, validate_against, webgl
 from .core.fingerprint import windows11 as w11
@@ -64,6 +64,7 @@ def cmd_new(a: argparse.Namespace) -> int:
         gpu_family=a.gpu_family,
         timezone=exit_timezone,
         seed=a.seed,
+        extra_fonts=a.extra_fonts,
     )
     issues = validate(fp, engine_version=version, exit_country=country)
     others = [
@@ -149,9 +150,7 @@ def cmd_show(a: argparse.Namespace) -> int:
     _p(
         f"  screen    {fp.screen.width}x{fp.screen.height} @{fp.screen.device_pixel_ratio}, avail {fp.screen.avail_width}x{fp.screen.avail_height}"
     )
-    _p(
-        f"  window    outer {fp.window.outer_width}x{fp.window.outer_height} inner {fp.window.inner_width}x{fp.window.inner_height}"
-    )
+    _p(f"  window    {geometry.describe(p, fp)}")
     for line in _webgl_lines(p, fp):
         _p(f"  {line}")
     _p(f"  audio     {fp.audio.sample_rate} Hz, seed {fp.audio.seed}")
@@ -833,6 +832,12 @@ def build_parser() -> argparse.ArgumentParser:
         default="host",
         help="light or dark, for the browser and for what pages are told; "
         "host (default) follows this desktop",
+    )
+    n.add_argument(
+        "--extra-fonts",
+        action="store_true",
+        help="also give the profile a random set of optional fonts; default is the "
+        "Windows core set only, which draws fewer flags (change later: set --font-add)",
     )
     n.add_argument("--seed", help="reproduce a previous identity")
     n.add_argument("--engine-version")

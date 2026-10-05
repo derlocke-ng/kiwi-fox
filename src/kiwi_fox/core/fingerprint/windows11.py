@@ -40,6 +40,9 @@ class ScreenPreset(NamedTuple):
 # only combinations that dominate real browser statistics, and 1.25 survives only
 # for 1536x864 — 1080p at 125%, the most common laptop report there is. Do not add
 # a resolution because the maths works; add it because real machines report it.
+# width, height, scale: the one screen that has never been flagged.
+COMMON_SCREEN = (1920, 1080, 1.0)
+
 SCREENS: list[ScreenPreset] = [
     # Only resolutions with a large real-world share. Narrowed twice after
     # fingerprint.com's "virtual machine" signal fired: 1280x800 @1.5,
@@ -298,20 +301,69 @@ SAMPLE_RATES = (44100, 48000)
 HOST_WINDOW_FILE = "host-window-height.txt"
 
 
-# What a fresh engine window reports as outerHeight: 1040, plus the invisible 26px
-# resize border GTK adds above and below on Wayland. The same on every host
-# measured. Until a probe has measured this machine, assume it — a machine nobody
-# has measured must not be treated as one where any screen fits.
+# ---------------------------------------------------------------------- window
+# Until 156 the engine opens every window at 1280x1040 and nothing can change
+# that, so the claimed screen has to be big enough to hold it. From 156 on the
+# engine sizes the real window from `window.outerWidth/outerHeight`
+# (browser-init.js: resizeTo, without pinning the content), so the window follows
+# the claim instead of the claim following the window.
+#
+# It also *always* runs `window.resizeTo(1280, 1040)` first, whatever the profile
+# saved. That is why a size seeded into xulstore.json never held, why a resized
+# window came back at 1280x1040 on the next start, and why a profile claiming
+# 1920x1080 reported a window 1092 tall on a screen with 1032 usable.
+def engine_sizes_window(engine_version: str) -> bool:
+    try:
+        return int(engine_version.split(".")[0]) >= 156
+    except ValueError:
+        return False
+
+
+# Firefox's own rule for a first window (browser-init.js): 90% of the usable
+# screen, at most this.
+FIRST_WINDOW = (1280, 1040)
+# GTK draws the window's shadow inside its own surface on Wayland and Firefox
+# counts it: asked for 1280x928, a page reads outer 1332x980 (measured, 156.0.1).
+WINDOW_SHADOW_PX = 52
+SMALLEST_WINDOW = (640, 480)
+
+
+def window_size(screen, saved: tuple[int, int] | None = None) -> tuple[int, int]:
+    """The size to open the browser window at, for a profile claiming `screen`.
+
+    What the user left it at last time if that still fits, else what a fresh
+    Firefox would pick on that screen. Either way no larger than the claimed
+    screen can hold once the shadow is counted: any window size is ordinary, a
+    window bigger than its own screen is not.
+    """
+    room = (screen.avail_width - WINDOW_SHADOW_PX, screen.avail_height - WINDOW_SHADOW_PX)
+    if saved:
+        want = saved
+    else:
+        want = (
+            min(int(screen.avail_width * 0.9), FIRST_WINDOW[0]),
+            min(int(screen.avail_height * 0.9), FIRST_WINDOW[1]),
+        )
+    return (
+        max(SMALLEST_WINDOW[0], min(want[0], room[0])),
+        max(SMALLEST_WINDOW[1], min(want[1], room[1])),
+    )
+
+
+# Engines before 156 only. What their fixed window reports as outerHeight: 1040,
+# plus the 26px of shadow GTK adds above and below on Wayland. The same on every
+# host measured. Until a probe has measured this machine, assume it — a machine
+# nobody has measured must not be treated as one where any screen fits.
 DEFAULT_WINDOW_HEIGHT = 1092
 
 
 def host_window_height() -> int:
-    """How tall a window Firefox opens on this host: measured, else the default.
+    """How tall a window an engine before 156 opens here: measured, else the default.
 
-    The reported `innerHeight` must not exceed the spoofed `availHeight` — no real
-    machine can do that, and it is a one-line check for any tampering detector. We
-    cannot resize the window reliably on Wayland, so instead only screens whose
-    avail height exceeds the real window are offered. Written by a probe run.
+    The reported `outerHeight` must not exceed the spoofed `availHeight` — no real
+    machine can do that, and it is a one-line check for any tampering detector.
+    Those engines cannot be told a window size, so only screens tall enough to
+    hold their window are offered. Written by a probe run.
     """
     from ..paths import config_dir
 

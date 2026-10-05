@@ -10,12 +10,11 @@ from __future__ import annotations
 
 import contextlib
 import datetime as dt
-import json
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import dns, paths, podman, proxy, secrets, store
+from . import dns, geometry, paths, podman, proxy, secrets, store
 from .engines import get_engine
 from .engines.camoufox import FORWARDER_PORT, fontconfig_xml
 from .fingerprint import validate, validate_against
@@ -197,34 +196,6 @@ def reset_toolbar_layout(profile: Profile) -> bool:
     if dropped:
         prefs.write_text("".join(kept))
     return dropped
-
-
-def seed_xulstore(profile: Profile, fp: Fingerprint, data_dir: Path | None = None) -> Path:
-    """Firefox ignores --window-size on Wayland, so geometry goes here. With
-    screen spoofing active the window size effectively *is* the reported screen,
-    which is why this is a fingerprint input and not a preference."""
-    path = (data_dir or browser_data_dir(profile)) / "xulstore.json"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    existing: dict = {}
-    if path.exists():
-        try:
-            existing = json.loads(path.read_text())
-        except json.JSONDecodeError:
-            existing = {}
-    key = "chrome://browser/content/browser.xhtml"
-    # Sized, never maximised. A maximised window fills the real monitor while the
-    # profile claims a smaller screen, and Firefox then letterboxes the content
-    # with grey padding. Matching the window to the claimed geometry keeps the
-    # real inner size truthful *and* consistent with the spoofed screen.
-    existing.setdefault(key, {})["main-window"] = {
-        "screenX": str(fp.window.screen_x),
-        "screenY": str(fp.window.screen_y),
-        "width": str(fp.window.outer_width),
-        "height": str(fp.window.outer_height),
-        "sizemode": "normal",
-    }
-    path.write_text(json.dumps(existing, indent=1))
-    return path
 
 
 # -------------------------------------------------------------------- specs
@@ -423,7 +394,7 @@ def launch(profile: Profile, *, strict: bool = False, start_url: str | None = No
     if note := install_langpack(profile, fp):
         notes.append(note)
     reset_toolbar_layout(profile)
-    seed_xulstore(profile, fp)
+    geometry.prepare(profile, fp)
 
     gw = _start_gateway(profile, endpoint_ip)
 

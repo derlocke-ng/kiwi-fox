@@ -41,8 +41,13 @@ def generate(
     series: str | None = None,
     timezone: str | None = None,
     seed: str | None = None,
+    extra_fonts: bool = False,
 ) -> Fingerprint:
-    """`series` is a GPU series key or anything `webgl.find` understands."""
+    """`series` is a GPU series key or anything `webgl.find` understands.
+
+    `extra_fonts` draws a random set of the optional font families on top of the
+    Windows core set. Off by default: see the note where the fonts are chosen.
+    """
     seed = seed or new_seed()
     rng = _rng(seed)
 
@@ -51,7 +56,8 @@ def generate(
     # no screen whose avail height could contain the real window. Constraints are
     # relaxed in a defined order instead, so a caller's explicit choice always wins
     # and coherence is only dropped last.
-    window_height = w11.host_window_height()
+    # Only engines that cannot be told a window size constrain the screen.
+    window_height = 0 if w11.engine_sizes_window(engine_version) else w11.host_window_height()
     pairs = [(s, g) for s in w11.SCREENS for g in webgl.SERIES if s.form in g.forms]
     if series:
         chosen = webgl.find(series)  # an explicit request is not negotiable
@@ -68,6 +74,11 @@ def generate(
     # innerHeight must never exceed availHeight; drop this last of all.
     if window_height:
         pairs = narrow(pairs, lambda s, g: s.height - w11.TASKBAR_CSS_PX >= window_height)
+    # 1920x1080 at 100% wherever it is possible. Every other resolution on the
+    # list has been flagged by fingerprint.com at least once on some machine; this
+    # one never has. The rest stay available on purpose (`set --screen`, the
+    # editor), not by the draw.
+    pairs = narrow(pairs, lambda s, g: (s.width, s.height, s.dpr) == w11.COMMON_SCREEN)
     if not series and not gpu_family:
         # Unasked, a profile is this machine: the frame the GPU actually draws is
         # the one thing no setting changes, so the series it sits beside may as
@@ -105,24 +116,29 @@ def generate(
         w11.REGIONS.get((country or w11.DEFAULT_REGION).upper()) or w11.REGIONS[w11.DEFAULT_REGION]
     )
 
+    # The Windows core set and nothing else, unless asked. Optional families were
+    # the per-profile lever once; in use (fingerprint.com, 2026-10) profiles
+    # stripped to the core set drew fewer tampering and virtual-machine flags
+    # than the same profiles with a random set of extras, and a font set shared
+    # with every plain Windows 11 install links nothing to anything.
     families = fonts.all_core_families()
-    for bundle in fonts.BUNDLES:
-        # Each language feature is independently installed on a real machine.
-        if rng.random() < 0.5:
-            families.extend(bundle)
-    leftovers = [
-        f
-        for f in fonts.all_optional_families()
-        if f not in families and not any(f in b for b in fonts.BUNDLES)
-    ]
-    for f in leftovers:
-        if rng.random() < 0.45:
-            families.append(f)
-    # These are the ones a fingerprinter actually probes for, so this is where the
-    # per-profile variation has to live to be visible at all.
-    for fam in fonts.all_third_party_families():
-        if rng.random() < 0.5:
-            families.append(fam)
+    if extra_fonts:
+        for bundle in fonts.BUNDLES:
+            # Each language feature is independently installed on a real machine.
+            if rng.random() < 0.5:
+                families.extend(bundle)
+        leftovers = [
+            f
+            for f in fonts.all_optional_families()
+            if f not in families and not any(f in b for b in fonts.BUNDLES)
+        ]
+        for f in leftovers:
+            if rng.random() < 0.45:
+                families.append(f)
+        # These are the ones a fingerprinter actually probes for.
+        for fam in fonts.all_third_party_families():
+            if rng.random() < 0.5:
+                families.append(fam)
     families = sorted(set(families))
 
     audio = AudioBlock(

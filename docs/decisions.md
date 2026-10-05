@@ -93,6 +93,24 @@ an identical `stableId` because the variation was in CJK families that no probe 
 contains, while every probed Windows family is mandatory and therefore shared.
 Variation now also lands on open-licensed families that appear on real probe lists.
 
+**…but be common before being different (0.1.3, supersedes the default above).**
+Varying fonts and screen per profile made each profile rarer, and rare is what
+tampering and virtual-machine detectors score. In use, profiles stripped by hand to
+the Windows core fonts at 1920x1080 passed where the drawn ones did not. So a new
+profile is the commonest machine — core fonts, 1080p, this machine's GPU group — and
+variation is something you add on purpose (`--extra-fonts`, the editor). Two
+profiles that share those values are two ordinary machines, so the validator no
+longer warns about it; it still warns about a shared set of *optional* fonts,
+which is rare enough to link.
+
+**The window is real, so open a real window that fits.** Window sizes are not
+spoofed. The engine resets every window to 1280x1040 at startup and, from 156,
+resizes it to `window.outerWidth/outerHeight` if given. Those two keys are therefore
+how the window is sized: to what the user left, else to Firefox's own first-window
+rule on the claimed screen, never beyond what that screen holds. Writing the claimed
+screen into `xulstore.json` (the earlier approach) did nothing except erase the
+size the user had chosen.
+
 **Stable per-profile offsets are not noise.** `canvas:seed` and `audio:seed` are
 constant for a profile across every launch, which is a different machine rather than
 randomisation. Per-call jitter is what noise detection catches.

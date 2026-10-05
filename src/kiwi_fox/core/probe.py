@@ -22,7 +22,7 @@ import time
 import urllib.parse
 from pathlib import Path
 
-from . import launch, paths, podman, store
+from . import geometry, launch, paths, podman, store
 from .engines.camoufox import PROFILE_MOUNT
 from .fingerprint import webgl
 from .fingerprint import windows11 as w11
@@ -238,7 +238,7 @@ def probe(profile: Profile, *, timeout: int = 70, raw: bool = False, skip: str =
             data,
             extra={"browser.startup.page": 0, "browser.sessionstore.resume_from_crash": False},
         )
-        launch.seed_xulstore(subject, fp, data)
+        geometry.prepare(subject, fp, data)
         launch.install_langpack(subject, fp, data)
         launch.write_fontconfig(profile, fp)
 
@@ -282,11 +282,15 @@ def probe(profile: Profile, *, timeout: int = 70, raw: bool = False, skip: str =
         if raw:
             # Only an unspoofed run says anything about the machine.
             webgl.remember_host_renderer((report.get("webgl") or {}).get("renderer"))
-        # How tall a window Firefox actually opens here: innerHeight must never
-        # exceed the spoofed availHeight, and the window cannot be resized reliably
-        # on Wayland, so the screen has to be chosen big enough to contain it.
+        # Engines before 156 open a window of their own choosing, so the screen
+        # has to be chosen big enough to contain it: remember how tall it is here.
+        # Later engines open the size they are told, which says nothing of the host.
         outer = (report.get("window") or {}).get("outer")
-        if isinstance(outer, list) and len(outer) == 2:
+        if (
+            isinstance(outer, list)
+            and len(outer) == 2
+            and not w11.engine_sizes_window(fp.engine_version)
+        ):
             w11.remember_host_window_height(outer[1])
         return report
     finally:
@@ -341,6 +345,16 @@ def audit(report: dict, profile: Profile) -> list[str]:
     inner, avail = (win.get("inner") or [0, 0])[1], screen.get("availHeight") or 0
     if inner and avail and inner > avail:
         problems.append(f"window: innerHeight {inner} exceeds screen.availHeight {avail}")
+    outer = win.get("outer") or [0, 0]
+    for size, name, limit in (
+        (outer[0], "Width", screen.get("availWidth") or 0),
+        (outer[1], "Height", avail),
+    ):
+        if size and limit and size > limit:
+            problems.append(
+                f"window: outer{name} {size} exceeds screen.avail{name} {limit} — "
+                "a window larger than its own screen"
+            )
     if not report.get("speech"):
         problems.append("speech: no voices — every Windows install has some")
     devices = (report.get("media") or {}).get("devices")

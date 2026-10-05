@@ -4,7 +4,7 @@ Isolated Windows 11 browser identities in rootless Podman.
 
 Each profile is one persistent identity: its own storage, its own proxy exit, its
 own ad-blocking DNS resolver and its own frozen fingerprint. A website sees a
-coherent Windows 11 machine; the profile next to it sees a different one.
+coherent, ordinary Windows 11 machine, with its own region, exit and storage.
 
 For people who manage several accounts they own or are authorised to run and do
 not want those accounts cross-linked by browser fingerprint or IP.
@@ -34,6 +34,18 @@ kiwi-fox-gui                                     # "Kiwi-Fox" in your app grid
 Endpoint formats: `socks5://user:pass@host:port`, `http://…`, `https://…`, and the
 vendor paste format `host:port:user:pass`.
 
+## What a new profile is
+
+The commonest machine there is, because rare values are what detectors flag: a
+1920x1080 screen, the fonts every Windows 11 has and no others, and this
+machine's own graphics card as Firefox on Windows words it. Region, language,
+timezone and voices follow the exit. Everything can be changed afterwards.
+
+The window opens at the size Firefox itself picks on that screen and comes back
+the way you left it. It is never opened larger than the screen the profile
+claims — resize freely, but a *maximised* window is as big as your real monitor
+allows, which can be more than the claimed screen has.
+
 ## Changing a profile
 
 Everything a profile reports can be changed after it was created — in the GUI
@@ -42,7 +54,7 @@ under **Edit…**, or:
 ```
 kiwi-fox set work --screen 2560x1440 --cores 12
 kiwi-fox set work --country SE --timezone Europe/Stockholm
-kiwi-fox set work --font-add Lato --font-remove "Open Sans"    # kiwi-fox fonts work
+kiwi-fox set work --font-add "Yu Gothic" --font-add "MS Gothic"  # see: kiwi-fox fonts work
 kiwi-fox set work --appearance dark                            # or light, or host
 kiwi-fox set work --user-agent "Mozilla/5.0 …"                 # --default-user-agent undoes it
 kiwi-fox set work --endpoint socks5://user:pass@host:port

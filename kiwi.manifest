@@ -1,7 +1,7 @@
 # kiwi.manifest — app metadata for kiwi-updater
 NAME=kiwi-fox
 DESCRIPTION=Isolated Windows 11 browser identities in rootless Podman
-VERSION=0.1.2
+VERSION=0.1.3
 AUTHOR=derlocke-ng
 HOMEPAGE=https://github.com/derlocke-ng/kiwi-fox
 LICENSE=GPL-3.0-or-later

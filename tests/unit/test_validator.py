@@ -135,13 +135,30 @@ def test_two_profiles_sharing_a_canvas_seed_is_an_error(fp):
     assert "dup.canvas" in codes(errors(validate_against(fp, [twin])))
 
 
-def test_identical_font_set_warns(fp):
-    import copy
+def _twins(fp, count):
+    return [
+        fp.model_copy(update={"seed": f"dup-{n}", "canvas_seed": fp.canvas_seed + n})
+        for n in range(1, count + 1)
+    ]
 
-    twin = copy.deepcopy(fp)
-    twin.seed = "different"
-    twin.canvas_seed = fp.canvas_seed + 1
-    assert "dup.fonts" in codes(validate_against(fp, [twin]))
+
+def test_sharing_what_every_windows_machine_has_is_not_a_warning(fp):
+    # The bare Windows font set, the commonest screen, a GPU group half of all
+    # users are in: two profiles alike in those are two ordinary machines.
+    from kiwi_fox.core.fingerprint import fonts
+
+    assert fp.fonts == fonts.all_core_families()
+    assert validate_against(fp, _twins(fp, 3)) == []
+
+
+def test_an_identical_set_of_optional_fonts_warns_once_with_a_count():
+    from kiwi_fox.core.fingerprint import generate
+
+    rare = generate(engine_version=ENGINE, country="DE", seed="a" * 32, extra_fonts=True)
+    (issue,) = validate_against(rare, _twins(rare, 1))
+    assert issue.code == "dup.fonts" and issue.message.startswith("another profile has")
+    (issue,) = validate_against(rare, _twins(rare, 3))
+    assert issue.message.startswith("3 other profiles have the identical set of optional fonts")
 
 
 def test_low_core_count_is_rejected(fp):
@@ -205,17 +222,3 @@ def test_webgl_mode_checks():
     )
     assert codes(card) == {"webgl.custom.unreal"} and errors(card) == []
     assert "GeForce GTX 980" in card[0].message, "it should say what a real Firefox reports"
-
-
-def test_a_duplicate_is_reported_once_however_many_profiles_share_it(fp):
-    twins = [
-        fp.model_copy(update={"seed": f"dup-{n}", "canvas_seed": fp.canvas_seed + n})
-        for n in (1, 2, 3)
-    ]
-    issues = validate_against(fp, twins[:1])
-    assert [i.code for i in issues] == ["dup.fonts", "dup.machine"]
-    assert issues[0].message == "another profile exposes the identical font set"
-    issues = validate_against(fp, twins)
-    assert [i.code for i in issues] == ["dup.fonts", "dup.machine"]
-    assert issues[0].message == "3 other profiles expose the identical font set"
-    assert issues[1].message.startswith("3 other profiles have the same GPU string")

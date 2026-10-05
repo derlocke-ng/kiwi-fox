@@ -14,7 +14,7 @@ import json
 import math
 from pathlib import Path
 
-from .. import desktop, gpu, paths
+from .. import desktop, geometry, gpu, paths
 from ..fingerprint import webgl
 from ..fingerprint import windows11 as w11
 from ..models import ContainerSpec, Fingerprint, Profile
@@ -202,13 +202,10 @@ class Camoufox:
             "screen.availTop": s.avail_top,
             "screen.colorDepth": s.color_depth,
             "screen.pixelDepth": s.pixel_depth,
-            # Deliberately NOT spoofing window.outer*/inner*/screenX/screenY.
-            # Spoofing them while the real window is a different size makes
-            # Firefox letterbox the content: the page renders at the claimed
-            # inner size and the remainder is painted grey — the "huge grey
-            # inverted L". Instead the real window is sized to the profile's
-            # geometry (see seed_xulstore) so the true values are already both
-            # correct and consistent with the spoofed screen.
+            # window.inner* is deliberately never sent: the engine pins the content
+            # to it, and a real window of any other size then shows the page in a
+            # box with grey around it. The window's size is real; what is set here
+            # (156 on, see below) is how big the real window opens.
             "window.devicePixelRatio": s.device_pixel_ratio,
             "timezone": fp.timezone,
             "locale:language": fp.locale.split("-")[0],
@@ -264,6 +261,13 @@ class Camoufox:
             ):
                 if val is not None:  # None is Infinity, which JSON cannot carry
                     cfg[key] = val
+        if w11.engine_sizes_window(fp.engine_version):
+            # Not a spoof: on these engines the two keys resize the real window at
+            # startup, and the engine resets it to 1280x1040 without them. So this
+            # is where "as you left it" and "fits the claimed screen" both happen.
+            (width, height), _how = geometry.opening_size(profile, fp)
+            cfg["window.outerWidth"] = width
+            cfg["window.outerHeight"] = height
         return cfg
 
     # ----------------------------------------------------------------- env
@@ -279,7 +283,6 @@ class Camoufox:
             "FONTCONFIG_FILE": FONTCONFIG_MOUNT,
             "KF_PROFILE_DIR": PROFILE_MOUNT,
             "KF_ENGINE_DIR": ENGINE_MOUNT,
-            "KF_WINDOW_SIZE": f"{fp.window.inner_width}x{fp.window.inner_height}",
         }
         # Only CAMOU_CONFIG_* exists. There is no CAMOU_PREFS env var — verified
         # against the engine binary, which contains no such string — so prefs go
