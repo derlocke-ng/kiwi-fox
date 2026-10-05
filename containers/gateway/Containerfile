@@ -1,0 +1,15 @@
+# kiwi-fox gateway: owns the network namespace, holds the only route out.
+FROM registry.fedoraproject.org/fedora:43
+
+RUN dnf install -y --setopt=install_weak_deps=False \
+      nftables dnscrypt-proxy python3 iproute bind-utils procps-ng \
+ && dnf clean all && rm -rf /var/cache/dnf
+
+COPY forwarder.py /usr/local/bin/kf-forwarder
+COPY entrypoint.sh /usr/local/bin/kf-gateway
+RUN chmod +x /usr/local/bin/kf-forwarder /usr/local/bin/kf-gateway
+
+# dnscrypt-proxy writes nothing we keep; the config arrives read-only at runtime.
+RUN mkdir -p /run/kf /blocklist
+
+ENTRYPOINT ["/usr/local/bin/kf-gateway"]

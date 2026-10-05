@@ -1,0 +1,283 @@
+<!doctype html><meta charset="utf-8"><title>kiwi-fox probe</title>
+<body style="font:13px monospace;padding:1rem"><pre id="out">collecting…</pre>
+<script>
+const J = (v) => { try { return JSON.parse(JSON.stringify(v)); } catch (e) { return String(v); } };
+const safe = (fn, fallback = null) => { try { return fn(); } catch (e) { return fallback; } };
+// safe() cannot catch a rejected promise: fn() returns before it rejects, so the
+// await threw, collect() rejected, and nothing was ever reported. Async callers
+// must use this instead.
+const asafe = async (fn, fallback = null) => { try { return await fn(); } catch (e) { return fallback; } };
+
+function glInfo(kind) {
+  const c = document.createElement("canvas");
+  c.width = c.height = 64;
+  const g = safe(() => c.getContext(kind));
+  if (!g) return { available: false };
+  const dbg = safe(() => g.getExtension("WEBGL_debug_renderer_info"));
+  const P = (n) => safe(() => g.getParameter(g[n]));
+  const out = {
+    available: true,
+    vendor: P("VENDOR"), renderer: P("RENDERER"), version: P("VERSION"),
+    shadingLanguage: P("SHADING_LANGUAGE_VERSION"),
+    unmaskedVendor: dbg ? safe(() => g.getParameter(dbg.UNMASKED_VENDOR_WEBGL)) : null,
+    unmaskedRenderer: dbg ? safe(() => g.getParameter(dbg.UNMASKED_RENDERER_WEBGL)) : null,
+    maxTextureSize: P("MAX_TEXTURE_SIZE"),
+    maxRenderbufferSize: P("MAX_RENDERBUFFER_SIZE"),
+    maxVertexAttribs: P("MAX_VERTEX_ATTRIBS"),
+    maxViewportDims: J(P("MAX_VIEWPORT_DIMS")),
+    maxCombinedTextureUnits: P("MAX_COMBINED_TEXTURE_IMAGE_UNITS"),
+    aliasedLineWidthRange: J(P("ALIASED_LINE_WIDTH_RANGE")),
+    stencilValueMask: P("STENCIL_VALUE_MASK"),
+    extensions: safe(() => (g.getSupportedExtensions() || []).length),
+    // Present in Mesa's list and absent from ANGLE's: each one says "not Windows".
+    nonWindowsExtensions: safe(() => (g.getSupportedExtensions() || []).filter((e) =>
+      ["WEBGL_compressed_texture_astc", "WEBGL_compressed_texture_etc", "EXT_depth_clamp"].includes(e))),
+  };
+  // Rendered pixel output: this is the signal that comes from the real GPU.
+  out.renderHash = !want("glhash") ? null : safe(() => {
+    const vs = g.createShader(g.VERTEX_SHADER);
+    g.shaderSource(vs, "attribute vec2 p;void main(){gl_Position=vec4(p,0.,1.);}");
+    g.compileShader(vs);
+    const fs = g.createShader(g.FRAGMENT_SHADER);
+    g.shaderSource(fs, "precision highp float;void main(){gl_FragColor=vec4(gl_FragCoord.x/64.,gl_FragCoord.y/64.,.5,1.);}");
+    g.compileShader(fs);
+    const pr = g.createProgram();
+    g.attachShader(pr, vs); g.attachShader(pr, fs); g.linkProgram(pr); g.useProgram(pr);
+    const buf = g.createBuffer();
+    g.bindBuffer(g.ARRAY_BUFFER, buf);
+    g.bufferData(g.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, 1,1]), g.STATIC_DRAW);
+    const loc = g.getAttribLocation(pr, "p");
+    g.enableVertexAttribArray(loc);
+    g.vertexAttribPointer(loc, 2, g.FLOAT, false, 0, 0);
+    g.drawArrays(g.TRIANGLE_STRIP, 0, 4);
+    const px = new Uint8Array(64 * 64 * 4);
+    g.readPixels(0, 0, 64, 64, g.RGBA, g.UNSIGNED_BYTE, px);
+    let h = 2166136261;
+    for (let i = 0; i < px.length; i++) { h ^= px[i]; h = (h * 16777619) >>> 0; }
+    return h.toString(16);
+  });
+  out.shaderPrecision = safe(() => {
+    const r = [];
+    for (const st of ["VERTEX_SHADER", "FRAGMENT_SHADER"])
+      for (const pt of ["LOW_FLOAT", "MEDIUM_FLOAT", "HIGH_FLOAT"]) {
+        const f = g.getShaderPrecisionFormat(g[st], g[pt]);
+        r.push(f ? `${f.rangeMin},${f.rangeMax},${f.precision}` : "-");
+      }
+    return r.join("|");
+  });
+  return out;
+}
+
+function canvasHash() {
+  return safe(() => {
+    const c = document.createElement("canvas");
+    c.width = 240; c.height = 60;
+    const x = c.getContext("2d");
+    x.textBaseline = "top";
+    x.font = "16px 'Segoe UI'";
+    x.fillStyle = "#f60"; x.fillRect(0, 0, 120, 24);
+    x.fillStyle = "#069"; x.fillText("Kiwi-Fox \u{1F98A} mmmmlli", 2, 2);
+    x.font = "14px Calibri"; x.fillText("WxVgHq 0123", 2, 30);
+    const d = c.toDataURL();
+    let h = 2166136261;
+    for (let i = 0; i < d.length; i++) { h ^= d.charCodeAt(i); h = (h * 16777619) >>> 0; }
+    return h.toString(16);
+  });
+}
+
+const FONT_PROBE = [
+  "Arial","Courier New","Georgia","Times New Roman","Verdana","Calibri","Cambria",
+  "Consolas","Segoe UI","Tahoma","Segoe UI Emoji","Impact","Trebuchet MS","Palatino Linotype",
+  "Monaco","Menlo","Helvetica","Futura","Optima",
+  "Roboto","Noto Sans","Ubuntu","DejaVu Sans","Liberation Sans","Fira Sans","Cantarell",
+  "Open Sans","Lato","Source Sans Pro","Source Sans 3","PT Sans",
+  "Yu Gothic","MS Gothic","Microsoft YaHei","Malgun Gothic","SimSun","MingLiU-ExtB",
+];
+
+function fonts() {
+  const span = document.createElement("span");
+  span.style.cssText = "position:absolute;left:-9999px;font-size:72px";
+  span.textContent = "mmmmmmmmmmlli";
+  document.body.appendChild(span);
+  const base = {};
+  for (const b of ["monospace", "serif", "sans-serif"]) {
+    span.style.fontFamily = b;
+    base[b] = [span.offsetWidth, span.offsetHeight];
+  }
+  const found = [];
+  for (const f of FONT_PROBE) {
+    for (const b of ["monospace", "serif", "sans-serif"]) {
+      span.style.fontFamily = `"${f}",${b}`;
+      if (span.offsetWidth !== base[b][0] || span.offsetHeight !== base[b][1]) { found.push(f); break; }
+    }
+  }
+  span.remove();
+  return found;
+}
+
+function audio() {
+  return safe(() => {
+    const AC = window.OfflineAudioContext || window.webkitOfflineAudioContext;
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const info = {
+      sampleRate: ctx.sampleRate,
+      maxChannelCount: ctx.destination.maxChannelCount,
+      outputLatency: ctx.outputLatency,
+      state: ctx.state,
+    };
+    ctx.close();
+    return info;
+  }, { available: false });
+}
+
+function domRect() {
+  const d = document.createElement("div");
+  d.style.cssText = "position:absolute;left:12.345px;top:6.789px;width:51.23px;height:17.57px;font:11px 'Segoe UI'";
+  d.textContent = "measure me";
+  document.body.appendChild(d);
+  const r = d.getBoundingClientRect();
+  d.remove();
+  return [r.x, r.y, r.width, r.height].map((n) => Math.round(n * 1000) / 1000).join(",");
+}
+
+function svgMetrics() {
+  return safe(() => {
+    const ns = "http://www.w3.org/2000/svg";
+    const s = document.createElementNS(ns, "svg");
+    const t = document.createElementNS(ns, "text");
+    t.setAttribute("font-family", "Segoe UI");
+    t.setAttribute("font-size", "18");
+    t.textContent = "Kiwi mmmlli";
+    s.appendChild(t); document.body.appendChild(s);
+    const b = t.getBBox();
+    s.remove();
+    return [b.width, b.height].map((n) => Math.round(n * 1000) / 1000).join(",");
+  });
+}
+
+function mathPrecision() {
+  const f = [Math.tan(-1e300), Math.sinh(1), Math.acosh(1e300), Math.atanh(0.5),
+             Math.expm1(1), Math.log1p(10), Math.cbrt(100), Math.pow(Math.PI, -100)];
+  return f.map((n) => Number(n.toPrecision(14))).join(",");
+}
+
+const SKIP = new Set((new URLSearchParams(location.search).get("skip") || "").split(",").filter(Boolean));
+const want = (name) => !SKIP.has(name);
+
+async function collect() {
+  const d = {};
+  d.navigator = {
+    userAgent: navigator.userAgent, platform: navigator.platform,
+    oscpu: navigator.oscpu, language: navigator.language,
+    languages: J(navigator.languages),
+    hardwareConcurrency: navigator.hardwareConcurrency,
+    deviceMemory: navigator.deviceMemory ?? null,
+    maxTouchPoints: navigator.maxTouchPoints,
+    pdfViewerEnabled: navigator.pdfViewerEnabled,
+    webdriver: navigator.webdriver,
+    doNotTrack: navigator.doNotTrack,
+  };
+  d.screen = {
+    width: screen.width, height: screen.height,
+    availWidth: screen.availWidth, availHeight: screen.availHeight,
+    availLeft: screen.availLeft, availTop: screen.availTop,
+    colorDepth: screen.colorDepth, pixelDepth: screen.pixelDepth,
+    devicePixelRatio: devicePixelRatio,
+    orientation: safe(() => screen.orientation.type),
+  };
+  d.window = {
+    outer: [outerWidth, outerHeight], inner: [innerWidth, innerHeight],
+    screenXY: [screenX, screenY],
+  };
+  d.intl = {
+    timeZone: safe(() => Intl.DateTimeFormat().resolvedOptions().timeZone),
+    locale: safe(() => Intl.DateTimeFormat().resolvedOptions().locale),
+    calendar: safe(() => Intl.DateTimeFormat().resolvedOptions().calendar),
+    numbering: safe(() => Intl.DateTimeFormat().resolvedOptions().numberingSystem),
+    tzOffset: new Date().getTimezoneOffset(),
+    formatted: safe(() => new Date(0).toLocaleString()),
+  };
+  if (want("webgl")) d.webgl = glInfo("webgl");
+  if (want("webgl2")) d.webgl2 = glInfo("webgl2");
+  d.webgpu = { available: typeof navigator.gpu !== "undefined" };
+  if (navigator.gpu) {
+    d.webgpu.adapter = await asafe(async () => {
+      const a = await navigator.gpu.requestAdapter();
+      return a ? { vendor: a.info?.vendor, architecture: a.info?.architecture } : null;
+    }, null);
+  }
+  if (want("canvas")) d.canvas = { hash: canvasHash() };
+  d.fonts = fonts();
+  if (want("audio")) d.audio = audio();
+  d.domRect = domRect();
+  d.svg = svgMetrics();
+  d.math = mathPrecision();
+  d.css = {
+    colorScheme: matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light",
+    reducedMotion: matchMedia("(prefers-reduced-motion: reduce)").matches,
+    hdr: matchMedia("(dynamic-range: high)").matches,
+    gamutP3: matchMedia("(color-gamut: p3)").matches,
+    hover: matchMedia("(hover: hover)").matches,
+    pointer: matchMedia("(pointer: fine)").matches ? "fine" : "coarse",
+    scrollbar: safe(() => {
+      const o = document.createElement("div");
+      o.style.cssText = "width:100px;height:100px;overflow:scroll;position:absolute;left:-9999px";
+      document.body.appendChild(o);
+      const w = o.offsetWidth - o.clientWidth;
+      o.remove();
+      return w;
+    }),
+  };
+  d.media = {
+    devices: await asafe(async () => {
+      const list = await navigator.mediaDevices.enumerateDevices();
+      const n = { audioinput: 0, audiooutput: 0, videoinput: 0 };
+      for (const dev of list) n[dev.kind] = (n[dev.kind] || 0) + 1;
+      return n;
+    }, null),
+    codecs: safe(() => {
+      const v = document.createElement("video");
+      return ["video/mp4; codecs=\"avc1.42E01E\"", "video/webm; codecs=\"vp9\"",
+              "video/mp4; codecs=\"hev1.1.6.L93.B0\"", "audio/mpeg"]
+        .map((t) => `${t.split(";")[0].split("/")[1]}:${v.canPlayType(t) || "no"}`).join(",");
+    }),
+  };
+  d.speech = await asafe(() => new Promise((res) => {
+    const grab = () => res((speechSynthesis.getVoices() || []).map((v) => v.name).slice(0, 12));
+    const vs = speechSynthesis.getVoices();
+    if (vs && vs.length) return grab();
+    speechSynthesis.onvoiceschanged = grab;
+    setTimeout(grab, 1200);
+  }), []);
+  d.storage = {
+    localStorage: safe(() => !!window.localStorage, false),
+    indexedDB: safe(() => !!window.indexedDB, false),
+    quota: await asafe(async () => (await navigator.storage.estimate()).quota, null),
+  };
+  if (want("perf")) d.hardwarePerf = safe(() => {
+    const t0 = performance.now();
+    let x = 0;
+    for (let i = 0; i < 2000000; i++) x += Math.sqrt(i);
+    return { ms: Math.round(performance.now() - t0), checksum: Math.round(x) };
+  });
+  d.timing = {
+    precision: safe(() => {
+      const s = new Set();
+      for (let i = 0; i < 40; i++) s.add(performance.now() % 1);
+      return s.size;
+    }),
+  };
+  return d;
+}
+
+function send(d) {
+  try { document.getElementById("out").textContent = JSON.stringify(d, null, 1); } catch (e) {}
+  // GET keeps the server trivial; split if it ever exceeds a sane URL length.
+  new Image().src = "/report?" + encodeURIComponent(JSON.stringify(d));
+}
+
+// Always report. A silent failure here is indistinguishable from a browser that
+// never loaded the page, which cost hours of chasing the wrong layer.
+collect().then(send).catch((err) => send({ error: String(err), stack: String(err && err.stack) }));
+window.addEventListener("error", (e) => send({ error: "window.onerror: " + e.message }));
+</script>

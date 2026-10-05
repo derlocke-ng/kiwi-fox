@@ -1,0 +1,147 @@
+"""Thin wrapper over the podman CLI. Argument lists only, never shell=True."""
+
+from __future__ import annotations
+
+import json
+import shutil
+import subprocess
+import time
+
+from . import paths
+from .models import ContainerSpec
+
+
+class PodmanError(RuntimeError):
+    pass
+
+
+def available() -> bool:
+    return shutil.which("podman") is not None
+
+
+def _run(args: list[str], *, check: bool = True, timeout: int = 120) -> subprocess.CompletedProcess:
+    proc = subprocess.run(  # noqa: S603
+        ["podman", *args], capture_output=True, text=True, timeout=timeout, check=False
+    )
+    if check and proc.returncode != 0:
+        raise PodmanError(f"podman {' '.join(args)} failed: {proc.stderr.strip()}")
+    return proc
+
+
+def version() -> str:
+    return _run(["--version"]).stdout.strip()
+
+
+def ps(all_: bool = True) -> list[dict]:
+    args = ["ps", "--format", "json", "--filter", f"label={paths.LABEL}"]
+    if all_:
+        args.append("--all")
+    out = _run(args).stdout.strip()
+    return json.loads(out) if out else []
+
+
+def exists(name: str) -> bool:
+    return _run(["container", "exists", name], check=False).returncode == 0
+
+
+def is_running(name: str) -> bool:
+    if not exists(name):
+        return False
+    state = _run(["inspect", name, "--format", "{{.State.Running}}"], check=False).stdout.strip()
+    return state == "true"
+
+
+def rm(name: str, *, force: bool = True, wait: float = 5.0) -> None:
+    """Remove and wait for it to actually be gone.
+
+    `podman rm` returning is not the same as the name being free, and callers that
+    immediately recreate the container hit "name is already in use".
+    """
+    if not exists(name):
+        return
+    # Stop politely first. `rm --force` SIGKILLs the container, and a hard-killed
+    # Firefox leaves a stale lock in the profile directory that breaks the *next*
+    # start — which looked like random "tab crashes" and made probing unrepeatable.
+    if is_running(name):
+        _run(["stop", "--time", "8", name], check=False, timeout=30)
+    _run(["rm", *(["--force"] if force else []), name], check=False)
+    deadline = time.monotonic() + wait
+    while exists(name) and time.monotonic() < deadline:
+        time.sleep(0.1)
+
+
+def logs(name: str, tail: int = 50) -> str:
+    return _run(["logs", "--tail", str(tail), name], check=False).stdout
+
+
+def exec_(name: str, args: list[str], *, timeout: int = 60) -> subprocess.CompletedProcess:
+    return _run(["exec", name, *args], check=False, timeout=timeout)
+
+
+def spec_args(spec: ContainerSpec, *, detach: bool = True) -> list[str]:
+    """Rendered separately from running it, so specs can be golden-file tested."""
+    # --replace rather than a separate rm: `podman rm` can return before the
+    # storage entry is released, and starting several profiles in quick succession
+    # then fails with "container name is already in use". Replacing is atomic.
+    args = ["run", "--replace", "--name", spec.name]
+    if detach:
+        args.append("--detach")
+    args += ["--network", spec.network]
+    if spec.userns:
+        args += ["--userns", spec.userns]
+    for cap in spec.cap_drop:
+        args += ["--cap-drop", cap]
+    for cap in spec.cap_add:
+        args += ["--cap-add", cap]
+    for opt in spec.security_opt:
+        args += ["--security-opt", opt]
+    for key, val in sorted(spec.env.items()):
+        args += ["--env", f"{key}={val}"]
+    for src, dst, opts in spec.volumes:
+        args += ["--volume", f"{src}:{dst}:{opts}"]
+    for path in spec.tmpfs:
+        args += ["--tmpfs", path]
+    for dev in spec.devices:
+        args += ["--device", dev]
+    for name, target in spec.secrets:
+        # A secret, not a bind mount: the gateway runs as container-root (a
+        # subuid), so a 0600 file owned by the host user is correctly unreadable.
+        args += ["--secret", f"{name},type=mount,target={target}"]
+    for key, val in sorted({**spec.labels, "app": "kiwi-fox"}.items()):
+        args += ["--label", f"{key}={val}"]
+    args.append(spec.image)
+    args += spec.args
+    return args
+
+
+def start(spec: ContainerSpec, *, detach: bool = True) -> str:
+    return _run(spec_args(spec, detach=detach), timeout=180).stdout.strip()
+
+
+def wait(name: str, timeout: int | None = None) -> int:
+    """Block until the container exits; returns its exit code."""
+    proc = _run(["wait", name], check=False, timeout=timeout or 86400)
+    try:
+        return int(proc.stdout.strip())
+    except ValueError:
+        return -1
+
+
+def secret_set(name: str, value: str) -> None:
+    proc = subprocess.run(  # noqa: S603
+        ["podman", "secret", "create", "--replace", name, "-"],
+        input=value,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if proc.returncode != 0:
+        raise PodmanError(f"could not store secret {name}: {proc.stderr.strip()}")
+
+
+def secret_rm(name: str) -> None:
+    _run(["secret", "rm", name], check=False)
+
+
+def orphans() -> list[str]:
+    return [c["Names"][0] for c in ps() if c.get("Names")]

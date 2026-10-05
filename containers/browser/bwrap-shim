@@ -1,0 +1,22 @@
+#!/bin/sh
+# Stand-in for bwrap inside the browser container.
+#
+# Fedora routes every gdk-pixbuf image load through glycin, and glycin sandboxes
+# each loader with `bwrap --unshare-all`. bwrap cannot run in a rootless
+# container: it mounts a fresh devpts for --dev and the kernel denies that in our
+# user namespace. GTK then fails to load even its own image-missing fallback and
+# the assertion in ensure_surface_for_gicon aborts the browser the moment a tab
+# wants an icon. That is the "tab crashed, could not surf" bug.
+#
+# We cannot change how glycin invokes bwrap, so this skips bwrap's own options
+# and execs the loader directly. Inherited fds (--dbus-fd) survive exec, which is
+# what the loader actually needs. Losing glycin's sandbox is acceptable here
+# because the container is already the boundary: no capabilities, no routing
+# table, a read-only engine mount and no-new-privileges.
+while [ $# -gt 0 ]; do
+    case "$1" in
+        /usr/libexec/glycin-loaders/*) exec "$@" ;;
+    esac
+    shift
+done
+exec /bin/true

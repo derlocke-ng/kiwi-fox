@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Kiwi-Fox
+GenericName=Browser identity manager
+Comment=Isolated Windows 11 browser identities in rootless Podman
+Exec=kiwi-fox-gui
+Icon=kiwi-fox
+Terminal=false
+Categories=Network;WebBrowser;Security;
+StartupNotify=true
+StartupWMClass=kiwi-fox
+Keywords=browser;profile;proxy;fingerprint;identity;

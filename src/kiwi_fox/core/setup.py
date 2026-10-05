@@ -1,0 +1,138 @@
+"""First-run setup: everything needed before a profile can launch.
+
+Deliberately *not* done at install time — building images and downloading a
+~630 MB engine needs network at the wrong moment and would make `kiwi install`
+look broken. This is the one command a new user runs.
+"""
+
+from __future__ import annotations
+
+import subprocess
+from collections.abc import Callable
+from pathlib import Path
+
+from . import dns, paths, podman
+from .engines import fetch as engine_fetch
+
+IMAGES = (
+    ("kiwi-fox/gateway:latest", "gateway"),
+    ("kiwi-fox/browser:latest", "browser"),
+)
+
+Progress = Callable[[str], None]
+
+
+class SetupError(RuntimeError):
+    pass
+
+
+def containers_dir() -> Path:
+    """Where the Containerfiles live, in a checkout or an installed copy."""
+    here = Path(__file__).resolve()
+    for candidate in (here.parents[3] / "containers", here.parents[2] / "containers"):
+        if (candidate / "gateway" / "Containerfile").exists():
+            return candidate
+    raise SetupError("cannot find the containers/ directory next to the package")
+
+
+def build_images(progress: Progress | None = None, force: bool = False) -> list[str]:
+    root = containers_dir()
+    built = []
+    for image, name in IMAGES:
+        exists = podman._run(["image", "exists", image], check=False).returncode == 0
+        if exists and not force:
+            continue
+        if progress:
+            progress(f"Building the {name} image — this takes a few minutes…")
+        proc = subprocess.run(  # noqa: S603
+            [
+                "podman",
+                "build",
+                "-t",
+                image,
+                "-f",
+                str(root / name / "Containerfile"),
+                str(root / name),
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if proc.returncode != 0:
+            raise SetupError(f"building {image} failed:\n{proc.stderr[-800:]}")
+        built.append(image)
+    return built
+
+
+def run(progress: Progress | None = None, *, engine_version: str | None = None) -> list[str]:
+    """Idempotent: safe to run again at any time."""
+
+    def say(message: str) -> None:
+        if progress:
+            progress(message)
+
+    steps: list[str] = []
+    paths.ensure_tree()
+
+    if not podman.available():
+        raise SetupError("podman is not installed")
+
+    say("Building container images…")
+    built = build_images(progress)
+    steps.append(f"images: {'built ' + ', '.join(built) if built else 'already present'}")
+
+    installed = engine_fetch.installed()
+    if engine_version or not installed:
+        say("Downloading the browser engine (~630 MB)…")
+        path = engine_fetch.fetch(engine_version)
+        version = path.name.removeprefix("camoufox-")
+        steps.append(f"engine: camoufox {version}")
+    else:
+        version = engine_fetch.preferred() or installed[-1]
+        steps.append(f"engine: camoufox {version} already present")
+
+    engine_dir = engine_fetch.target_dir(version)
+
+    say("Making the engine behave like Firefox…")
+    applied = []
+    for tweak in engine_fetch.TWEAKS:
+        try:
+            if engine_fetch.apply_tweak(engine_dir, tweak):
+                applied.append(tweak)
+        except engine_fetch.RepairError as exc:
+            steps.append(f"tweak {tweak}: skipped ({exc})")
+    steps.append(f"tweaks: {', '.join(applied) if applied else 'already applied'}")
+
+    try:
+        engine_fetch.set_default_search(engine_dir, "ddg")
+        steps.append("default search: ddg")
+    except engine_fetch.RepairError as exc:
+        steps.append(f"default search: skipped ({exc})")
+
+    say("Installing the GPU probe helpers…")
+    try:
+        added = engine_fetch.install_gl_helpers_from_mozilla(engine_dir, version)
+        steps.append(
+            f"gpu helpers: {', '.join(added) if added else 'already present'} (hardware rendering)"
+        )
+    except engine_fetch.RepairError as exc:
+        steps.append(f"gpu helpers: unavailable, software rendering ({exc})")
+
+    say("Fetching DNS resolver stamps…")
+    try:
+        dns.sync_stamps()
+        steps.append(f"dns: {len(dns.load_stamps())} resolver stamps")
+    except Exception as exc:  # noqa: BLE001
+        steps.append(f"dns stamps: failed ({exc})")
+
+    say("Downloading the ad-block list…")
+    try:
+        dns.fetch_blocklist("oisd-big")
+        merged = dns.merged_blocklist(["oisd-big"])
+        count = sum(1 for _ in merged.open())
+        steps.append(f"blocklist: {count} entries")
+    except Exception as exc:  # noqa: BLE001
+        steps.append(f"blocklist: failed ({exc})")
+
+    say("Done.")
+    return steps

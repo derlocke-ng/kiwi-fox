@@ -1,0 +1,87 @@
+# kiwi-fox browser: runtime only. The engine is mounted read-only at /opt/camoufox,
+# so the image stays small and one engine copy serves every profile.
+
+# Camoufox's release zip omits glxtest and vaapitest, Firefox's GPU probe
+# helpers. Without glxtest Firefox cannot discover the GPU, disables WebGL
+# outright and never attempts a hardware path. Fedora's firefox package ships
+# them, so lift just those two binaries. They are built for a different Firefox
+# version, so treat them as best-effort: `kiwi-fox engine helpers` installs them
+# and `--no-helpers` skips them if they misbehave.
+FROM registry.fedoraproject.org/fedora:43 AS glhelpers
+# Copy whichever helpers this Firefox ships: 156 merged glxtest+vaapitest into a
+# single `gfxtest`, so the names depend on the version. Fails loudly if none are
+# found — an earlier version put `|| true` on the whole && chain and produced an
+# empty image with a successful build.
+RUN dnf install -y --setopt=install_weak_deps=False firefox \
+ && mkdir -p /usr/libexec/kf \
+ && for h in glxtest vaapitest gfxtest; do \
+      if [ -e "/usr/lib64/firefox/$h" ]; then cp "/usr/lib64/firefox/$h" /usr/libexec/kf/; fi; \
+    done \
+ && ls -l /usr/libexec/kf/ \
+ && test -n "$(ls -A /usr/libexec/kf/)" \
+ && rpm -q firefox > /usr/libexec/kf/.firefox-version
+
+FROM registry.fedoraproject.org/fedora:43
+
+# GTK3 runtime, Wayland, and the software GL stack. WebGL must work: a browser
+# with WebGL unavailable is a louder tell than software rendering is.
+RUN dnf install -y --setopt=install_weak_deps=False \
+      gtk3 \
+      libxkbcommon libxkbcommon-x11 \
+      mesa-dri-drivers mesa-libgbm mesa-libEGL mesa-libGL \
+      alsa-lib dbus-libs \
+      pango cairo gdk-pixbuf2 \
+      freetype fontconfig \
+      nss nspr \
+      libXtst libXt \
+      glibc-langpack-en glibc-langpack-de glibc-langpack-nl glibc-langpack-sv \
+      glibc-langpack-fr glibc-langpack-fi glibc-langpack-nb glibc-langpack-da \
+      adwaita-icon-theme adwaita-icon-theme-legacy \
+      gdk-pixbuf2-modules-extra \
+      open-sans-fonts lato-fonts adobe-source-sans-pro-fonts \
+ && dnf clean all && rm -rf /var/cache/dnf
+
+# Fonts a fingerprinter actually probes for, which real Windows machines vary on.
+# Moved out of /usr/share/fonts into per-family directories so a profile's
+# fontconfig can expose exactly its own subset and nothing else.
+RUN mkdir -p /usr/share/kf-fonts/open-sans /usr/share/kf-fonts/lato /usr/share/kf-fonts/source-sans \
+ && cp /usr/share/fonts/open-sans/*.ttf        /usr/share/kf-fonts/open-sans/ \
+ && cp /usr/share/fonts/lato-fonts/*.ttf       /usr/share/kf-fonts/lato/ \
+ && cp /usr/share/fonts/adobe-source-sans-pro-fonts/*.otf /usr/share/kf-fonts/source-sans/ \
+ && ls /usr/share/kf-fonts/*/ | head -3
+
+# Force a raster icon theme, and this is load-bearing rather than cosmetic.
+# gdk-pixbuf has PNG built in but needs an external loader for SVG, and Fedora
+# routes that through glycin, which sandboxes itself with `bwrap --unshare-all`.
+# bwrap cannot run inside a rootless container (nested devpts mount is denied),
+# so GTK fails to load even its own image-missing fallback and the assertion in
+# ensure_surface_for_gicon aborts the entire browser the moment a tab wants an
+# icon — which is exactly "the tab crashed and I could not surf".
+# AdwaitaLegacy is pure PNG, so the SVG path is never taken.
+RUN install -Dm644 /dev/stdin /etc/gtk-3.0/settings.ini <<'INI'
+[Settings]
+gtk-icon-theme-name=AdwaitaLegacy
+INI
+
+# No fonts of our own: the engine ships a complete Windows set and a per-profile
+# fontconfig selects from it. Anything else visible here would be a tell.
+RUN rm -rf /usr/share/fonts/* /usr/share/fontconfig/conf.avail/*hinting* 2>/dev/null || true
+
+# See the shim's own comment: glycin's bwrap sandbox cannot run rootless, and
+# GTK turns a failed icon load into an abort().
+COPY bwrap-shim /usr/local/bin/bwrap-shim
+RUN chmod +x /usr/local/bin/bwrap-shim \
+ && mv /usr/bin/bwrap /usr/bin/bwrap.real \
+ && ln -s /usr/local/bin/bwrap-shim /usr/bin/bwrap
+
+# Camoufox's no-search-engines patch leaves the address bar unable to search.
+# A search-provider WebExtension puts one back; it is passed to the engine with
+# the `addons` config key.
+COPY addons /opt/kf-addons
+
+COPY --from=glhelpers /usr/libexec/kf/ /usr/libexec/kf/
+
+COPY entrypoint.sh /usr/local/bin/kf-browser
+RUN chmod +x /usr/local/bin/kf-browser && mkdir -p /profile /downloads
+
+ENTRYPOINT ["/usr/local/bin/kf-browser"]
