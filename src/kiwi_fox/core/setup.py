@@ -139,11 +139,11 @@ def run(progress: Progress | None = None, *, engine_version: str | None = None) 
     say("Installing the GPU probe helpers…")
     try:
         added = engine_fetch.install_gl_helpers_from_mozilla(engine_dir, version)
-        steps.append(
-            f"gpu helpers: {', '.join(added) if added else 'already present'} (hardware rendering)"
-        )
+        # Having the helper says nothing about what it will find; the measurement
+        # two steps down does.
+        steps.append(f"gpu helper: {', '.join(added) if added else 'present'}")
     except engine_fetch.RepairError as exc:
-        steps.append(f"gpu helpers: unavailable, software rendering ({exc})")
+        steps.append(f"gpu helper: unavailable ({exc})")
 
     say("Checking what the browser will draw with…")
     try:
