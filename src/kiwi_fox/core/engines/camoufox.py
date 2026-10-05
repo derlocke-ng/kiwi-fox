@@ -12,8 +12,9 @@ from __future__ import annotations
 
 import json
 import math
+from pathlib import Path
 
-from .. import gpu, paths
+from .. import desktop, gpu, paths
 from ..fingerprint import webgl
 from ..fingerprint import windows11 as w11
 from ..models import ContainerSpec, Fingerprint, Profile
@@ -34,8 +35,31 @@ RESOLVER_HOST = "127.0.0.2"
 
 
 def accelerated(profile: Profile) -> bool:
-    """Hardware rendering is wanted *and* there is a node Mesa can drive."""
-    return profile.gpu_accel and gpu.render_node() is not None
+    """Hardware rendering is wanted *and* this host can deliver it — by
+    measurement where there is one, by plan otherwise (see core/gpu.py)."""
+    return profile.gpu_accel and gpu.accelerated()
+
+
+def is_dark(profile: Profile) -> bool | None:
+    """Dark chrome and dark pages? None leaves Firefox to its own default."""
+    if profile.appearance == "host":
+        return desktop.prefers_dark()
+    return profile.appearance == "dark"
+
+
+def engine_keys(engine_dir: Path) -> set[str] | None:
+    """The config keys this engine build knows, from the schema it ships.
+
+    Upstream adds and drops keys between releases — 156 dropped battery:*,
+    canvas:seed and fonts:spacing_seed among others — so the same fingerprint is
+    emitted differently for different engines. None when the build ships no
+    schema (152 and earlier), where everything emitted here is known to exist.
+    """
+    schema = engine_dir / "properties.json"
+    try:
+        return {entry["property"] for entry in json.loads(schema.read_text())}
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
 
 
 class Camoufox:
@@ -45,6 +69,7 @@ class Camoufox:
     def prefs(self, fp: Fingerprint, profile: Profile) -> dict[str, object]:
         remote_dns = profile.dns.mode == "remote"
         accel = accelerated(profile)
+        dark = is_dark(profile)
         return {
             # Proxy: everything through the gateway's forwarder, never direct.
             "network.proxy.type": 1,
@@ -115,7 +140,13 @@ class Camoufox:
             # cannot probe the GPU and falls back to software unless pushed.
             "gfx.webrender.compositor": accel,
             "gfx.x11-egl.force-enabled": accel,
-            "media.hardware-video-decoding.force-enabled": accel,
+            # VA-API exists only on the Mesa paths; forcing it where the host's
+            # NVIDIA driver is in use would point the decoder at nothing.
+            "media.hardware-video-decoding.force-enabled": accel
+            and gpu.plan().kind.startswith("mesa"),
+            # Light or dark, for the chrome and for prefers-color-scheme alike —
+            # one setting, as on a real machine. Left alone when unknown.
+            **({} if dark is None else {"ui.systemUsesDarkTheme": int(dark)}),
             # WebGL must work unless the profile turns it off. Without glxtest
             # Firefox cannot probe the GPU, concludes nothing is usable and
             # disables WebGL entirely; force-enabled bypasses that verdict.
@@ -130,6 +161,9 @@ class Camoufox:
                     # Every series offered has WebGL 2 on Windows.
                     "webgl.enable-webgl2": True,
                     "webgl.out-of-process": False,
+                    # The renderer strings, through Firefox's own prefs as well
+                    # as the engine config: see webgl.driver_string.
+                    **webgl_prefs(fp, profile),
                 }
             ),
         }
@@ -137,8 +171,9 @@ class Camoufox:
     # --------------------------------------------------------------- config
     def config(self, fp: Fingerprint, profile: Profile, exit_ip: str | None) -> dict[str, object]:
         s = fp.screen
+        ua = profile.user_agent or fp.ua
         cfg: dict[str, object] = {
-            "navigator.userAgent": fp.ua,
+            "navigator.userAgent": ua,
             "navigator.platform": fp.platform,
             "navigator.oscpu": fp.oscpu,
             "navigator.hardwareConcurrency": fp.hardware_concurrency,
@@ -150,7 +185,7 @@ class Camoufox:
             # a touchscreen the page never sees.
             "navigator.languages": fp.languages,
             "navigator.buildID": fp.build_id,
-            "headers.User-Agent": fp.ua,
+            "headers.User-Agent": ua,
             "headers.Accept-Language": fp.accept_language,
             "screen.width": s.width,
             "screen.height": s.height,
@@ -229,6 +264,9 @@ class Camoufox:
             "LANG": f"{fp.locale.replace('-', '_')}.UTF-8",
             "MOZ_ENABLE_WAYLAND": "1",
             **({"MOZ_WEBRENDER": "1"} if accelerated(profile) else {}),
+            # GTK draws the window frame, menus and dialogs; without this they
+            # stay light around a dark browser.
+            **({"GTK_THEME": "Adwaita:dark"} if is_dark(profile) else {}),
             "FONTCONFIG_FILE": FONTCONFIG_MOUNT,
             "KF_PROFILE_DIR": PROFILE_MOUNT,
             "KF_ENGINE_DIR": ENGINE_MOUNT,
@@ -239,7 +277,11 @@ class Camoufox:
         # into the profile's user.js instead. Getting this wrong meant Firefox
         # ran with no proxy at all, tried to connect directly, and the firewall
         # correctly dropped it: every page timed out while DNS looked perfect.
-        env.update(chunk_env("CAMOU_CONFIG", self.config(fp, profile, exit_ip)))
+        config = self.config(fp, profile, exit_ip)
+        known = engine_keys(paths.engines_dir() / f"camoufox-{fp.engine_version}")
+        if known is not None:
+            config = {key: value for key, value in config.items() if key in known}
+        env.update(chunk_env("CAMOU_CONFIG", config))
         return env
 
     # ---------------------------------------------------------------- spec
@@ -248,13 +290,15 @@ class Camoufox:
     ) -> ContainerSpec:
         pdir = paths.profile_dir(profile.id)
         engine = paths.engines_dir() / f"camoufox-{fp.engine_version}"
-        node = gpu.render_node()
-        devices = [node] if profile.gpu_accel and node else []
+        plan = gpu.plan() if accelerated(profile) else None
+        env = self.env(fp, profile, exit_ip)
+        if plan:
+            env.update(plan.env)
         return ContainerSpec(
             name=paths.browser_name(profile.id),
             image="kiwi-fox/browser:latest",
             network=f"container:{gateway}",
-            env=self.env(fp, profile, exit_ip),
+            env=env,
             volumes=[
                 # ",z" is shared relabelling: one engine copy serves every
                 # profile. ",Z" would relabel it private to one container and
@@ -264,7 +308,7 @@ class Camoufox:
                 (str(pdir / "downloads"), "/downloads", "rw,z"),
                 (str(pdir / "fonts.conf"), FONTCONFIG_MOUNT, "ro,z"),
             ],
-            devices=devices,
+            devices=list(plan.devices) if plan else [],
             cap_drop=["all"],
             # SYS_CHROOT is granted *to strengthen* isolation, not weaken it:
             # Firefox's content sandbox chroots each content process, and without
@@ -389,6 +433,17 @@ def webgl_config(fp: Fingerprint, profile: Profile) -> dict[str, object]:
             series, vendor=profile.webgl_vendor, renderer=profile.webgl_renderer
         )
     return webgl.engine_config(series)
+
+
+def webgl_prefs(fp: Fingerprint, profile: Profile) -> dict[str, object]:
+    series = webgl_series(fp, profile)
+    if series is None:
+        return {}
+    if profile.webgl == "custom":
+        return webgl.firefox_prefs(
+            series, vendor=profile.webgl_vendor, renderer=profile.webgl_renderer
+        )
+    return webgl.firefox_prefs(series)
 
 
 def _media_devices(fp: Fingerprint) -> dict[str, object]:

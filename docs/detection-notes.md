@@ -3,6 +3,22 @@
 What an adversary can still see, measured rather than assumed. Record the machine
 any figure came from: the test VM's virtual GPU and timing are not a real host's.
 
+## First: is the browser drawing on a GPU?
+
+If not, nothing below matters much. A browser drawing in software produces
+llvmpipe's frames, which is what virtual machines and headless servers produce, and
+sites read frames. `kiwi-fox doctor` measures it — with the helper Firefox itself
+runs at startup, in a throwaway container, with no window — and prints either the
+GPU it got or `SOFTWARE`.
+
+A render node existing does not mean it is used. On a hybrid laptop whose panel
+hangs off the NVIDIA card, the desktop tells every client to use that GPU; a
+container with only Mesa and the integrated GPU's node cannot open it and falls
+back to software *silently*. Measured there: integrated node alone, llvmpipe; both
+nodes plus `DRI_PRIME`, the integrated GPU; the host's NVIDIA driver through CDI,
+the NVIDIA GPU. A profile launched the first way was flagged as a virtual machine
+by fingerprint.com with WebGL on *and* with WebGL off.
+
 ## Shared across every profile on one machine
 
 These come from the real hardware and cannot be varied per profile. They are the
@@ -41,6 +57,21 @@ perturbs canvas output with a per-session key, and every Firefox 152 user has it
 The engine's own `canvas:seed` does nothing at the pinned tag (measured). So canvas
 cannot link two profiles, and cannot recognise one profile across two sessions
 either.
+
+## What differs between engine versions
+
+Upstream moved its "latest" release from 152 to 156 on 2026-10-03, so new installs
+get 156. The same fingerprint is sent differently to each; only keys the installed
+engine's own schema lists are sent at all.
+
+| | 152.0.4 | 156.0.1 |
+| --- | --- | --- |
+| Plain `RENDERER` | taken from the engine's config table | answered by the real context — so it is set through Firefox's own `webgl.override-unmasked-*` prefs instead, which works on both |
+| Stencil mask defaults | spoofable (ANGLE's `0x7FFFFFFF`) | the host's (`255`, Mesa) — **a residual Linux tell on 156** |
+| Live WebGL state | pinned by upstream's full table unless filtered | left alone by the engine itself |
+| Camera without a microphone | crashes the tab | fixed |
+| `battery:*`, `canvas:seed`, `fonts:spacing_seed`, `voices:fakeCompletion` | accepted (the seed keys did nothing) | no longer in the schema |
+| GPU probe helper | `glxtest` + `vaapitest`, not shipped | one `gfxtest`, shipped with the engine |
 
 ## What each graphics mode reports
 

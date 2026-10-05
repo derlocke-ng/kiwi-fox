@@ -1,4 +1,4 @@
-"""Dialogs: create a profile, show what a profile actually is, change its graphics."""
+"""Dialogs: create a profile, show what a profile actually is, and edit one."""
 
 from __future__ import annotations
 
@@ -9,16 +9,18 @@ gi.require_version("Adw", "1")
 
 from gi.repository import Adw, Gtk  # noqa: E402
 
-from ..core import dns, launch, proxy, store  # noqa: E402
+from ..core import dns, launch, proxy, secrets, store  # noqa: E402
 from ..core.engines import fetch as engine_fetch  # noqa: E402
 from ..core.engines.camoufox import webgl_config, webgl_series  # noqa: E402
 from ..core.fingerprint import (  # noqa: E402
+    edit,
     generate,
     validate,
     validate_against,
     webgl,
 )
-from ..core.fingerprint.validator import check_webgl_mode, errors  # noqa: E402
+from ..core.fingerprint import windows11 as w11  # noqa: E402
+from ..core.fingerprint.validator import check_webgl_mode, check_window_fits, errors  # noqa: E402
 from ..core.models import DnsConfig  # noqa: E402
 from ..core.paths import profile_dir  # noqa: E402
 from . import worker  # noqa: E402
@@ -356,24 +358,166 @@ class NewProfileDialog(Adw.Dialog):
         worker.run(work, done, failed)
 
 
-class GraphicsDialog(Adw.Dialog):
-    """Change what an existing profile reports as its GPU."""
+APPEARANCES: list[tuple[str, str]] = [
+    ("host", "Follow this desktop"),
+    ("light", "Light"),
+    ("dark", "Dark"),
+]
+FORMS = ["desktop", "laptop"]
+
+
+def _combo(title: str, labels: list[str], selected: int = 0, subtitle: str = "") -> Adw.ComboRow:
+    row = Adw.ComboRow(title=title, subtitle=subtitle)
+    row.set_model(Gtk.StringList.new(labels))
+    row.set_selected(max(selected, 0))
+    return row
+
+
+class ProfileEditor(Adw.Dialog):
+    """Everything a profile reports, in one place, changeable after creation.
+
+    Nothing is saved unless the whole result is coherent: the same check a launch
+    runs. What is not here is not settable — the Windows version, because Firefox
+    sends the same user agent for 10 and 11.
+    """
 
     def __init__(self, profile, on_saved=None) -> None:
-        super().__init__(title=f"Graphics — {profile.name}", content_width=640, content_height=680)
+        super().__init__(title=f"Edit {profile.name}", content_width=660, content_height=780)
         self._profile = profile
+        self._fp = fp = store.load_fingerprint(profile.id)
         self._on_saved = on_saved
-        fp = store.load_fingerprint(profile.id)
-
         page = Adw.PreferencesPage()
+
+        # ------------------------------------------------------------ profile
         group = Adw.PreferencesGroup(
-            description="Firefox tells a page the series a card belongs to, never the "
-            "card. The rest of the identity is untouched."
-            + (" Takes effect at the next launch." if launch.running(profile) else ""),
+            title="Profile",
+            description="Takes effect at the next launch." if launch.running(profile) else "",
+        )
+        self.name_row = Adw.EntryRow(title="Name")
+        self.name_row.set_text(profile.name)
+        group.add(self.name_row)
+        self._endpoint_before = profile.endpoint.label
+        self.endpoint_row = Adw.EntryRow(title="SOCKS5 endpoint")
+        self.endpoint_row.set_text(self._endpoint_before)
+        group.add(self.endpoint_row)
+        self.dns_row = _combo(
+            "DNS",
+            ["resolver (ad-blocking)", "remote (at the proxy)"],
+            int(profile.dns.mode == "remote"),
+        )
+        group.add(self.dns_row)
+        self._upstreams = sorted(dns.UPSTREAMS)
+        self.upstream_row = _combo(
+            "DNS upstream",
+            self._upstreams,
+            self._upstreams.index(profile.dns.upstream)
+            if profile.dns.upstream in self._upstreams
+            else 0,
+        )
+        group.add(self.upstream_row)
+        self.appearance_row = _combo(
+            "Appearance",
+            [label for _key, label in APPEARANCES],
+            [key for key, _label in APPEARANCES].index(profile.appearance),
+            "light or dark, for the browser and for what pages are told",
+        )
+        group.add(self.appearance_row)
+        page.add(group)
+
+        # ------------------------------------------------------------ machine
+        group = Adw.PreferencesGroup(title="Machine")
+        self.form_row = _combo("Kind", FORMS, FORMS.index(fp.form_factor))
+        self.form_row.connect("notify::selected", self._on_form)
+        group.add(self.form_row)
+        self.screen_row = Adw.ComboRow(
+            title="Screen", subtitle="only resolutions many real machines report"
+        )
+        group.add(self.screen_row)
+        self._fill_screens(fp.form_factor, (fp.screen.width, fp.screen.height))
+        series = webgl.series_for(fp.webgl.renderer)
+        self._cores = sorted(set(series.cores if series else ()) | {fp.hardware_concurrency})
+        self.cores_row = _combo(
+            "CPU cores", [str(c) for c in self._cores], self._cores.index(fp.hardware_concurrency)
+        )
+        group.add(self.cores_row)
+        self.camera_row = Adw.SwitchRow(title="Camera")
+        self.camera_row.set_active(bool(fp.media_devices.get("webcams")))
+        group.add(self.camera_row)
+        self._rates = list(w11.SAMPLE_RATES)
+        self.audio_row = _combo(
+            "Audio sample rate",
+            [f"{r} Hz" for r in self._rates],
+            self._rates.index(fp.audio.sample_rate) if fp.audio.sample_rate in self._rates else 0,
+        )
+        group.add(self.audio_row)
+        page.add(group)
+
+        # ------------------------------------------------------------- region
+        group = Adw.PreferencesGroup(
+            title="Region", description="Language, voices and Accept-Language follow the region."
+        )
+        self._countries = sorted(w11.REGIONS)
+        current = next((c for c in self._countries if w11.REGIONS[c].locale == fp.locale), "")
+        self.country_row = _combo(
+            "Region",
+            [f"{c} — {w11.REGIONS[c].locale}" for c in self._countries],
+            self._countries.index(current) if current else 0,
+        )
+        self.country_row.connect("notify::selected", self._on_country)
+        group.add(self.country_row)
+        self.timezone_row = Adw.EntryRow(title="Timezone")
+        self.timezone_row.set_text(fp.timezone)
+        group.add(self.timezone_row)
+        page.add(group)
+
+        # -------------------------------------------------------------- fonts
+        group = Adw.PreferencesGroup(title="Fonts")
+        optional = edit.optional_fonts()
+        self.fonts_expander = Adw.ExpanderRow(
+            title="Optional fonts",
+            subtitle=f"{len(set(fp.fonts) & set(optional))} of {len(optional)} — the Windows 11 "
+            "core set is always present",
+        )
+        self._font_rows: dict[str, Adw.SwitchRow] = {}
+        for name in optional:
+            row = Adw.SwitchRow(title=name)
+            row.set_use_markup(False)
+            row.set_active(name in fp.fonts)
+            self.fonts_expander.add_row(row)
+            self._font_rows[name] = row
+        group.add(self.fonts_expander)
+        page.add(group)
+
+        # ----------------------------------------------------------- graphics
+        group = Adw.PreferencesGroup(
+            title="Graphics",
+            description="Firefox tells a page the series a card belongs to, never the card.",
         )
         self.graphics = GraphicsChooser(group)
         self.graphics.load(profile, fp)
         page.add(group)
+
+        # --------------------------------------------------------- user agent
+        group = Adw.PreferencesGroup(
+            title="User agent",
+            description="The engine's own is stock Firefox of its version, on Windows. "
+            "Windows 10 and 11 cannot be told apart here: Firefox sends the same string "
+            "for both.",
+        )
+        self.ua_row = Adw.EntryRow(title="User agent")
+        self.ua_row.set_text(profile.user_agent or fp.ua)
+        reset = Gtk.Button(icon_name="edit-undo-symbolic", valign=Gtk.Align.CENTER)
+        reset.set_tooltip_text("Back to the engine's own")
+        reset.add_css_class("flat")
+        reset.connect("clicked", lambda *_: self.ua_row.set_text(fp.ua))
+        self.ua_row.add_suffix(reset)
+        self.ua_row.connect("changed", self._on_ua)
+        group.add(self.ua_row)
+        self.ua_note = Adw.ActionRow(use_markup=False, visible=False)
+        self.ua_note.set_subtitle_lines(0)
+        group.add(self.ua_note)
+        page.add(group)
+        self._on_ua()
 
         status = Adw.PreferencesGroup()
         self.status_label = Gtk.Label(wrap=True, xalign=0, visible=False)
@@ -389,23 +533,114 @@ class GraphicsDialog(Adw.Dialog):
         self.save_button.add_css_class("suggested-action")
         self.save_button.connect("clicked", self._on_save)
         header.pack_end(self.save_button)
-
         view = Adw.ToolbarView()
         view.add_top_bar(header)
         view.set_content(page)
         self.set_child(view)
 
+    # ------------------------------------------------------------- widgets
+    def _fill_screens(self, form: str, current: tuple[int, int]) -> None:
+        self._screens = edit.screen_choices(form)
+        self.screen_row.set_model(Gtk.StringList.new([edit.screen_label(s) for s in self._screens]))
+        sizes = [(s.width, s.height) for s in self._screens]
+        self.screen_row.set_selected(sizes.index(current) if current in sizes else 0)
+
+    def _on_form(self, *_args) -> None:
+        self._fill_screens(
+            FORMS[self.form_row.get_selected()], (self._fp.screen.width, self._fp.screen.height)
+        )
+
+    def _on_country(self, *_args) -> None:
+        # Follow the region unless a timezone was typed that is neither the old
+        # region's nor the fingerprint's.
+        zones = {r.timezone for r in w11.REGIONS.values()} | {self._fp.timezone}
+        if self.timezone_row.get_text().strip() in zones:
+            country = self._countries[self.country_row.get_selected()]
+            self.timezone_row.set_text(w11.REGIONS[country].timezone)
+
+    def _on_ua(self, *_args) -> None:
+        text = self.ua_row.get_text().strip()
+        notes = edit.check_user_agent(text, self._fp.engine_version) if text else []
+        self.ua_note.set_visible(bool(notes))
+        self.ua_note.set_subtitle("This will stand out: " + "; ".join(notes) + "." if notes else "")
+
+    def _say(self, text: str) -> None:
+        self.status_label.set_text(text)
+        self.status_label.set_visible(bool(text))
+
+    # ---------------------------------------------------------------- save
+    def _fingerprint(self):
+        """The fingerprint as the widgets now describe it."""
+        new = self._fp
+        form = FORMS[self.form_row.get_selected()]
+        if form != new.form_factor:
+            new = edit.with_form(new, form)
+        screen = self._screens[self.screen_row.get_selected()]
+        if (screen.width, screen.height) != (new.screen.width, new.screen.height):
+            new = edit.with_screen(new, f"{screen.width}x{screen.height}")
+        country = self._countries[self.country_row.get_selected()]
+        if w11.REGIONS[country].locale != new.locale:
+            new = edit.with_region(new, country, keep_timezone=True)
+        timezone = self.timezone_row.get_text().strip()
+        if timezone != new.timezone:
+            new = edit.with_timezone(new, timezone)
+        cores = self._cores[self.cores_row.get_selected()]
+        if cores != new.hardware_concurrency:
+            new = edit.with_cores(new, cores)
+        rate = self._rates[self.audio_row.get_selected()]
+        if rate != new.audio.sample_rate:
+            new = edit.with_audio_rate(new, rate)
+        if self.camera_row.get_active() != bool(new.media_devices.get("webcams")):
+            new = edit.with_camera(new, self.camera_row.get_active())
+        wanted = {name for name, row in self._font_rows.items() if row.get_active()}
+        have = set(new.fonts) & set(self._font_rows)
+        if wanted != have:
+            new = edit.with_fonts(new, add=sorted(wanted - have), remove=sorted(have - wanted))
+        return new
+
     def _on_save(self, *_args) -> None:
+        profile = self._profile
+        name = self.name_row.get_text().strip()
+        if not name:
+            return self._say("Give the profile a name.")
+        if name != profile.name and store.find_by_name(name):
+            return self._say(f"A profile named {name!r} already exists.")
         if problem := self.graphics.problem():
-            self.status_label.set_text(problem)
-            self.status_label.set_visible(True)
-            return
-        for field, value in self.graphics.value().items():
-            setattr(self._profile, field, value)
-        store.save(self._profile)
+            return self._say(f"Graphics: {problem}")
+        try:
+            new = self._fingerprint()
+        except edit.EditError as exc:
+            return self._say(str(exc))
+        if hard := errors(validate(new, engine_version=new.engine_version)):
+            return self._say("Not saved: " + "; ".join(i.message for i in hard))
+
+        updates: dict[str, object] = {"name": name, **self.graphics.value()}
+        updates["appearance"] = APPEARANCES[self.appearance_row.get_selected()][0]
+        ua = self.ua_row.get_text().strip()
+        updates["user_agent"] = ua if ua and ua != new.ua else None
+        updates["dns"] = profile.dns.model_copy(
+            update={
+                "mode": "remote" if self.dns_row.get_selected() else "resolver",
+                "upstream": self._upstreams[self.upstream_row.get_selected()],
+            }
+        )
+        password = None
+        spec = self.endpoint_row.get_text().strip()
+        if spec != self._endpoint_before:
+            try:
+                updates["endpoint"], password = proxy.parse(spec)
+            except proxy.ProxyError as exc:
+                return self._say(str(exc))
+
+        saved = profile.model_copy(update=updates)
+        if new != self._fp:
+            store.save_fingerprint(profile.id, new)
+        store.save(saved)
+        if password:
+            secrets.store(profile.id, password, label=f"kiwi-fox {saved.name}")
         self.close()
         if self._on_saved:
-            self._on_saved(self._profile)
+            self._on_saved(saved)
 
 
 class ProfileDetails(Adw.Dialog):
@@ -433,10 +668,11 @@ class ProfileDetails(Adw.Dialog):
         machine.add(_row("CPU cores", str(fp.hardware_concurrency)))
         self.graphics_row = _row("Graphics", describe_graphics(profile, fp))
         self.graphics_row.set_subtitle_lines(4)
-        change = Gtk.Button(label="Change…", valign=Gtk.Align.CENTER)
-        change.connect("clicked", self._on_change_graphics)
-        self.graphics_row.add_suffix(change)
         machine.add(self.graphics_row)
+        for issue in check_window_fits(fp):
+            note = _row("Screen and window", issue.message)
+            note.set_subtitle_lines(0)
+            machine.add(note)
         machine.add(
             _row("Screen", f"{fp.screen.width}x{fp.screen.height} @{fp.screen.device_pixel_ratio}")
         )
@@ -448,7 +684,8 @@ class ProfileDetails(Adw.Dialog):
         page.add(machine)
 
         ident = Adw.PreferencesGroup(title="Identity")
-        ident.add(_row("User agent", fp.ua))
+        ident.add(_row("User agent", profile.user_agent or fp.ua))
+        ident.add(_row("Appearance", dict(APPEARANCES)[profile.appearance]))
         ident.add(_row("Locale", f"{fp.locale} / {fp.timezone}"))
         ident.add(_row("Engine", f"camoufox {fp.engine_version}"))
         ident.add(_row("Seed", fp.seed))
@@ -466,19 +703,23 @@ class ProfileDetails(Adw.Dialog):
         page.add(limits)
 
         header = Adw.HeaderBar()
+        edit_button = Gtk.Button(label="Edit…")
+        edit_button.connect("clicked", self._on_edit)
+        header.pack_start(edit_button)
         view = Adw.ToolbarView()
         view.add_top_bar(header)
         view.set_content(page)
         self.set_child(view)
 
-    def _on_change_graphics(self, *_args) -> None:
+    def _on_edit(self, *_args) -> None:
+        parent = self.get_root()
+
         def saved(profile) -> None:
-            fp = store.load_fingerprint(profile.id)
-            self.graphics_row.set_subtitle(describe_graphics(profile, fp))
             if self._on_changed:
                 self._on_changed(profile)
 
-        GraphicsDialog(self._profile, saved).present(self)
+        self.close()
+        ProfileEditor(self._profile, saved).present(parent)
 
 
 def _row(title: str, subtitle: str) -> Adw.ActionRow:

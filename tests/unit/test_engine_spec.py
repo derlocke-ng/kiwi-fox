@@ -393,16 +393,141 @@ def test_touch_points_are_not_emitted(engine, fp, profile):
     assert "navigator.maxTouchPoints" not in engine.config(fp, profile, None)
 
 
-def test_hardware_rendering_needs_a_node_mesa_can_drive(engine, fp, profile, monkeypatch):
+def _plan(monkeypatch, kind, devices=(), env=None):
     from kiwi_fox.core import gpu
 
+    monkeypatch.setattr(
+        gpu, "plan", lambda prefer=None: gpu.Plan(kind, devices, env or {}, None, "")
+    )
+
+
+def test_the_container_gets_what_the_gpu_plan_says(engine, fp, profile, monkeypatch):
     spec = engine.build_spec(profile, fp, gateway="kf-gw-x", exit_ip=None)
     assert spec.devices == ["/dev/dri/renderD128"]
     assert engine.prefs(fp, profile)["gfx.webrender.software"] is False
-    # an NVIDIA-only host on the proprietary driver: nothing to pass through
-    monkeypatch.setattr(gpu, "render_node", lambda: None)
+
+    # the host's NVIDIA driver, injected: one CDI device, and no VA-API to force
+    _plan(monkeypatch, "nvidia", ("nvidia.com/gpu=all",))
     spec = engine.build_spec(profile, fp, gateway="kf-gw-x", exit_ip=None)
-    assert spec.devices == []
+    assert spec.devices == ["nvidia.com/gpu=all"]
+    assert "--device" in podman.spec_args(spec) and "nvidia.com/gpu=all" in podman.spec_args(spec)
+    prefs = engine.prefs(fp, profile)
+    assert prefs["gfx.webrender.software"] is False
+    assert prefs["media.hardware-video-decoding.force-enabled"] is False
+
+    # offloading: both nodes, and the variable that moves Mesa to the other GPU
+    _plan(
+        monkeypatch,
+        "mesa-prime",
+        ("/dev/dri/renderD128", "/dev/dri/renderD129"),
+        {"DRI_PRIME": "1002:1681"},
+    )
+    spec = engine.build_spec(profile, fp, gateway="kf-gw-x", exit_ip=None)
+    assert len(spec.devices) == 2 and spec.env["DRI_PRIME"] == "1002:1681"
+    assert engine.prefs(fp, profile)["media.hardware-video-decoding.force-enabled"] is True
+
+
+def test_software_is_honest_about_itself(engine, fp, profile, monkeypatch):
+    # Forcing hardware prefs with no GPU crash-loops the GPU process.
+    _plan(monkeypatch, "software")
+    spec = engine.build_spec(profile, fp, gateway="kf-gw-x", exit_ip=None)
+    assert spec.devices == [] and "MOZ_WEBRENDER" not in spec.env
     prefs = engine.prefs(fp, profile)
     assert prefs["gfx.webrender.software"] is True
     assert prefs["layers.gpu-process.enabled"] is False
+
+
+def test_a_measured_software_host_overrules_the_plan(engine, fp, profile, monkeypatch):
+    from kiwi_fox.core import gpu
+
+    monkeypatch.setattr(gpu, "measurement", lambda: {"kind": "mesa", "accelerated": False})
+    assert engine.prefs(fp, profile)["gfx.webrender.software"] is True
+    assert engine.build_spec(profile, fp, gateway="kf-gw-x", exit_ip=None).devices == []
+
+
+# ------------------------------------------------------------------ appearance
+def test_dark_reaches_the_chrome_the_pages_and_gtk(engine, fp, profile, monkeypatch):
+    from kiwi_fox.core import desktop
+
+    # unknown desktop: leave Firefox to its own default rather than guess
+    assert "ui.systemUsesDarkTheme" not in engine.prefs(fp, profile)
+    assert "GTK_THEME" not in engine.env(fp, profile, None)
+
+    monkeypatch.setattr(desktop, "prefers_dark", lambda: True)  # appearance defaults to "host"
+    assert engine.prefs(fp, profile)["ui.systemUsesDarkTheme"] == 1
+    assert engine.env(fp, profile, None)["GTK_THEME"] == "Adwaita:dark"
+
+    light = profile.model_copy(update={"appearance": "light"})
+    assert engine.prefs(fp, light)["ui.systemUsesDarkTheme"] == 0
+    assert "GTK_THEME" not in engine.env(fp, light, None)
+
+    monkeypatch.setattr(desktop, "prefers_dark", lambda: False)
+    dark = profile.model_copy(update={"appearance": "dark"})
+    assert engine.prefs(fp, dark)["ui.systemUsesDarkTheme"] == 1
+
+
+def test_a_custom_user_agent_replaces_both_places(engine, fp, profile):
+    ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:157.0) Gecko/20100101 Firefox/157.0"
+    cfg = engine.config(fp, profile.model_copy(update={"user_agent": ua}), None)
+    assert cfg["navigator.userAgent"] == cfg["headers.User-Agent"] == ua
+    assert engine.config(fp, profile, None)["navigator.userAgent"] == fp.ua
+
+
+# ------------------------------------------------- one fingerprint, two engines
+def _env_config(engine, fp, profile):
+    env = engine.env(fp, profile, "203.0.113.9")
+    return json.loads(
+        "".join(
+            env[f"CAMOU_CONFIG_{i + 1}"] for i in range(len(env)) if f"CAMOU_CONFIG_{i + 1}" in env
+        )
+    )
+
+
+def test_only_keys_the_installed_engine_knows_are_sent(engine, fp, profile, tmp_path, monkeypatch):
+    # 156 dropped battery:*, canvas:seed, fonts:spacing_seed and more; 152 ships no
+    # schema at all. The same fingerprint has to launch on both.
+    from kiwi_fox.core import paths
+
+    monkeypatch.setattr(paths, "engines_dir", lambda: tmp_path)
+    laptop = profile.model_copy(update={"webgl": "host"})
+    everything = _env_config(engine, fp, laptop)  # no schema in the engine: nothing filtered
+    assert {"canvas:seed", "fonts:spacing_seed", "navigator.languages"} <= set(everything)
+
+    schema_156 = Path(__file__).parent / "data" / "camoufox-properties-156.0.1.json"
+    known = {e["property"] for e in json.loads(schema_156.read_text())}
+    engine_dir = tmp_path / f"camoufox-{fp.engine_version}"
+    engine_dir.mkdir()
+    (engine_dir / "properties.json").write_text(schema_156.read_text())
+    sent = _env_config(engine, fp, laptop)
+    assert set(sent) <= known
+    assert set(everything) - set(sent) >= {
+        "canvas:seed",
+        "fonts:spacing_seed",
+        "navigator.languages",
+    }
+    # nothing that matters was lost on the way
+    for key in ("navigator.userAgent", "headers.User-Agent", "screen.availHeight", "timezone",
+                "locale:all", "fonts", "audio:seed", "webGl:renderer", "webGl:parameters",
+                "webGl2:supportedExtensions", "webGl:shaderPrecisionFormats", "voices",
+                "voices:blockIfNotDefined", "mediaDevices:micros", "webrtc:ipv4"):  # fmt: skip
+        assert key in sent, f"{key} is not in the 156 schema: it would be silently dropped"
+
+
+def test_renderer_strings_also_go_through_firefoxs_own_prefs(engine, fp, profile):
+    # Engine 156 answers plain RENDERER from the real context whatever its config
+    # table says: on a host drawing in software every page was told "llvmpipe".
+    from kiwi_fox.core.fingerprint import webgl
+
+    for series in webgl.SERIES:
+        p = profile.model_copy(update={"webgl": "preset", "webgl_series": series.key})
+        prefs = engine.prefs(fp, p)
+        assert prefs["webgl.override-unmasked-vendor"] == series.vendor
+        assert webgl.sanitize_renderer(prefs["webgl.override-unmasked-renderer"]) == series.renderer
+    for mode in ("off", "raw"):
+        prefs = engine.prefs(fp, profile.model_copy(update={"webgl": mode}))
+        assert not [k for k in prefs if k.startswith("webgl.override")], mode
+    card = "ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 Direct3D11 vs_5_0 ps_5_0, D3D11-32.0.15.6094)"
+    custom = profile.model_copy(
+        update={"webgl": "custom", "webgl_vendor": "Google Inc. (NVIDIA)", "webgl_renderer": card}
+    )
+    assert engine.prefs(fp, custom)["webgl.override-unmasked-renderer"] == card

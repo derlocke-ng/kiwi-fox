@@ -7,3 +7,7 @@ dist/
 build/
 *.egg-info/
 docs/testbed.local.md
+# Working notes for the coding agent, like CLAUDE.md in the other kiwi apps.
+kiwi-fox.md
+CLAUDE.md
+.claude/

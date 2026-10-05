@@ -35,12 +35,37 @@ def containers_dir() -> Path:
     raise SetupError("cannot find the containers/ directory next to the package")
 
 
+SOURCE_LABEL = "kiwi-fox.source"
+
+
+def source_hash(name: str) -> str:
+    """A fingerprint of everything an image is built from."""
+    import hashlib
+
+    digest = hashlib.sha256()
+    root = containers_dir() / name
+    for path in sorted(p for p in root.rglob("*") if p.is_file() and "__pycache__" not in p.parts):
+        digest.update(str(path.relative_to(root)).encode() + b"\0" + path.read_bytes() + b"\0")
+    return digest.hexdigest()[:16]
+
+
+def image_state(image: str, name: str) -> str:
+    """missing | stale | current. Stale: built from sources an update has since
+    replaced — the app is new and the image is not."""
+    if podman._run(["image", "exists", image], check=False).returncode != 0:
+        return "missing"
+    label = podman._run(
+        ["image", "inspect", "--format", f'{{{{index .Labels "{SOURCE_LABEL}"}}}}', image],
+        check=False,
+    ).stdout.strip()
+    return "current" if label == source_hash(name) else "stale"
+
+
 def build_images(progress: Progress | None = None, force: bool = False) -> list[str]:
     root = containers_dir()
     built = []
     for image, name in IMAGES:
-        exists = podman._run(["image", "exists", image], check=False).returncode == 0
-        if exists and not force:
+        if image_state(image, name) == "current" and not force:
             continue
         if progress:
             progress(f"Building the {name} image — this takes a few minutes…")
@@ -50,6 +75,8 @@ def build_images(progress: Progress | None = None, force: bool = False) -> list[
                 "build",
                 "-t",
                 image,
+                "--label",
+                f"{SOURCE_LABEL}={source_hash(name)}",
                 "-f",
                 str(root / name / "Containerfile"),
                 str(root / name),
@@ -117,6 +144,15 @@ def run(progress: Progress | None = None, *, engine_version: str | None = None) 
         )
     except engine_fetch.RepairError as exc:
         steps.append(f"gpu helpers: unavailable, software rendering ({exc})")
+
+    say("Checking what the browser will draw with…")
+    try:
+        from . import gpu
+
+        gpu.measure(engine_dir)
+        steps.append(f"rendering: {gpu.describe()}")
+    except Exception as exc:  # noqa: BLE001 - never fail setup over a measurement
+        steps.append(f"rendering: could not be measured ({exc})")
 
     say("Fetching DNS resolver stamps…")
     try:

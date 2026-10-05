@@ -34,6 +34,24 @@ kiwi-fox-gui                                     # "Kiwi-Fox" in your app grid
 Endpoint formats: `socks5://user:pass@host:port`, `http://…`, `https://…`, and the
 vendor paste format `host:port:user:pass`.
 
+## Changing a profile
+
+Everything a profile reports can be changed after it was created — in the GUI
+under **Edit…**, or:
+
+```
+kiwi-fox set work --screen 2560x1440 --cores 12
+kiwi-fox set work --country SE --timezone Europe/Stockholm
+kiwi-fox set work --font-add Lato --font-remove "Open Sans"    # kiwi-fox fonts work
+kiwi-fox set work --appearance dark                            # or light, or host
+kiwi-fox set work --user-agent "Mozilla/5.0 …"                 # --default-user-agent undoes it
+kiwi-fox set work --endpoint socks5://user:pass@host:port
+```
+
+Edits are checked together and nothing is saved unless the result is coherent. One
+thing is not there because it does not exist: the Windows version. Firefox sends
+the same user agent on Windows 10 and 11.
+
 ## Graphics
 
 Firefox never tells a page which graphics card you have — only the *series* it
@@ -51,6 +69,14 @@ kiwi-fox webgl work --mode off                   # no WebGL at all
 Also `--mode custom` with your own `--vendor`/`--renderer`, and `--mode raw` to
 spoof nothing. `docs/detection-notes.md` says what each mode reports and what none
 of them can change.
+
+The browser has to draw on a real GPU: frames drawn in software are how a virtual
+machine looks, whatever the profile says. `kiwi-fox doctor` measures it with the
+engine's own probe and says which GPU it got, or that it got none. Where the
+desktop runs on an NVIDIA card with the proprietary driver, that driver is brought
+into the container by `nvidia-container-toolkit` (CDI); without it kiwi-fox falls
+back to another GPU if there is one. `KIWI_FOX_GPU=mesa|nvidia|software` overrides
+the choice.
 
 ## How a profile is isolated
 
@@ -71,7 +97,7 @@ It does not promise "undetectable". Profiles are isolated for storage, IP and
 every surface the engine can spoof, but **not** against hardware-level
 cross-browser identifiers: the frame the GPU actually draws and hardware timing
 come from the real machine and are the same for every profile on it. That
-limit is measured and documented, not hidden — see `kiwi-fox.md` and
+limit is measured and documented, not hidden — see
 `docs/detection-notes.md`.
 
 No automation, no bots, no bulk account creation. Interactive browsing only.
@@ -80,6 +106,11 @@ No automation, no bots, no bulk account creation. Interactive browsing only.
 
 Rootless Podman, a Wayland session (X11 works with a weaker boundary), Python
 3.12+, GTK4 + libadwaita for the GUI, and `secret-tool` for credential storage.
+On a machine whose desktop runs on the proprietary NVIDIA driver, also
+`nvidia-container-toolkit` with its CDI spec generated.
+
+After updating, run `kiwi-fox setup` again: it rebuilds the container images when
+the new version changed what they are built from, and does nothing otherwise.
 
 ## License
 
@@ -91,7 +122,7 @@ derived from MPL-2.0 sources are included and stay under that licence:
 
 - `src/kiwi_fox/core/fingerprint/data/webgl-windows.json` — WebGL records of real
   Windows machines, extracted from Camoufox's `webgl_data.db`
-- `tests/unit/data/camoufox-properties-152.0.4.json` — Camoufox's config schema,
-  used to test that only keys the engine knows are ever emitted
+- `tests/unit/data/camoufox-properties-*.json` — Camoufox's config schema for two
+  engine versions, used to test that only keys an engine knows are ever sent
 - `src/kiwi_fox/core/fingerprint/sanitizer.py` — a Python port of Firefox's
   `dom/canvas/SanitizeRenderer.cpp`

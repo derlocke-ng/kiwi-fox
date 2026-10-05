@@ -433,7 +433,14 @@ def expected_gl_helpers(engine_dir: Path) -> list[str]:
     if not lib.exists():
         return []
     blob = lib.read_bytes()
-    return [h for h in KNOWN_HELPERS if b"\x00" + h.encode() + b"\x00" in blob]
+    # 156 spawns one merged binary and names it in a UTF-16 literal
+    # (`u"gfxtest"_ns`), where a byte search for the ASCII name finds nothing;
+    # "glxtest" and "vaapitest" survive in that build only as log labels. Reading
+    # those labels as the helpers it wants declared a complete engine unable to
+    # render in hardware.
+    if "gfxtest".encode("utf-16-le") in blob:
+        return ["gfxtest"]
+    return [h for h in ("glxtest", "vaapitest") if b"\x00" + h.encode() + b"\x00" in blob]
 
 
 def gl_helpers_installed(engine_dir: Path) -> list[str]:
@@ -630,12 +637,12 @@ MOZ_RELEASE = (
 
 
 def install_gl_helpers_from_mozilla(engine_dir: Path, version: str) -> list[str]:
-    """Take glxtest/vaapitest from Mozilla's own release tarball.
+    """Take the GPU probe helpers from Mozilla's own release tarball.
 
-    The distro's Firefox is the wrong source: Fedora 43 ships 156, which renamed
-    the helpers to a single `gfxtest`, while Camoufox 152 *and* 156 both still
-    spawn `glxtest` and `vaapitest`. Mozilla's tarball for the engine's own base
-    version has exactly the right binaries by definition.
+    Mozilla's tarball for the engine's own base version has exactly the right
+    binaries by definition: `glxtest` and `vaapitest` up to 155, one merged
+    `gfxtest` from 156. Camoufox 152 ships neither; its 156 builds include
+    `gfxtest`, so there is nothing to fetch for them.
     """
     import tarfile
     import urllib.request

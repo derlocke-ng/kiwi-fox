@@ -8,6 +8,7 @@ rather than software that has to notice. Measured working rootless on this host
 
 from __future__ import annotations
 
+import contextlib
 import datetime as dt
 import json
 import os
@@ -343,8 +344,24 @@ def launch(profile: Profile, *, strict: bool = False, start_url: str | None = No
         prefs=get_engine(fp.engine).prefs(fp, profile),  # type: ignore[attr-defined]
         allow_prefs={"webgl.disabled"} if profile.webgl == "off" else set(),
     )
-    from .fingerprint.validator import check_webgl_mode
+    from . import gpu
+    from .fingerprint.validator import check_webgl_mode, check_window_fits
 
+    engine_dir = paths.engines_dir() / f"camoufox-{fp.engine_version}"
+    if profile.gpu_accel and gpu.measurement() is None and (engine_dir / "camoufox").exists():
+        # Once per host: the prefs below depend on whether a GPU is really
+        # reachable, and guessing wrong either way costs — forced hardware with no
+        # GPU crash-loops, software with one reads as a virtual machine.
+        with contextlib.suppress(Exception):  # a failed measurement must not block a launch
+            gpu.measure(engine_dir)
+    issues += check_window_fits(fp)
+    if profile.user_agent:
+        from .fingerprint import edit
+
+        issues += [
+            Issue("warn", "ua.custom", f"custom user agent: {note}")
+            for note in edit.check_user_agent(profile.user_agent, fp.engine_version)
+        ]
     issues += check_webgl_mode(
         profile.webgl, profile.webgl_vendor, profile.webgl_renderer, profile.webgl_series
     )
@@ -365,7 +382,6 @@ def launch(profile: Profile, *, strict: bool = False, start_url: str | None = No
             "warnings present and --strict given:\n  " + "\n  ".join(str(i) for i in warnings)
         )
 
-    engine_dir = paths.engines_dir() / f"camoufox-{fp.engine_version}"
     if not (engine_dir / "camoufox").exists():
         raise LaunchError(
             f"engine missing at {engine_dir}; run `kiwi-fox engine fetch {fp.engine_version}`"

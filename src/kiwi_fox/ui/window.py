@@ -12,7 +12,7 @@ from gi.repository import Adw, Gio, GLib, Gtk  # noqa: E402
 from ..core import launch, paths, podman, secrets, store  # noqa: E402
 from ..core.engines import fetch as engine_fetch  # noqa: E402
 from . import worker  # noqa: E402
-from .dialogs import GraphicsDialog, NewProfileDialog, ProfileDetails  # noqa: E402
+from .dialogs import NewProfileDialog, ProfileDetails, ProfileEditor  # noqa: E402
 
 REFRESH_SECONDS = 4
 
@@ -108,7 +108,7 @@ class Window(Adw.ApplicationWindow):
 
     def _build_row(self, profile) -> Adw.ActionRow:
         row = Adw.ActionRow(title=profile.name, activatable=True)
-        row.connect("activated", lambda *_: ProfileDetails(profile).present(self))
+        row.connect("activated", lambda *_: ProfileDetails(profile, self._after_edit).present(self))
 
         run_button = Gtk.Button(valign=Gtk.Align.CENTER)
         run_button.connect("clicked", self._on_toggle, profile)
@@ -117,7 +117,7 @@ class Window(Adw.ApplicationWindow):
 
         menu = Gio.Menu()
         menu.append("Details", f"win.details::{profile.id}")
-        menu.append("Graphics…", f"win.graphics::{profile.id}")
+        menu.append("Edit…", f"win.edit::{profile.id}")
         menu.append("Duplicate", f"win.duplicate::{profile.id}")
         menu.append("Delete", f"win.delete::{profile.id}")
         more = Gtk.MenuButton(
@@ -133,7 +133,7 @@ class Window(Adw.ApplicationWindow):
             return
         for name, handler in (
             ("details", self._act_details),
-            ("graphics", self._act_graphics),
+            ("edit", self._act_edit),
             ("duplicate", self._act_duplicate),
             ("delete", self._act_delete),
         ):
@@ -167,13 +167,15 @@ class Window(Adw.ApplicationWindow):
 
     def _act_details(self, _action, param) -> None:
         if profile := self._profile(param.get_string()):
-            ProfileDetails(profile).present(self)
+            ProfileDetails(profile, self._after_edit).present(self)
 
-    def _act_graphics(self, _action, param) -> None:
+    def _after_edit(self, profile) -> None:
+        self.refresh()
+        self._toast(f"Saved {profile.name}")
+
+    def _act_edit(self, _action, param) -> None:
         if profile := self._profile(param.get_string()):
-            GraphicsDialog(
-                profile, lambda p: self._toast(f"Graphics changed for {p.name}")
-            ).present(self)
+            ProfileEditor(profile, self._after_edit).present(self)
 
     def _act_duplicate(self, _action, param) -> None:
         profile = self._profile(param.get_string())
@@ -276,6 +278,11 @@ class Window(Adw.ApplicationWindow):
                 missing.append("blocklists")
             if not secrets.available():
                 missing.append("secret-tool")
+            from ..core import gpu
+
+            seen = gpu.measurement()
+            if (seen is not None and not seen.get("accelerated")) or gpu.plan().kind == "software":
+                missing.append("hardware rendering (software reads as a virtual machine)")
             return missing
 
         def done(missing) -> None:

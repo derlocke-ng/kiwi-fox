@@ -109,6 +109,23 @@ def check_webgl_mode(
     return out
 
 
+def check_window_fits(fp: Fingerprint) -> list[Issue]:
+    """Any window size is normal — people resize all the time. A window *larger
+    than the screen the profile claims* is the one case a page can notice."""
+    height = w11.host_window_height()
+    if height <= fp.screen.avail_height:
+        return []
+    return [
+        _warn(
+            "window.screen",
+            f"the browser window opens {height}px tall, but this profile claims a "
+            f"{fp.screen.width}x{fp.screen.height} screen with {fp.screen.avail_height}px "
+            "usable: taller than its own screen. Give the profile a larger screen "
+            "(`kiwi-fox set NAME --screen 2560x1440`)",
+        )
+    ]
+
+
 def validate(
     fp: Fingerprint,
     *,

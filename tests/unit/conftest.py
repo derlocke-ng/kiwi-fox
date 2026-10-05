@@ -15,8 +15,12 @@ def _hermetic(tmp_path, monkeypatch):
     drawn here must be the same one drawn anywhere."""
     for var in ("XDG_DATA_HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME"):
         monkeypatch.setenv(var, str(tmp_path / var.lower()))
-    monkeypatch.setattr("kiwi_fox.core.gpu.host_family", lambda: None)
-    monkeypatch.setattr("kiwi_fox.core.gpu.render_node", lambda: "/dev/dri/renderD128")
+    from kiwi_fox.core import gpu
+
+    monkeypatch.setattr(
+        gpu, "plan", lambda prefer=None: gpu.Plan("mesa", ("/dev/dri/renderD128",), {}, None, "")
+    )
+    monkeypatch.setattr("kiwi_fox.core.desktop.prefers_dark", lambda: None)
 
 
 @pytest.fixture

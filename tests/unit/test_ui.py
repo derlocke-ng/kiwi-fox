@@ -156,26 +156,132 @@ def test_chooser_shows_an_existing_profiles_choice(profile):
         assert (got["webgl_vendor"], got["webgl_renderer"]) == (p.webgl_vendor, p.webgl_renderer)
 
 
-def test_graphics_dialog_saves_the_change(profile):
+def _editor(profile):
+    from kiwi_fox.ui.dialogs import ProfileEditor
+
+    saved = []
+    return ProfileEditor(profile, saved.append), saved
+
+
+def test_editor_shows_the_profile_as_it_is(profile):
+    from kiwi_fox.core.fingerprint import edit
+
+    fp = _stored(profile)
+    editor, _saved = _editor(profile)
+    assert editor.name_row.get_text() == profile.name
+    assert editor.timezone_row.get_text() == fp.timezone
+    assert editor.ua_row.get_text() == fp.ua
+    assert not editor.ua_note.get_visible(), "the engine's own user agent needs no warning"
+    assert editor._cores[editor.cores_row.get_selected()] == fp.hardware_concurrency
+    shown = editor._screens[editor.screen_row.get_selected()]
+    assert (shown.width, shown.height) == (fp.screen.width, fp.screen.height)
+    on = {name for name, row in editor._font_rows.items() if row.get_active()}
+    assert on == set(fp.fonts) & set(edit.optional_fonts())
+    assert editor.graphics.mode == profile.webgl
+
+
+def test_saving_without_touching_anything_changes_nothing(profile):
     from kiwi_fox.core import store
-    from kiwi_fox.ui.dialogs import GraphicsDialog
+
+    fp = _stored(profile)
+    editor, saved = _editor(profile)
+    editor._on_save()
+    assert saved, editor.status_label.get_text()
+    assert store.load_fingerprint(profile.id) == fp
+    again = store.load(profile.id)
+    assert (again.name, again.user_agent, again.webgl) == (profile.name, None, profile.webgl)
+
+
+def test_editor_saves_every_kind_of_change(profile):
+    from kiwi_fox.core import store
+    from kiwi_fox.core.fingerprint import edit
+    from kiwi_fox.core.fingerprint import windows11 as w11
+
+    fp = _stored(profile)
+    editor, saved = _editor(profile)
+    other_form = "laptop" if fp.form_factor == "desktop" else "desktop"
+    editor.name_row.set_text("renamed")
+    editor.form_row.set_selected(["desktop", "laptop"].index(other_form))
+    editor.screen_row.set_selected(len(editor._screens) - 1)
+    wanted_screen = editor._screens[-1]
+    cores = next(c for c in editor._cores if c != fp.hardware_concurrency)
+    editor.cores_row.set_selected(editor._cores.index(cores))
+    editor.country_row.set_selected(editor._countries.index("SE"))
+    editor.appearance_row.set_selected(2)  # dark
+    editor.camera_row.set_active(False)
+    flip = edit.optional_fonts()[0]
+    editor._font_rows[flip].set_active(flip not in fp.fonts)
+    editor.graphics.set_mode("preset")
+    editor.graphics._radios["intel-hd-400"].set_active(True)
+    editor._on_save()
+    assert saved, editor.status_label.get_text()
+
+    new, p = store.load_fingerprint(profile.id), store.load(profile.id)
+    assert p.name == "renamed" and p.appearance == "dark"
+    assert (p.webgl, p.webgl_series) == ("preset", "intel-hd-400")
+    assert new.form_factor == other_form
+    assert (new.screen.width, new.screen.height) == (wanted_screen.width, wanted_screen.height)
+    assert new.hardware_concurrency == cores
+    assert new.locale == "sv-SE" and new.timezone == "Europe/Stockholm"
+    assert new.voices == w11.voices_for(w11.REGIONS["SE"])
+    assert (flip in new.fonts) != (flip in fp.fonts)
+    assert new.media_devices["micros"] == 1, "never a machine without a microphone"
+    # what was not touched is exactly as it was
+    assert (new.seed, new.canvas_seed, new.audio.seed, new.ua) == (
+        fp.seed,
+        fp.canvas_seed,
+        fp.audio.seed,
+        fp.ua,
+    )
+
+
+def test_editor_refuses_what_would_not_be_coherent(profile):
+    from kiwi_fox.core import store
+
+    fp = _stored(profile)
+    editor, saved = _editor(profile)
+    editor.timezone_row.set_text("Mars/Olympus")
+    editor._on_save()
+    assert not saved and "timezone" in editor.status_label.get_text()
+    editor.timezone_row.set_text(fp.timezone)
+    editor.name_row.set_text("")
+    editor._on_save()
+    assert not saved and "name" in editor.status_label.get_text()
+    editor.name_row.set_text(profile.name)
+    editor.graphics.set_mode("custom")
+    editor.graphics.renderer_row.set_text("")
+    editor._on_save()
+    assert not saved and "Graphics" in editor.status_label.get_text()
+    assert store.load_fingerprint(profile.id) == fp, "a refused save must not write anything"
+
+
+def test_a_custom_user_agent_is_saved_and_explained(profile):
+    from kiwi_fox.core import store
+
+    fp = _stored(profile)
+    editor, saved = _editor(profile)
+    editor.ua_row.set_text("Mozilla/5.0 (X11; Linux x86_64; rv:140.0) Gecko/20100101 Firefox/140.0")
+    note = editor.ua_note.get_subtitle()
+    assert editor.ua_note.get_visible() and "Windows" in note and "Firefox" in note
+    editor._on_save()
+    assert saved and store.load(profile.id).user_agent.startswith("Mozilla/5.0 (X11")
+    # and back to the engine's own, which is stored as "no override"
+    editor, saved = _editor(store.load(profile.id))
+    assert editor.ua_note.get_visible()
+    editor.ua_row.set_text(fp.ua)
+    editor._on_save()
+    assert saved and store.load(profile.id).user_agent is None
+
+
+def test_the_screens_offered_follow_the_kind_of_machine(profile):
+    from kiwi_fox.core.fingerprint import edit
 
     _stored(profile)
-    saved = []
-    dialog = GraphicsDialog(profile, saved.append)
-    dialog.graphics.set_mode("preset")
-    dialog.graphics._radios["geforce-gtx-980"].set_active(True)
-    dialog._on_save()
-    again = store.load(profile.id)
-    assert (again.webgl, again.webgl_series) == ("preset", "geforce-gtx-980")
-    assert saved and saved[0].id == profile.id
-    # an unusable choice is refused and says why
-    dialog = GraphicsDialog(again)
-    dialog.graphics.set_mode("custom")
-    dialog.graphics.vendor_row.set_text("")
-    dialog._on_save()
-    assert dialog.status_label.get_visible() and "vendor" in dialog.status_label.get_text()
-    assert store.load(profile.id).webgl == "preset"
+    editor, _saved = _editor(profile)
+    for index, form in enumerate(("desktop", "laptop")):
+        editor.form_row.set_selected(index)
+        assert editor._screens == edit.screen_choices(form)
+        assert editor.screen_row.get_model().get_n_items() == len(edit.screen_choices(form))
 
 
 def test_profile_details_constructs_in_every_mode(profile):

@@ -194,7 +194,9 @@ def test_host_series_prefers_a_measurement_over_the_vendor(monkeypatch):
     from kiwi_fox.core import gpu
 
     assert webgl.host_series() == (None, "unknown")
-    monkeypatch.setattr(gpu, "host_family", lambda: "amd")
+    monkeypatch.setattr(
+        gpu, "plan", lambda prefer=None: gpu.Plan("mesa", ("/dev/dri/renderD128",), {}, "amd", "")
+    )
     series, how = webgl.host_series()
     assert (series.key, how) == ("radeon-r9-200", "family")
     webgl.remember_host_renderer("Intel(R) HD Graphics 400, or similar")
@@ -205,21 +207,23 @@ def test_host_series_prefers_a_measurement_over_the_vendor(monkeypatch):
     assert webgl.host_series()[1] == "family"
 
 
-def test_render_node_skips_what_mesa_cannot_drive(tmp_path, monkeypatch):
-    from kiwi_fox.core import gpu
+@pytest.mark.parametrize("series", webgl.SERIES, ids=lambda s: s.key)
+def test_firefox_sanitises_the_driver_string_back_to_the_series(series):
+    # The pref value goes through Firefox's own sanitiser, for RENDERER and for
+    # the debug extension. It must come out as exactly the string the engine
+    # config carries, or the two would disagree again.
+    raw = webgl.driver_string(series.renderer)
+    assert raw != series.renderer and raw.count(", ") == 2, "ANGLE's driver field is missing"
+    assert webgl.sanitize_renderer(raw) == series.renderer
+    assert webgl.firefox_prefs(series) == {
+        "webgl.override-unmasked-vendor": series.vendor,
+        "webgl.override-unmasked-renderer": raw,
+    }
 
-    monkeypatch.undo()  # the autouse fixture pins render_node; this tests the real one
-    drm = tmp_path / "drm"
-    for node, driver, vendor in (
-        ("renderD128", "nvidia", "0x10de"),
-        ("renderD129", "amdgpu", "0x1002"),
-    ):
-        dev = drm / node / "device"
-        (tmp_path / "drivers" / driver).mkdir(parents=True, exist_ok=True)
-        dev.mkdir(parents=True)
-        (dev / "driver").symlink_to(tmp_path / "drivers" / driver)
-        (dev / "vendor").write_text(vendor + "\n")
-    monkeypatch.setattr(gpu, "DRM", drm)
-    monkeypatch.setattr(gpu.Path, "exists", lambda self: True)
-    assert gpu.render_node() == "/dev/dri/renderD129"
-    assert gpu.host_family() == "amd"
+
+def test_a_custom_driver_string_is_passed_on_as_it_is():
+    card = "ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 Direct3D11 vs_5_0 ps_5_0, D3D11-32.0.15.6094)"
+    assert webgl.driver_string(card) == card
+    # Firefox would report the series for it, which is what a real one does
+    assert webgl.sanitize_renderer(card) == webgl.BY_KEY["geforce-gtx-980"].renderer
+    assert webgl.driver_string("Some Free Text") == "Some Free Text"

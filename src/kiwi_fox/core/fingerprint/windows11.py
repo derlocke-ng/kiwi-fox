@@ -292,8 +292,15 @@ SAMPLE_RATES = (44100, 48000)
 HOST_WINDOW_FILE = "host-window-height.txt"
 
 
-def host_window_height() -> int | None:
-    """How tall a window Firefox actually opens on this host, if measured.
+# What a fresh engine window reports as outerHeight: 1040, plus the invisible 26px
+# resize border GTK adds above and below on Wayland. The same on every host
+# measured. Until a probe has measured this machine, assume it — a machine nobody
+# has measured must not be treated as one where any screen fits.
+DEFAULT_WINDOW_HEIGHT = 1092
+
+
+def host_window_height() -> int:
+    """How tall a window Firefox opens on this host: measured, else the default.
 
     The reported `innerHeight` must not exceed the spoofed `availHeight` — no real
     machine can do that, and it is a one-line check for any tampering detector. We
@@ -303,12 +310,10 @@ def host_window_height() -> int | None:
     from ..paths import config_dir
 
     path = config_dir() / HOST_WINDOW_FILE
-    if not path.exists():
-        return None
     try:
         return int(path.read_text().strip())
-    except ValueError:
-        return None
+    except (OSError, ValueError):
+        return DEFAULT_WINDOW_HEIGHT
 
 
 def remember_host_window_height(height: int | None) -> None:

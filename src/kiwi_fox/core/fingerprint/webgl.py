@@ -339,6 +339,43 @@ def engine_config(
     return out
 
 
+# ------------------------------------------------- Firefox's own renderer prefs
+# A driver version, as ANGLE appends it. Nobody ever sees it: it only has to be
+# there, because Firefox's sanitiser refuses an ANGLE string without that field
+# ("Generic Renderer") and drops it from one that has it.
+_DRIVER = {"amd": "D3D11-31.0.21921.1000", "intel": "D3D11-31.0.101.2111", "nvidia": "D3D11-31.0.15.3623"}  # fmt: skip
+
+
+def driver_string(renderer: str) -> str:
+    """The raw string a driver would report for a renderer Firefox displays.
+
+    Stock Firefox has two prefs, webgl.override-unmasked-vendor/-renderer, that
+    stand in for what the driver says. Firefox then sanitises that itself — for
+    plain RENDERER and for the debug extension alike — so both come out as the
+    same series string on any engine version. The engine's own table cannot be
+    relied on for this: 152 takes RENDERER from it, 156 deliberately does not,
+    and there the plain value was the host's ("llvmpipe, or similar" on a host
+    drawing in software).
+
+    The pref wants the driver's wording, with ANGLE's driver-version field; a
+    string already in Firefox's display form gets that field put back.
+    """
+    text = renderer.removesuffix(", or similar")
+    if text.startswith("ANGLE (") and text.endswith(")") and text.count(", ") == 1:
+        family = next((f for f in _DRIVER if f in text.lower()), "amd")
+        return f"{text[:-1]}, {_DRIVER[family]})"
+    return renderer
+
+
+def firefox_prefs(
+    series: Series, *, vendor: str | None = None, renderer: str | None = None
+) -> dict[str, object]:
+    return {
+        "webgl.override-unmasked-vendor": vendor or series.vendor,
+        "webgl.override-unmasked-renderer": driver_string(renderer or series.renderer),
+    }
+
+
 # ------------------------------------------------------------------- the host
 HOST_FILE = "host-webgl-bucket.txt"
 
@@ -375,9 +412,14 @@ def host_series() -> tuple[Series | None, str]:
     """
     from .. import gpu
 
-    hit = series_for(measured_host_renderer())
-    if hit:
-        return hit, "measured"
+    # The engine's own GPU probe names the card the browser really draws on; a
+    # raw browser probe is the older way to learn the same thing.
+    seen = gpu.measurement() or {}
+    for renderer in (seen.get("renderer") if seen.get("accelerated") else None,
+                     measured_host_renderer()):  # fmt: skip
+        hit = series_for(renderer if isinstance(renderer, str) else None)
+        if hit:
+            return hit, "measured"
     family = gpu.host_family()
     if family in FAMILY_DEFAULT:
         return BY_KEY[FAMILY_DEFAULT[family]], "family"

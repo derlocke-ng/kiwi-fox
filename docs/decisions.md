@@ -45,6 +45,27 @@ the frame the GPU draws is the one thing no setting changes, so the claim may as
 well match the hardware class behind it. Choosing another series is a setting, not
 a risk the tool takes for you.
 
+**Hardware rendering is measured, not inferred.** "The render node exists" was
+taken to mean "the browser draws on the GPU", and on a hybrid NVIDIA laptop it drew
+in software for every profile. The plan for reaching a GPU is made from sysfs —
+which GPU the desktop runs on, which driver each node has, whether the host can
+inject the NVIDIA driver — and then checked with the engine's own probe. The prefs
+follow the measurement: forcing hardware with no GPU crash-loops, and software with
+one reads as a virtual machine.
+
+**The renderer string goes through Firefox's own prefs.** The engine's config table
+is not a stable interface: 152 takes plain `RENDERER` from it and 156 deliberately
+does not. `webgl.override-unmasked-renderer` is stock Firefox, takes the driver's
+wording, and Firefox sanitises it itself for both values.
+
+**Only keys the installed engine lists are sent.** The engine ships its schema;
+upstream drops and adds keys between releases, and an engine that moved under us
+must still launch the same profile.
+
+**A profile can be edited.** A fingerprint is frozen so it does not drift by
+accident, not so it cannot be changed on purpose. Every edit goes through one
+module (`fingerprint/edit.py`) and the same validation as a launch.
+
 **The probe runs beside the profile, never in it.** It measures a throwaway browser
 with the profile's config in an empty directory. Measuring the real one meant
 stopping the user's session and writing into its history.

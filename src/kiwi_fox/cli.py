@@ -7,11 +7,12 @@ import json
 import sys
 
 from . import __version__
-from .core import dns, launch, paths, podman, proxy, secrets, store
+from .core import dns, gpu, launch, paths, podman, proxy, secrets, store
 from .core.engines import fetch as engine_fetch
-from .core.fingerprint import generate, validate, validate_against, webgl
+from .core.fingerprint import edit, generate, validate, validate_against, webgl
+from .core.fingerprint import windows11 as w11
 from .core.fingerprint.validator import check_webgl_mode as validate_webgl
-from .core.fingerprint.validator import errors
+from .core.fingerprint.validator import check_window_fits, errors
 from .core.models import DnsConfig, Fingerprint, Profile
 
 WEBGL_MODES = ("host", "preset", "custom", "off", "raw")
@@ -89,6 +90,7 @@ def cmd_new(a: argparse.Namespace) -> int:
     profile.webgl_series = series
     profile.webgl_vendor = a.webgl_vendor if mode == "custom" else None
     profile.webgl_renderer = a.webgl_renderer if mode == "custom" else None
+    profile.appearance = a.appearance
     store.save(profile)
     for issue in validate_webgl(mode, profile.webgl_vendor, profile.webgl_renderer, series):
         _p(f"  {issue}")
@@ -96,6 +98,8 @@ def cmd_new(a: argparse.Namespace) -> int:
     _p(f"  machine : {fp.form_factor}, {fp.hardware_concurrency} cores")
     for line in _webgl_lines(profile, fp):
         _p(f"  {line}")
+    for issue in check_window_fits(fp):
+        _p(f"  {issue}")
     _p(
         f"  screen  : {fp.screen.width}x{fp.screen.height} @{fp.screen.device_pixel_ratio} (avail {fp.screen.avail_width}x{fp.screen.avail_height})"
     )
@@ -131,7 +135,8 @@ def cmd_show(a: argparse.Namespace) -> int:
             f"  last exit {e.ip} {e.country or '?'} {e.city or ''} asn={e.asn or '?'} at {e.seen:%Y-%m-%d %H:%M}"
         )
     _p(f"  engine    camoufox {fp.engine_version} (buildID {fp.build_id})")
-    _p(f"  ua        {fp.ua}")
+    _p(f"  ua        {p.user_agent or fp.ua}{'  (custom)' if p.user_agent else ''}")
+    _p(f"  looks     {p.appearance}")
     _p(
         f"  machine   {fp.form_factor} / {fp.hardware_concurrency} cores / touch={fp.max_touch_points}"
     )
@@ -171,6 +176,8 @@ def cmd_check(a: argparse.Namespace) -> int:
         ]
         issues += validate_against(fp, others)
         issues += validate_webgl(p.webgl, p.webgl_vendor, p.webgl_renderer, p.webgl_series)
+        issues += check_window_fits(fp)
+        issues += _ua_issues(p, fp)
         if not issues:
             _p(f"{p.name}: coherent")
             continue
@@ -484,8 +491,11 @@ def _webgl_lines(profile: Profile, fp: Fingerprint) -> list[str]:
         return ["webgl     raw — this machine's real strings and limits, nothing spoofed"]
     series = webgl_series(fp, profile)
     cfg = webgl_config(fp, profile)
+    known = webgl.host_series()[1]
     how = {
-        "host": f"host ({webgl.host_series()[1]})",
+        "host": "host (no GPU here to go by — the profile's own series)"
+        if known == "unknown"
+        else f"host ({known})",
         "preset": "preset",
         "custom": "custom",
     }[profile.webgl]
@@ -557,6 +567,108 @@ def cmd_webgl(a: argparse.Namespace) -> int:
     return 0
 
 
+def _ua_issues(profile: Profile, fp: Fingerprint) -> list:
+    from .core.fingerprint.validator import Issue
+
+    if not profile.user_agent:
+        return []
+    notes = edit.check_user_agent(profile.user_agent, fp.engine_version)
+    return [Issue("warn", "ua.custom", f"custom user agent: {note}") for note in notes]
+
+
+def cmd_set(a: argparse.Namespace) -> int:
+    """Change what a profile reports. Nothing is saved unless all of it is coherent."""
+    profile = store.resolve_ref(a.ref)
+    fp = store.load_fingerprint(profile.id)
+    new = fp
+    try:
+        if a.form:
+            new = edit.with_form(new, a.form)
+        if a.screen:
+            new = edit.with_screen(new, a.screen)
+        if a.country:
+            new = edit.with_region(new, a.country, keep_timezone=bool(a.timezone))
+        if a.timezone:
+            new = edit.with_timezone(new, a.timezone)
+        if a.cores is not None:
+            new = edit.with_cores(new, a.cores)
+        if a.audio_rate:
+            new = edit.with_audio_rate(new, a.audio_rate)
+        if a.camera:
+            new = edit.with_camera(new, a.camera == "yes")
+        if a.font_add or a.font_remove:
+            new = edit.with_fonts(new, add=a.font_add or [], remove=a.font_remove or [])
+    except edit.EditError as exc:
+        return _fail(str(exc))
+
+    updates: dict[str, object] = {}
+    if a.name and a.name != profile.name:
+        if store.find_by_name(a.name):
+            return _fail(f"a profile named {a.name!r} already exists")
+        updates["name"] = a.name
+    if a.appearance:
+        updates["appearance"] = a.appearance
+    if a.user_agent:
+        updates["user_agent"] = a.user_agent
+    if a.default_user_agent:
+        updates["user_agent"] = None
+    password = None
+    if a.endpoint:
+        endpoint, password = proxy.parse(a.endpoint)
+        updates["endpoint"] = endpoint
+    if a.dns_mode or a.upstream:
+        updates["dns"] = profile.dns.model_copy(
+            update={k: v for k, v in (("mode", a.dns_mode), ("upstream", a.upstream)) if v}
+        )
+
+    changed = new != fp or bool(updates)
+    if changed:
+        issues = validate(new, engine_version=new.engine_version)
+        if hard := errors(issues):
+            for issue in hard:
+                _p(f"  {issue}")
+            return _fail("that would make the profile incoherent; nothing was changed")
+        candidate = profile.model_copy(update=updates)
+        if new != fp:
+            store.save_fingerprint(profile.id, new)
+        store.save(candidate)
+        if password:
+            secrets.store(profile.id, password, label=f"kiwi-fox {candidate.name}")
+        profile, fp = candidate, new
+    cmd_show(argparse.Namespace(ref=profile.id))
+    for issue in check_window_fits(fp) + _ua_issues(profile, fp):
+        _p(f"  {issue}")
+    if not changed:
+        _p("")
+        _p("nothing changed — pass what to change, e.g. --screen 2560x1440; see `kiwi-fox set -h`")
+        _p(
+            "  screens : "
+            + ", ".join(edit.screen_label(s) for s in edit.screen_choices(fp.form_factor))
+        )
+        _p("  regions : " + " ".join(sorted(w11.REGIONS)))
+    elif launch.running(profile):
+        _p("  (running — takes effect at the next launch)")
+    return 0
+
+
+def cmd_fonts(a: argparse.Namespace) -> int:
+    from .core.fingerprint import fonts
+
+    have = set(store.load_fingerprint(store.resolve_ref(a.ref).id).fonts) if a.ref else set()
+    _p(
+        f"{len(fonts.all_core_families())} families ship with every Windows 11 and are always present."
+    )
+    _p("These vary between real machines, so a profile may or may not have them:")
+    _p("")
+    for name in edit.optional_fonts():
+        mark = "x" if name in have else " "
+        probed = "  (on fingerprinters' probe lists)" if name in fonts.THIRD_PARTY else ""
+        _p(f"  [{mark}] {name}{probed}" if a.ref else f"  {name}{probed}")
+    _p("")
+    _p("change with: kiwi-fox set NAME --font-add 'Lato' --font-remove 'Open Sans'")
+    return 0
+
+
 def cmd_setup(a: argparse.Namespace) -> int:
     from .core import setup
 
@@ -589,11 +701,29 @@ def cmd_doctor(a: argparse.Namespace) -> int:
     _p(f"dns stamps    {len(stamps) or 'none — run `kiwi-fox dns sync`'}")
     blocklist = paths.blocklists_dir() / "blocked-names.txt"
     _p(f"blocklist     {blocklist if blocklist.exists() else 'none — run `kiwi-fox dns update`'}")
-    for image in ("kiwi-fox/gateway:latest", "kiwi-fox/browser:latest"):
-        present = podman._run(["image", "exists", image], check=False).returncode == 0
-        _p(f"image         {image} {'yes' if present else 'MISSING — run `make images`'}")
-        ok &= present
+    from .core import setup
+
+    for image, name in setup.IMAGES:
+        state = setup.image_state(image, name) if podman.available() else "missing"
+        note = {
+            "current": "yes",
+            "stale": "outdated — built by an earlier version; run `kiwi-fox setup`",
+            "missing": "MISSING — run `kiwi-fox setup`",
+        }[state]
+        _p(f"image         {image} {note}")
+        ok &= state != "missing"
     _p(f"profiles      {len(store.list_profiles())}")
+    version = engine_fetch.preferred()
+    if version and podman.available():
+        gpu.measure(engine_fetch.target_dir(version))
+        _p(f"rendering     {gpu.describe()}")
+        host, how = webgl.host_series()
+        if host:
+            _p(f"              pages are told: {host.label} ({how})")
+        chosen = gpu.plan()
+        if chosen.note:
+            _p(f"              {chosen.note}")
+        ok &= gpu.accelerated()
     return 0 if ok else 1
 
 
@@ -644,6 +774,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     n.add_argument("--webgl-vendor", help="custom mode only")
     n.add_argument("--webgl-renderer", help="custom mode only")
+    n.add_argument(
+        "--appearance",
+        choices=["host", "light", "dark"],
+        default="host",
+        help="light or dark, for the browser and for what pages are told; "
+        "host (default) follows this desktop",
+    )
     n.add_argument("--seed", help="reproduce a previous identity")
     n.add_argument("--engine-version")
     n.add_argument("--module", help="provider module this endpoint came from")
@@ -731,6 +868,37 @@ def build_parser() -> argparse.ArgumentParser:
         sub.add_parser(alias, help="list the GPU series a profile can report").set_defaults(
             func=cmd_gpus
         )
+
+    se = sub.add_parser(
+        "set",
+        help="change what a profile reports: screen, region, fonts, user agent, …",
+        description="Change what an existing profile reports. Everything is checked "
+        "together and nothing is saved unless the result is coherent. The GPU has its "
+        "own command (`kiwi-fox webgl`). Not settable, because Firefox does not expose "
+        "it: the Windows version — 10 and 11 send the same user agent.",
+    )
+    se.add_argument("ref")
+    se.add_argument("--name", help="rename the profile")
+    se.add_argument("--screen", metavar="WxH", help="claimed screen, e.g. 2560x1440")
+    se.add_argument("--form", choices=["desktop", "laptop"])
+    se.add_argument("--cores", type=int, help="logical CPU cores")
+    se.add_argument("--country", help="region preset: locale, languages, voices, timezone")
+    se.add_argument("--timezone", help="IANA name, e.g. Europe/Berlin")
+    se.add_argument("--audio-rate", type=int, help="44100 or 48000")
+    se.add_argument("--camera", choices=["yes", "no"])
+    se.add_argument("--font-add", action="append", metavar="FAMILY")
+    se.add_argument("--font-remove", action="append", metavar="FAMILY")
+    se.add_argument("--appearance", choices=["host", "light", "dark"])
+    se.add_argument("--user-agent", help="replace the user agent (warned about when it lies)")
+    se.add_argument("--default-user-agent", action="store_true", help="back to the engine's own")
+    se.add_argument("--endpoint", help="a different SOCKS5 exit")
+    se.add_argument("--dns-mode", choices=["resolver", "remote"])
+    se.add_argument("--upstream", choices=sorted(dns.UPSTREAMS))
+    se.set_defaults(func=cmd_set)
+
+    fo = sub.add_parser("fonts", help="the font families a profile may or may not have")
+    fo.add_argument("ref", nargs="?")
+    fo.set_defaults(func=cmd_fonts)
 
     wg = sub.add_parser("webgl", help="show or change what a profile reports as its GPU")
     wg.add_argument("ref")

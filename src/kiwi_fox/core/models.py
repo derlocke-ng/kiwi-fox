@@ -155,6 +155,14 @@ class Profile(Strict):
     webgl_series: str | None = None
     webgl_vendor: str | None = None
     webgl_renderer: str | None = None
+    # Light or dark, for the browser's own chrome and for what pages are told
+    # (prefers-color-scheme). "host" follows the desktop the window appears on,
+    # read at each launch — which is what stock Firefox does, and what it cannot
+    # do by itself from inside a container.
+    appearance: Literal["host", "light", "dark"] = "host"
+    # Replaces the user agent in navigator and in the request header. None is the
+    # engine's own: stock Firefox of its version, on Windows.
+    user_agent: str | None = None
     notes: str = ""
 
 
