@@ -25,13 +25,45 @@ def test_direct_egress_is_blocked(gateway):
         assert out == "blocked", f"egress to {target} was not blocked"
 
 
-def test_the_proxy_endpoint_is_reachable(gateway, running_profile):
-    ep = running_profile.endpoint
+def _permitted_destination(gateway) -> tuple[str, str]:
+    """The address the gateway's firewall actually permits, read from the gateway
+    itself. For a plain endpoint this equals the profile's endpoint; for a managed
+    local provider it is the provider's live bridge address (resolved at launch),
+    which the stored endpoint host does NOT equal — so read the live value rather
+    than assuming the two are the same."""
+    ip = sh(gateway, "printenv KF_ENDPOINT_IP")
+    port = sh(gateway, "printenv KF_ENDPOINT_PORT")
+    return ip, port
+
+
+def test_the_proxy_endpoint_is_reachable(gateway):
+    ip, port = _permitted_destination(gateway)
+    assert ip and port, "gateway is missing KF_ENDPOINT_IP/PORT"
     out = sh(
         gateway,
-        f'timeout 5 bash -c "echo > /dev/tcp/{ep.host}/{ep.port}" 2>/dev/null && echo ok || echo unreachable',
+        f'timeout 5 bash -c "echo > /dev/tcp/{ip}/{port}" 2>/dev/null && echo ok || echo unreachable',
     )
     assert out == "ok", "the one permitted destination must be reachable"
+
+
+def test_only_the_permitted_destination_is_reachable_on_its_segment(gateway):
+    # On the kf-providers bridge the gateway has on-link neighbours (the bridge's
+    # own gateway, sibling provider/gateway containers) that routing alone would
+    # not stop — only the nftables default-drop does. Prove a neighbour one address
+    # away from the permitted provider is still blocked. (On a plain pasta endpoint
+    # this neighbour is simply dropped too, so the assertion holds either way.)
+    ip, port = _permitted_destination(gateway)
+    if ip.count(".") != 3:
+        pytest.skip(f"not an IPv4 permitted destination: {ip!r}")
+    octets = ip.split(".")
+    last = int(octets[3])
+    octets[3] = str((last + 1) % 256 if last != 1 else 2)
+    neighbour = ".".join(octets)
+    out = sh(
+        gateway,
+        f'timeout 5 bash -c "echo > /dev/tcp/{neighbour}/{port}" 2>/dev/null && echo LEAK || echo blocked',
+    )
+    assert out == "blocked", f"a non-permitted on-link neighbour {neighbour} was reachable"
 
 
 def test_udp_dns_cannot_leave(gateway):

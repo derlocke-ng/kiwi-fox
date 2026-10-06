@@ -52,7 +52,47 @@ def providers_cache() -> Path:
 
 
 def modules_dir() -> Path:
+    """Where provider plugins are installed, one directory per module (tor, vpn,
+    9proxy, mysterium). kiwi-updater drops each module's package here; kiwi-fox
+    discovers them by scanning this directory."""
     return data_dir() / "modules"
+
+
+def module_dir(name: str) -> Path:
+    return modules_dir() / name
+
+
+def modules_state_dir() -> Path:
+    """Per-module writable runtime state (leases, caches), kept out of the
+    read-only installed module directory."""
+    return data_dir() / "modules-state"
+
+
+def module_state_dir(name: str) -> Path:
+    return modules_state_dir() / name
+
+
+# The shared podman network local provider containers and the gateways that use
+# them attach to, so a gateway can reach its provider's SOCKS5 while its own
+# nftables still permits exactly one destination. Plain (already-remote) SOCKS5
+# endpoints never touch it; those gateways stay on pasta.
+PROVIDERS_NETWORK = f"{PREFIX}-providers"
+
+
+def provider_image(name: str) -> str:
+    return f"{APP}/{name}:latest"
+
+
+def provider_container_name(name: str, lease: str | None = None) -> str:
+    """A provider container is shared across every profile that uses the same
+    module+lease, so its name is keyed on those, not on a profile id."""
+    suffix = f"-{lease}" if lease else ""
+    raw = f"{PREFIX}-prov-{name}{suffix}"
+    # Container names allow only [a-zA-Z0-9._-]; a lease like a 9proxy port or a
+    # myst provider id is already in that set, but be defensive. isalnum() is
+    # Unicode-aware and would pass e.g. accented letters podman rejects, so gate
+    # on ASCII first.
+    return "".join(c if (c.isascii() and c.isalnum()) or c in "._-" else "-" for c in raw)[:63]
 
 
 def ensure_tree() -> None:
@@ -63,6 +103,7 @@ def ensure_tree() -> None:
         engines_dir(),
         blocklists_dir(),
         modules_dir(),
+        modules_state_dir(),
         runtime_dir(),
     ):
         d.mkdir(parents=True, exist_ok=True)

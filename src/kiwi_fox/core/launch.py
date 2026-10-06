@@ -14,7 +14,7 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import dns, geometry, paths, podman, proxy, secrets, store
+from . import dns, geometry, paths, podman, providers, proxy, secrets, store
 from .engines import get_engine
 from .engines.camoufox import FORWARDER_PORT, fontconfig_xml
 from .fingerprint import validate, validate_against
@@ -50,13 +50,31 @@ def creds_secret_name(profile_id: str) -> str:
     return f"{paths.PREFIX}-creds-{profile_id[:12]}"
 
 
+def _provider_auth(module: str | None) -> str:
+    """The managed provider's auth mode, or 'none' for a plain/remote endpoint."""
+    if not providers.manages(module):
+        return "none"
+    try:
+        return providers.manifest_of(module).auth
+    except providers.ProviderError:
+        return "none"
+
+
 def write_credentials(profile: Profile) -> str:
     """Credentials reach the gateway as a podman secret, never as container env
     (`podman inspect` shows env) and never as a bind-mounted 0600 file (the
     gateway runs as container-root, a subuid, so it could not read it)."""
     name = creds_secret_name(profile.id)
+    user = profile.endpoint.username or ""
     password = secrets.lookup(profile.id) or ""
-    podman.secret_set(name, f"{profile.endpoint.username or ''}\n{password}\n")
+    if not user and _provider_auth(profile.endpoint.module) == "isolation":
+        # Mint a stable per-profile token so the provider gives each profile its own
+        # circuit/session (e.g. Tor IsolateSOCKSAuth): same profile -> same exit
+        # across launches, different profiles -> different exits. The value is an
+        # isolation key, not a secret, so deriving it from the profile id is fine.
+        user = f"kf-{profile.id[:16]}"
+        password = profile.id
+    podman.secret_set(name, f"{user}\n{password}\n")
     return name
 
 
@@ -199,14 +217,20 @@ def reset_toolbar_layout(profile: Profile) -> bool:
 
 
 # -------------------------------------------------------------------- specs
-def gateway_spec(profile: Profile, endpoint_ip: str) -> ContainerSpec:
+def gateway_spec(
+    profile: Profile,
+    endpoint_ip: str,
+    *,
+    endpoint_port: int | None = None,
+    network: str = "pasta",
+) -> ContainerSpec:
     rt = runtime_dir(profile.id)
     secret = creds_secret_name(profile.id)
     target = f"/run/secrets/{secret}"
     volumes: list[tuple[str, str, str]] = []
     env = {
         "KF_ENDPOINT_IP": endpoint_ip,
-        "KF_ENDPOINT_PORT": str(profile.endpoint.port),
+        "KF_ENDPOINT_PORT": str(endpoint_port or profile.endpoint.port),
         "KF_FORWARDER_PORT": str(FORWARDER_PORT),
         "KF_DNS_MODE": profile.dns.mode,
         "KF_CREDS_FILE": target,
@@ -221,7 +245,10 @@ def gateway_spec(profile: Profile, endpoint_ip: str) -> ContainerSpec:
     return ContainerSpec(
         name=paths.gateway_name(profile.id),
         image=GATEWAY_IMAGE,
-        network="pasta",
+        # A plain/remote endpoint keeps pasta — it is a public address the gateway
+        # reaches directly. A managed local provider lives on the shared providers
+        # bridge, so the gateway joins that bridge to reach exactly its SOCKS5.
+        network=network,
         env=env,
         volumes=volumes,
         secrets=[(secret, target)],
@@ -276,7 +303,47 @@ def _wayland_mount() -> tuple[str, str] | None:
 
 
 # ------------------------------------------------------------------- launch
-def preflight(profile: Profile) -> tuple[str, ExitInfo | None, list[str]]:
+@dataclass
+class EndpointPlan:
+    """How to wire the gateway to this profile's exit."""
+
+    ip: str  # literal address the gateway's firewall permits
+    port: int  # SOCKS5 port on that address
+    network: str  # "pasta" for a remote exit, the providers bridge for a local one
+    info: ExitInfo | None = None  # measured exit, when the host could reach it
+    notes: list[str] = field(default_factory=list)
+
+
+def ensure_provider(profile: Profile) -> EndpointPlan:
+    """Bring up a managed provider (idempotent) and return its live SOCKS5 address
+    on the providers bridge. The provider's own exit is measured later, through the
+    gateway, because the host is not on that rootless bridge."""
+    module = profile.endpoint.module
+    prov, manifest = providers.load(module)
+    ctx = providers.context_for(module, manifest)
+    try:
+        endpoint = prov.up(ctx, lease=profile.endpoint.lease)
+    except providers.ProviderError as exc:
+        raise LaunchError(f"provider {module!r} could not start: {exc}") from exc
+    lease = f" (lease {profile.endpoint.lease})" if profile.endpoint.lease else ""
+    return EndpointPlan(
+        ip=endpoint.host,
+        port=endpoint.port,
+        network=paths.PROVIDERS_NETWORK,
+        info=None,
+        notes=[f"provider {module} up at {endpoint.host}:{endpoint.port}{lease}"],
+    )
+
+
+def preflight(profile: Profile) -> EndpointPlan:
+    """Decide the gateway's upstream and, for a remote exit, measure it.
+
+    A managed local provider is brought up on the providers bridge; a plain exit is
+    resolved to a literal address on the host and probed so a region is known
+    before the window opens."""
+    if providers.manages(profile.endpoint.module):
+        return ensure_provider(profile)
+
     notes: list[str] = []
     endpoint_ip = proxy.resolve(profile.endpoint.host)
     if endpoint_ip != profile.endpoint.host:
@@ -286,7 +353,7 @@ def preflight(profile: Profile) -> tuple[str, ExitInfo | None, list[str]]:
         info = proxy.preflight(profile.endpoint, password)
     except Exception as exc:  # noqa: BLE001 - never block the launch on this
         notes.append(f"pre-flight could not reach the exit: {exc}")
-        return endpoint_ip, None, notes
+        return EndpointPlan(endpoint_ip, profile.endpoint.port, "pasta", None, notes)
     if profile.endpoint.module:
         store.record_provider(
             ProviderRecord(
@@ -299,11 +366,11 @@ def preflight(profile: Profile) -> tuple[str, ExitInfo | None, list[str]]:
                 verified_at=dt.datetime.now(dt.UTC),
             )
         )
-    return endpoint_ip, info, notes
+    return EndpointPlan(endpoint_ip, profile.endpoint.port, "pasta", info, notes)
 
 
-def _start_gateway(profile: Profile, endpoint_ip: str) -> ContainerSpec:
-    gw = gateway_spec(profile, endpoint_ip)
+def _start_gateway(profile: Profile, plan: EndpointPlan) -> ContainerSpec:
+    gw = gateway_spec(profile, plan.ip, endpoint_port=plan.port, network=plan.network)
     # The browser joins the gateway's network namespace, which makes it a dependent
     # container: podman refuses to replace the gateway while it exists, with
     # "has dependent containers which must be removed before it". So the browser
@@ -323,10 +390,10 @@ def start_gateway(profile: Profile) -> tuple[str, ExitInfo | None]:
     """
     if not podman.available():
         raise LaunchError("podman not found")
-    endpoint_ip, info, _notes = preflight(profile)
+    plan = preflight(profile)
     write_credentials(profile)
     write_resolver_config(profile)
-    return _start_gateway(profile, endpoint_ip).name, info
+    return _start_gateway(profile, plan).name, plan.info
 
 
 def launch(profile: Profile, *, strict: bool = False, start_url: str | None = None) -> LaunchResult:
@@ -334,7 +401,8 @@ def launch(profile: Profile, *, strict: bool = False, start_url: str | None = No
         raise LaunchError("podman not found")
     fp = store.load_fingerprint(profile.id)
 
-    endpoint_ip, info, notes = preflight(profile)
+    plan = preflight(profile)
+    info, notes = plan.info, list(plan.notes)
 
     issues = validate(
         fp,
@@ -396,7 +464,7 @@ def launch(profile: Profile, *, strict: bool = False, start_url: str | None = No
     reset_toolbar_layout(profile)
     geometry.prepare(profile, fp)
 
-    gw = _start_gateway(profile, endpoint_ip)
+    gw = _start_gateway(profile, plan)
 
     clear_stale_lock(profile)
     br = browser_spec(profile, fp, gw.name, info.ip if info else None)
@@ -416,10 +484,38 @@ def launch(profile: Profile, *, strict: bool = False, start_url: str | None = No
     return LaunchResult(profile, gw.name, br.name, info, warnings, notes)
 
 
+def _provider_users(module: str | None, lease: str | None, *, exclude_id: str) -> int:
+    """How many other profiles with a running gateway share this module+lease."""
+    return sum(
+        1
+        for p in store.list_profiles()
+        if p.id != exclude_id
+        and p.endpoint.module == module
+        and p.endpoint.lease == lease
+        and podman.is_running(paths.gateway_name(p.id))
+    )
+
+
+def release_provider(profile: Profile) -> None:
+    """Stop a managed provider once no running gateway still uses it. A provider
+    container is shared across profiles on the same module+lease, so it must not be
+    torn down while another profile is still exiting through it."""
+    module = profile.endpoint.module
+    if not providers.manages(module):
+        return
+    if _provider_users(module, profile.endpoint.lease, exclude_id=profile.id) > 0:
+        return
+    with contextlib.suppress(providers.ProviderError):
+        prov, manifest = providers.load(module)
+        ctx = providers.context_for(module, manifest)
+        prov.down(ctx, lease=profile.endpoint.lease)
+
+
 def stop(profile: Profile) -> None:
     podman.rm(paths.browser_name(profile.id))
     podman.rm(paths.gateway_name(profile.id))
     podman.secret_rm(creds_secret_name(profile.id))
+    release_provider(profile)
 
 
 def running(profile: Profile) -> bool:

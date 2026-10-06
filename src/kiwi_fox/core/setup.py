@@ -11,7 +11,7 @@ import subprocess
 from collections.abc import Callable
 from pathlib import Path
 
-from . import dns, paths, podman
+from . import dns, paths, podman, providers
 from .engines import fetch as engine_fetch
 
 IMAGES = (
@@ -170,5 +170,30 @@ def run(progress: Progress | None = None, *, engine_version: str | None = None) 
     except Exception as exc:  # noqa: BLE001
         steps.append(f"blocklist: failed ({exc})")
 
+    modules = providers.discover()
+    if modules:
+        say("Preparing provider modules…")
+        for name in modules:
+            try:
+                prov, manifest = providers.load(name)
+                ctx = providers.context_for(name, manifest)
+                prov.setup(ctx)
+                steps.append(f"module {name}: image ready")
+            except Exception as exc:  # noqa: BLE001 - one module must not fail setup
+                steps.append(f"module {name}: setup failed ({exc})")
+
     say("Done.")
     return steps
+
+
+def setup_module(name: str, progress: Progress | None = None) -> None:
+    """Build/pull a single provider module's image. For `kiwi-fox module setup`."""
+    if not podman.available():
+        raise SetupError("podman is not installed")
+    if not providers.is_installed(name):
+        raise SetupError(f"provider module {name!r} is not installed")
+    prov, manifest = providers.load(name)
+    ctx = providers.context_for(name, manifest)
+    if progress:
+        progress(f"Preparing provider module {name}…")
+    prov.setup(ctx)

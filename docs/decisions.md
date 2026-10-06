@@ -83,6 +83,22 @@ and cannot read a file owned by the host user).
 **Every provider exposes SOCKS5 and nothing else.** Adapting is the module's job, so
 the gateway, forwarder, firewall rule and DNS design stay single-shaped.
 
+**A provider module is a plugin, discovered on disk, not code baked in here.** The
+contract (`core/providers/`) lives in kiwi-fox because the exit side is becoming a
+full SOCKS5/VPN tunnelling suite, but each provider — tor, vpn, 9proxy, mysterium —
+ships in its own repository and installs under `modules_dir()`. kiwi-fox loads a
+module's `provider.py` by file path, not by import name, so a module named `9proxy`
+(not a legal Python identifier) still loads. See `docs/plugin-system.md`.
+
+**A local provider meets the gateway on a bridge, never in its netns.** A provider
+that runs its own container needs an unrestricted exit of its own, which the
+gateway's default-drop would strand if they shared a namespace. So both attach to
+one `kf-providers` bridge and the gateway permits exactly the provider's address on
+it — the single-destination firewall rule is unchanged, only the address now points
+at a container instead of a public proxy. The provider's bridge IP is re-resolved
+every launch because a restart can change it, and a plain remote endpoint keeps
+pasta and reaches its public address directly.
+
 **No EDNS Client Subnet.** The resolver and the browser share one exit, so the
 upstream already sees the right location.
 
