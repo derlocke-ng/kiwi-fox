@@ -255,7 +255,10 @@ def gateway_spec(
         cap_drop=["all"],
         # NET_ADMIN to build the ruleset, NET_BIND_SERVICE because the resolver
         # listens on 53 and dropping all caps denies that even to container-root.
-        cap_add=["NET_ADMIN", "NET_RAW", "NET_BIND_SERVICE"],
+        # NET_RAW is deliberately NOT granted: nftables, dnscrypt-proxy and the
+        # forwarder use no raw sockets, and on the shared providers bridge it would
+        # let a compromised gateway/browser ARP-spoof sibling containers.
+        cap_add=["NET_ADMIN", "NET_BIND_SERVICE"],
         security_opt=["no-new-privileges"],
         userns=None,  # needs container-root to configure its own netns
         labels={"app": "kiwi-fox", "kiwi-fox.profile": profile.id, "kiwi-fox.role": "gateway"},
@@ -322,7 +325,11 @@ def ensure_provider(profile: Profile) -> EndpointPlan:
     prov, manifest = providers.load(module)
     ctx = providers.context_for(module, manifest)
     try:
-        endpoint = prov.up(ctx, lease=profile.endpoint.lease)
+        # Replay both the lease and the country stored on the profile, so an exit
+        # selected by country at creation is reproduced after a provider teardown
+        # (not silently reset to the provider's default, which would contradict the
+        # frozen fingerprint).
+        endpoint = prov.up(ctx, lease=profile.endpoint.lease, country=profile.endpoint.country)
     except providers.ProviderError as exc:
         raise LaunchError(f"provider {module!r} could not start: {exc}") from exc
     lease = f" (lease {profile.endpoint.lease})" if profile.endpoint.lease else ""
@@ -533,12 +540,41 @@ def wait_and_teardown(profile: Profile) -> int:
     return code
 
 
+def reconcile_providers() -> list[str]:
+    """Fail closed any running gateway whose permitted provider address has drifted.
+
+    Providers get a deterministic static IP, so this should never fire; it is a
+    backstop. If a gateway's pinned KF_ENDPOINT_IP no longer matches its provider's
+    current bridge address, the gateway's firewall would be pointing at whatever now
+    holds that address — a wrong exit, and in account-auth mode a credential leak —
+    so the gateway is torn down (the browser loses its route) rather than left live.
+    """
+    stopped = []
+    for p in store.list_profiles():
+        if not providers.manages(p.endpoint.module):
+            continue
+        gw = paths.gateway_name(p.id)
+        if not podman.is_running(gw):
+            continue
+        pinned = podman.container_env(gw, "KF_ENDPOINT_IP")
+        current = podman.container_ip(
+            paths.provider_container_name(p.endpoint.module, p.endpoint.lease),
+            paths.PROVIDERS_NETWORK,
+        )
+        if pinned and current and pinned != current:
+            stop(p)
+            stopped.append(p.name)
+    return stopped
+
+
 def reap() -> list[str]:
-    """Stop gateways whose browser is gone. Safe to call at any time."""
+    """Stop gateways whose browser is gone, and any whose provider address drifted.
+    Safe to call at any time."""
     cleaned = []
     for p in store.list_profiles():
         gw, br = paths.gateway_name(p.id), paths.browser_name(p.id)
         if podman.is_running(gw) and not podman.is_running(br):
             stop(p)
             cleaned.append(p.name)
+    cleaned += reconcile_providers()
     return cleaned

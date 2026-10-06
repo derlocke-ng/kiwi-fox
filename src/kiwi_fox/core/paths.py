@@ -77,6 +77,24 @@ def module_state_dir(name: str) -> Path:
 # nftables still permits exactly one destination. Plain (already-remote) SOCKS5
 # endpoints never touch it; those gateways stay on pasta.
 PROVIDERS_NETWORK = f"{PREFIX}-providers"
+# Created with a fixed subnet so providers get deterministic static addresses: a
+# gateway's firewall pin then stays valid across a provider restart, and a freed
+# address cannot be handed to a different container. Picked high in 10.x to avoid
+# podman's usual auto-allocated ranges.
+PROVIDERS_SUBNET = "10.89.231.0/24"
+PROVIDERS_GATEWAY_IP = "10.89.231.1"
+
+
+def provider_static_ip(name: str, lease: str | None = None) -> str:
+    """A deterministic address in PROVIDERS_SUBNET for a module+lease, so the same
+    provider always comes up on the same IP. Uses a stable hash (not Python's
+    salted hash()) over the host octet range .2–.254."""
+    import hashlib
+
+    key = f"{name}:{lease or ''}".encode()
+    octet = 2 + int(hashlib.sha256(key).hexdigest(), 16) % 253  # 2..254
+    prefix = PROVIDERS_SUBNET.rsplit(".", 1)[0]  # "10.89.231"
+    return f"{prefix}.{octet}"
 
 
 def provider_image(name: str) -> str:

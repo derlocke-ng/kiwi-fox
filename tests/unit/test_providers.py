@@ -135,7 +135,7 @@ def test_context_for_uses_shared_network_and_derived_image(fake_module):
 def _stub_podman(monkeypatch, *, running=True, ip="10.89.0.7", calls=None):
     calls = calls if calls is not None else {}
     monkeypatch.setattr(podman, "available", lambda: True)
-    monkeypatch.setattr(podman, "network_ensure", lambda name: calls.__setitem__("net", name))
+    monkeypatch.setattr(podman, "network_ensure", lambda name, **k: calls.__setitem__("net", name))
     monkeypatch.setattr(
         podman, "start", lambda spec, **k: calls.__setitem__("started", spec.name) or "cid"
     )
@@ -366,7 +366,7 @@ def test_tunnel_up_starts_tunnel_then_adapter(monkeypatch):
     install_tunnel_module()
     started: list[str] = []
     monkeypatch.setattr(podman, "available", lambda: True)
-    monkeypatch.setattr(podman, "network_ensure", lambda name: None)
+    monkeypatch.setattr(podman, "network_ensure", lambda name, **k: None)
     monkeypatch.setattr(podman, "rm", lambda name, **k: None)
     monkeypatch.setattr(podman, "start", lambda spec, **k: started.append(spec.name) or "cid")
     monkeypatch.setattr(podman, "is_running", lambda name: name in started)
@@ -412,7 +412,7 @@ def test_tunnel_down_removes_adapter_before_tunnel(monkeypatch):
 def test_tunnel_rejects_tunnel_spec_off_the_bridge(monkeypatch):
     install_tunnel_module()
     monkeypatch.setattr(podman, "available", lambda: True)
-    monkeypatch.setattr(podman, "network_ensure", lambda name: None)
+    monkeypatch.setattr(podman, "network_ensure", lambda name, **k: None)
     provider, manifest = providers.load("faketun")
     ctx = providers.context_for("faketun", manifest)
     orig = provider.tunnel_spec
@@ -428,21 +428,44 @@ def test_tunnel_rejects_tunnel_spec_off_the_bridge(monkeypatch):
 
 
 # ------------------------------------------------- review-hardening regressions
-def test_country_without_lease_is_persisted_as_the_lease(fake_module, monkeypatch):
-    # A profile created with --country but no --lease must reproduce the same exit
-    # on relaunch, so up() folds country into the returned lease.
-    _stub_podman(monkeypatch, running=True, ip="10.89.0.3")
+def test_country_and_lease_are_persisted_separately(fake_module, monkeypatch):
+    # lease and country are distinct axes (a myst provider_id vs a country), so both
+    # are kept on the endpoint and replayed on relaunch — country is never folded
+    # into lease, which would be misread as a provider id.
+    _stub_podman(monkeypatch, running=True, ip="10.89.231.3")
     provider, manifest = providers.load("faketor")
     ctx = providers.context_for("faketor", manifest)
-    endpoint = provider.up(ctx, lease=None, country="se")
-    assert endpoint.lease == "se"
+    ep = provider.up(ctx, lease=None, country="se")
+    assert ep.lease is None and ep.country == "se"
+    ep = provider.up(ctx, lease="prov-123", country="se")
+    assert ep.lease == "prov-123" and ep.country == "se"
 
 
-def test_explicit_lease_wins_over_country(fake_module, monkeypatch):
-    _stub_podman(monkeypatch, running=True, ip="10.89.0.3")
+def test_up_assigns_a_static_ip_and_restart_policy(fake_module, monkeypatch):
+    running: set[str] = set()
+    captured: dict = {}
+    monkeypatch.setattr(podman, "available", lambda: True)
+    monkeypatch.setattr(podman, "network_ensure", lambda name, **k: None)
+    monkeypatch.setattr(podman, "is_running", lambda name: name in running)
+    monkeypatch.setattr(podman, "container_ip", lambda name, net: "10.89.231.9")
+    monkeypatch.setattr(podman, "logs", lambda name, tail=50: "")
+
+    def start(spec, **k):
+        captured["spec"] = spec
+        running.add(spec.name)
+        return "cid"
+
+    monkeypatch.setattr(podman, "start", start)
     provider, manifest = providers.load("faketor")
     ctx = providers.context_for("faketor", manifest)
-    assert provider.up(ctx, lease="de", country="se").lease == "de"
+    provider.up(ctx, lease="de")
+    spec = captured["spec"]
+    assert spec.ip == paths.provider_static_ip("faketor", "de")
+    assert spec.ip.startswith("10.89.231.")
+    assert spec.restart == "on-failure"
+    args = podman.spec_args(spec)
+    assert "--ip" in args and spec.ip in args
+    assert "--restart" in args and "on-failure" in args
 
 
 def test_tunnel_up_removes_a_stale_adapter_before_replacing_the_tunnel(monkeypatch):
@@ -453,7 +476,7 @@ def test_tunnel_up_removes_a_stale_adapter_before_replacing_the_tunnel(monkeypat
     order: list[str] = []
     running: set[str] = set()  # tunnel starts NOT running -> triggers the restart path
     monkeypatch.setattr(podman, "available", lambda: True)
-    monkeypatch.setattr(podman, "network_ensure", lambda name: None)
+    monkeypatch.setattr(podman, "network_ensure", lambda name, **k: None)
     monkeypatch.setattr(podman, "rm", lambda name, **k: order.append(f"rm {name}"))
     monkeypatch.setattr(podman, "is_running", lambda name: name in running)
     monkeypatch.setattr(podman, "container_ip", lambda name, net: "10.89.0.12")
@@ -506,3 +529,70 @@ def test_tunnel_status_requires_both_images(monkeypatch):
     assert provider.status(ctx).image_present is False
     present.add(ctx.adapter_image)
     assert provider.status(ctx).image_present is True
+
+
+# ---------------------------------------- follow-up fixes (static IP, caps, reconcile)
+def test_provider_static_ip_is_deterministic_and_in_subnet():
+    a = paths.provider_static_ip("vpn", "se")
+    assert a == paths.provider_static_ip("vpn", "se")  # stable across calls/processes
+    assert a.startswith("10.89.231.")
+    octet = int(a.rsplit(".", 1)[1])
+    assert 2 <= octet <= 254  # a host address, never the network/gateway/broadcast
+
+
+def test_gateway_does_not_grant_net_raw():
+    spec = launch.gateway_spec(_profile(), "203.0.113.9")
+    assert "NET_RAW" not in spec.cap_add
+    assert spec.cap_add == ["NET_ADMIN", "NET_BIND_SERVICE"]
+
+
+def test_container_env_parses_one_var(monkeypatch):
+    import subprocess
+
+    monkeypatch.setattr(podman, "exists", lambda name: True)
+    monkeypatch.setattr(
+        podman,
+        "_run",
+        lambda args, **k: subprocess.CompletedProcess(
+            args, 0, stdout="PATH=/bin\nKF_ENDPOINT_IP=10.89.231.9\nX=1\n", stderr=""
+        ),
+    )
+    assert podman.container_env("c", "KF_ENDPOINT_IP") == "10.89.231.9"
+    assert podman.container_env("c", "MISSING") is None
+
+
+def test_reconcile_stops_a_gateway_whose_provider_ip_drifted(fake_module, monkeypatch):
+    profile = _profile(module="faketor", lease="de", port=9050)
+    monkeypatch.setattr(launch.store, "list_profiles", lambda: [profile])
+    monkeypatch.setattr(podman, "is_running", lambda name: True)
+    monkeypatch.setattr(podman, "container_env", lambda name, key: "10.89.231.5")
+    monkeypatch.setattr(podman, "container_ip", lambda name, net: "10.89.231.9")  # drifted
+    stopped: list[str] = []
+    monkeypatch.setattr(launch, "stop", lambda p: stopped.append(p.name))
+    assert launch.reconcile_providers() == ["work"]
+    assert stopped == ["work"]
+
+
+def test_reconcile_leaves_a_matching_gateway_alone(fake_module, monkeypatch):
+    profile = _profile(module="faketor", lease="de", port=9050)
+    monkeypatch.setattr(launch.store, "list_profiles", lambda: [profile])
+    monkeypatch.setattr(podman, "is_running", lambda name: True)
+    monkeypatch.setattr(podman, "container_env", lambda name, key: "10.89.231.9")
+    monkeypatch.setattr(podman, "container_ip", lambda name, net: "10.89.231.9")
+
+    def boom(p):
+        raise AssertionError("must not stop a gateway whose IP still matches")
+
+    monkeypatch.setattr(launch, "stop", boom)
+    assert launch.reconcile_providers() == []
+
+
+def test_reconcile_ignores_plain_endpoints(monkeypatch):
+    profile = _profile()  # no module
+    monkeypatch.setattr(launch.store, "list_profiles", lambda: [profile])
+
+    def boom(p):
+        raise AssertionError("plain endpoints are not reconciled")
+
+    monkeypatch.setattr(launch, "stop", boom)
+    assert launch.reconcile_providers() == []

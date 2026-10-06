@@ -154,26 +154,33 @@ kiwi-fox module doctor                # image present? binaries present? running
 A provider container is shared across every profile on the same module+lease and is
 torn down only when no running gateway still uses it.
 
-## Residual hardening (known, for follow-up)
+## Hardening on the shared bridge
 
-The leak-proof guarantee for a managed provider still rests on the gateway's
-nftables default-drop, exactly as for a plain endpoint. Moving the gateway onto a
-shared bridge adds a few things worth hardening further; none weakens the single
-permitted-destination rule, and the leak suite asserts it on the bridge
-(`tests/leak/test_network.py`):
+The leak-proof guarantee for a managed provider rests on the gateway's nftables
+default-drop, exactly as for a plain endpoint; the leak suite asserts it on the
+bridge (`tests/leak/test_network.py`), including that a non-permitted on-link
+neighbour is still dropped. On top of that:
 
-- **The gateway pins the provider's address once, at launch.** The provider's bridge
-  IP is resolved on every launch and the gateway is recreated with it, so the common
-  case is covered. But if a provider container restarts *while* a gateway is running
-  and its IP is reused by another container, that gateway's nft rule is stale until
-  the next launch. A gateway that re-resolves and re-pins during its lifetime would
-  close this.
-- **`kf-providers` is one shared, NAT'd L2 segment.** It cannot be `--internal` —
-  the provider needs its own egress — so a compromised gateway/browser is kept off
-  the internet only by the nft rule (the same barrier as pasta), and its on-link
-  neighbours are other providers and gateways. A per-provider network (one bridge
-  per module+lease, only the gateways using it attached) would shrink the segment.
-- **The gateway still carries `NET_RAW`.** It is pre-existing and unused by nftables,
-  the resolver or the forwarder; on a shared L2 segment it also enables ARP spoofing
-  of neighbours. It should be dropped from the gateway's `cap_add` once verified not
-  to regress the plain-endpoint path on real podman.
+- **Providers get a deterministic static address.** `kf-providers` is created with a
+  fixed subnet (`paths.PROVIDERS_SUBNET`) and each provider is assigned a stable IP
+  derived from its module+lease, so it always returns to the same address and a
+  freed address cannot be handed to a different container. The provider also runs
+  with `--restart on-failure`, so an out-of-band crash recovers in place on that IP.
+- **A gateway whose provider address drifts is failed closed.** As a backstop,
+  `launch.reconcile_providers()` (run from `reap()`) compares each running gateway's
+  pinned `KF_ENDPOINT_IP` against its provider's current address and tears the
+  gateway down on a mismatch — so the forwarder can never send traffic, or
+  account credentials, to whatever else might hold that address.
+- **The gateway does not carry `NET_RAW`.** nftables, the resolver and the forwarder
+  use no raw sockets, so it is dropped from the gateway's `cap_add`; on the shared L2
+  segment this removes an ARP-spoofing capability.
+
+Still open, documented rather than closed:
+
+- **`kf-providers` is one shared L2 segment** (it cannot be `--internal` — the
+  provider needs its own egress). The nft default-drop is the barrier, the same as
+  on pasta. Moving to a per-provider network (one bridge per module+lease, only the
+  gateways using it attached) would shrink the segment further.
+- The static-IP and reconcile paths need a live podman host to exercise end to end;
+  the logic is unit-tested, but validate `module up` and a provider restart on a real
+  machine.
