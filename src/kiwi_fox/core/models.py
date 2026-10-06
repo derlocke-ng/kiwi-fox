@@ -25,6 +25,11 @@ class Endpoint(Strict):
     has_password: bool = False  # the password itself lives in libsecret
     module: str | None = None  # provider module name; None = plain SOCKS5
     lease: str | None = None  # module-specific lease (9proxy port, myst provider_id)
+    # Exit country requested from the provider. Persisted separately from lease
+    # because for some modules the two are distinct axes (a myst provider_id and a
+    # country), so it is replayed on every relaunch to keep the exit — and the
+    # frozen fingerprint built for it — coherent.
+    country: str | None = None
 
     @property
     def label(self) -> str:
@@ -261,7 +266,9 @@ class ContainerSpec(Strict):
 
     name: str
     image: str
-    network: str  # "container:<gateway>"
+    network: str  # "container:<gateway>", "pasta", or a bridge name
+    ip: str | None = None  # static address on a bridge network (providers only)
+    restart: str | None = None  # podman restart policy, e.g. "on-failure"
     env: dict[str, str] = Field(default_factory=dict)
     volumes: list[tuple[str, str, str]] = Field(default_factory=list)  # src, dst, opts
     args: list[str] = Field(default_factory=list)  # command line after the image

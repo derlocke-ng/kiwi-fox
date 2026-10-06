@@ -87,6 +87,10 @@ def spec_args(spec: ContainerSpec, *, detach: bool = True) -> list[str]:
     if detach:
         args.append("--detach")
     args += ["--network", spec.network]
+    if spec.ip:
+        args += ["--ip", spec.ip]
+    if spec.restart:
+        args += ["--restart", spec.restart]
     if spec.userns:
         args += ["--userns", spec.userns]
     for cap in spec.cap_drop:
@@ -160,13 +164,23 @@ def network_exists(name: str) -> bool:
     return _run(["network", "exists", name], check=False).returncode == 0
 
 
-def network_ensure(name: str) -> None:
+def network_ensure(name: str, *, subnet: str | None = None, gateway: str | None = None) -> None:
     """Idempotent `podman network create`. A rootless bridge gives attached
-    containers outbound connectivity and lets them reach each other by IP."""
+    containers outbound connectivity and lets them reach each other by IP.
+
+    A fixed subnet lets kiwi-fox assign providers deterministic static addresses,
+    so a gateway's firewall pin stays valid across a provider restart and a freed
+    address cannot be reused by a different container."""
     if network_exists(name):
         return
     # `--ignore` makes a concurrent create a no-op rather than an error.
-    _run(["network", "create", "--ignore", name])
+    args = ["network", "create", "--ignore"]
+    if subnet:
+        args += ["--subnet", subnet]
+    if gateway:
+        args += ["--gateway", gateway]
+    args.append(name)
+    _run(args)
 
 
 def network_rm(name: str) -> None:
@@ -182,6 +196,19 @@ def container_ip(name: str, network: str) -> str | None:
     fmt = '{{(index .NetworkSettings.Networks "' + network + '").IPAddress}}'
     out = _run(["inspect", name, "--format", fmt], check=False).stdout.strip()
     return out or None
+
+
+def container_env(name: str, key: str) -> str | None:
+    """Read one environment variable a container was started with."""
+    if not exists(name):
+        return None
+    fmt = "{{range .Config.Env}}{{println .}}{{end}}"
+    out = _run(["inspect", name, "--format", fmt], check=False).stdout
+    prefix = f"{key}="
+    for line in out.splitlines():
+        if line.startswith(prefix):
+            return line[len(prefix) :]
+    return None
 
 
 def image_exists(image: str) -> bool:

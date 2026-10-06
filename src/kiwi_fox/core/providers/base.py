@@ -51,6 +51,10 @@ class ProviderContext:
     def container_name(self, lease: str | None = None) -> str:
         return paths.provider_container_name(self.name, lease)
 
+    def static_ip(self, lease: str | None = None) -> str:
+        """The provider's deterministic address on the providers bridge."""
+        return paths.provider_static_ip(self.name, lease)
+
     def adapter_name(self, lease: str | None = None) -> str:
         """Name of the SOCKS5 adapter sidecar, for a tunnel provider."""
         return paths.provider_container_name(f"{self.name}-adapter", lease)
@@ -164,12 +168,18 @@ class ContainerProvider:
         """
         if not podman.available():
             raise ProviderError("podman not found")
-        podman.network_ensure(ctx.network)
+        podman.network_ensure(
+            ctx.network, subnet=paths.PROVIDERS_SUBNET, gateway=paths.PROVIDERS_GATEWAY_IP
+        )
         spec = self.container_spec(ctx, lease=lease, country=country)
         if spec.network != ctx.network:
             raise ProviderError(
                 f"{self.name}: container_spec must attach to {ctx.network!r}, got {spec.network!r}"
             )
+        # A deterministic address so the gateway's firewall pin survives a restart,
+        # and a restart policy so an out-of-band crash recovers in place on it.
+        spec.ip = ctx.static_ip(lease)
+        spec.restart = spec.restart or "on-failure"
         if not podman.is_running(spec.name):
             podman.start(spec)
         ip = self._await_ready(ctx, spec.name)
@@ -179,10 +189,8 @@ class ContainerProvider:
             username=None,  # per-profile isolation/account creds are set at launch
             has_password=False,
             module=self.name,
-            # Persist the selector that was actually used, so relaunching the
-            # profile reproduces the same exit. A country given without an explicit
-            # lease is the selector, so fold it in rather than losing it.
-            lease=lease if lease is not None else country,
+            lease=lease,
+            country=country,
         )
 
     def _await_ready(self, ctx: ProviderContext, container: str) -> str:
@@ -277,12 +285,16 @@ class TunnelProvider(ContainerProvider):
     ) -> Endpoint:
         if not podman.available():
             raise ProviderError("podman not found")
-        podman.network_ensure(ctx.network)
+        podman.network_ensure(
+            ctx.network, subnet=paths.PROVIDERS_SUBNET, gateway=paths.PROVIDERS_GATEWAY_IP
+        )
         tunnel = self.tunnel_spec(ctx, lease=lease, country=country)
         if tunnel.network != ctx.network:
             raise ProviderError(
                 f"{self.name}: tunnel_spec must attach to {ctx.network!r}, got {tunnel.network!r}"
             )
+        tunnel.ip = ctx.static_ip(lease)
+        tunnel.restart = tunnel.restart or "on-failure"
         if not podman.is_running(tunnel.name):
             # The adapter joins the tunnel's netns (--network container:), which
             # makes the tunnel a dependent container: podman refuses to replace it
@@ -304,7 +316,8 @@ class TunnelProvider(ContainerProvider):
             username=None,
             has_password=False,
             module=self.name,
-            lease=lease if lease is not None else country,
+            lease=lease,
+            country=country,
         )
 
     def _await_tunnel(self, ctx: ProviderContext, container: str) -> str:

@@ -48,6 +48,7 @@ def cmd_new(a: argparse.Namespace) -> int:
         endpoint, password = proxy.parse(a.endpoint)
         endpoint.module = a.module
         endpoint.lease = a.lease
+        endpoint.country = a.country
     elif a.module:
         try:
             endpoint, password = _endpoint_from_module(a.module, lease=a.lease, country=a.country)
