@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
 import sys
 
 from . import __version__
-from .core import dns, geometry, gpu, launch, paths, podman, proxy, secrets, store
+from .core import dns, geometry, gpu, launch, paths, podman, providers, proxy, secrets, store
 from .core.engines import fetch as engine_fetch
 from .core.fingerprint import edit, generate, validate, validate_against, webgl
 from .core.fingerprint import windows11 as w11
@@ -28,10 +29,32 @@ def _fail(msg: str) -> int:
 
 
 # ------------------------------------------------------------------ commands
+def _endpoint_from_module(module: str, *, lease: str | None, country: str | None):
+    """Let a provider module produce the endpoint by bringing itself up."""
+    if not providers.is_installed(module):
+        raise providers.ProviderError(f"provider module {module!r} is not installed")
+    prov, manifest = providers.load(module)
+    if not manifest.runs_container:
+        raise providers.ProviderError(
+            f"{module!r} does not produce its own endpoint; pass an ENDPOINT"
+        )
+    ctx = providers.context_for(module, manifest)
+    endpoint = prov.up(ctx, lease=lease, country=country)
+    return endpoint, None
+
+
 def cmd_new(a: argparse.Namespace) -> int:
-    endpoint, password = proxy.parse(a.endpoint)
-    endpoint.module = a.module
-    endpoint.lease = a.lease
+    if a.endpoint:
+        endpoint, password = proxy.parse(a.endpoint)
+        endpoint.module = a.module
+        endpoint.lease = a.lease
+    elif a.module:
+        try:
+            endpoint, password = _endpoint_from_module(a.module, lease=a.lease, country=a.country)
+        except providers.ProviderError as exc:
+            return _fail(str(exc))
+    else:
+        return _fail("give an ENDPOINT, or --module NAME to have a provider produce one")
     version = a.engine_version or engine_fetch.preferred()
     if not version:
         return _fail("no engine installed; run `kiwi-fox engine fetch` first")
@@ -47,7 +70,10 @@ def cmd_new(a: argparse.Namespace) -> int:
 
     country = a.country
     exit_timezone = None
-    if not country and not a.no_probe:
+    # A managed local provider lives on a rootless bridge the host cannot reach, so
+    # the host-side probe would only time out; its exit is measured later through
+    # the gateway. Pass --country for such a profile's region.
+    if not country and not a.no_probe and not providers.manages(endpoint.module):
         try:
             info = proxy.preflight(endpoint, password)
             country = info.country
@@ -712,6 +738,94 @@ def cmd_fonts(a: argparse.Namespace) -> int:
     return 0
 
 
+def _module_status_line(name: str) -> tuple[str, bool]:
+    try:
+        prov, manifest = providers.load(name)
+    except providers.ProviderError as exc:
+        return f"{name:12} broken: {exc}", False
+    ctx = providers.context_for(name, manifest)
+    status = prov.status(ctx)
+    missing = [b for b in prov.requirements() if not shutil.which(b)]
+    img = "image yes" if status.image_present else "image MISSING (run `kiwi-fox module setup`)"
+    run = "running" if status.running else "idle"
+    req = f" · missing: {', '.join(missing)}" if missing else ""
+    ok = status.image_present and not missing
+    return f"{name:12} {img} · {run}{req}", ok
+
+
+def cmd_module(a: argparse.Namespace) -> int:
+    cmd = a.module_cmd
+    if cmd == "list":
+        names = providers.discover()
+        if not names:
+            _p("no provider modules installed")
+            _p("install one, e.g.: kiwi install kiwi-plugin-tor")
+            return 0
+        for name in names:
+            try:
+                _prov, manifest = providers.load(name)
+            except providers.ProviderError as exc:
+                _p(f"{name:12} (broken: {exc})")
+                continue
+            acct = " · account required" if manifest.needs_account else ""
+            desc = f" — {manifest.description}" if manifest.description else ""
+            _p(f"{name:12} {manifest.title}{desc}{acct}")
+        return 0
+    if cmd == "status":
+        line, _ok = _module_status_line(a.name)
+        _p(line)
+        return 0
+    if cmd == "leases":
+        prov, manifest = providers.load(a.name)
+        ctx = providers.context_for(a.name, manifest)
+        leases = prov.leases(ctx)
+        if not leases:
+            _p(f"{a.name}: no selectable leases (the default exit is used)")
+            return 0
+        for lease in leases:
+            loc = " ".join(x for x in (lease.country, lease.city) if x)
+            _p(f"{lease.id:20} {lease.label or ''} {loc} {lease.detail or ''}".rstrip())
+        return 0
+    if cmd == "up":
+        prov, manifest = providers.load(a.name)
+        ctx = providers.context_for(a.name, manifest)
+        endpoint = prov.up(ctx, lease=a.lease, country=a.country)
+        lease = f" --lease {a.lease}" if a.lease else ""
+        _p(f"{a.name} up — endpoint socks5://{endpoint.host}:{endpoint.port}")
+        _p(
+            f"  create a profile: kiwi-fox new <name> socks5://{endpoint.host}:{endpoint.port} "
+            f"--module {a.name}{lease}"
+        )
+        return 0
+    if cmd == "down":
+        prov, manifest = providers.load(a.name)
+        ctx = providers.context_for(a.name, manifest)
+        prov.down(ctx, lease=a.lease)
+        _p(f"{a.name} down")
+        return 0
+    if cmd == "setup":
+        from .core import setup
+
+        try:
+            setup.setup_module(a.name, progress=lambda m: _p(f"  {m}"))
+        except setup.SetupError as exc:
+            return _fail(str(exc))
+        _p(f"{a.name}: image ready")
+        return 0
+    if cmd == "doctor":
+        names = providers.discover()
+        if not names:
+            _p("no provider modules installed")
+            return 0
+        ok = True
+        for name in names:
+            line, line_ok = _module_status_line(name)
+            _p(line)
+            ok &= line_ok
+        return 0 if ok else 1
+    return _fail(f"unknown module command {cmd!r}")
+
+
 def cmd_setup(a: argparse.Namespace) -> int:
     from .core import setup
 
@@ -795,7 +909,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     n = sub.add_parser("new", help="create a profile")
     n.add_argument("name")
-    n.add_argument("endpoint", help="socks5://user:pass@host:port | host:port[:user:pass]")
+    n.add_argument(
+        "endpoint",
+        nargs="?",
+        help="socks5://user:pass@host:port | host:port[:user:pass]; "
+        "omit and pass --module NAME to have a provider produce the endpoint",
+    )
     n.add_argument("--country", help="two-letter code; probed from the exit when omitted")
     n.add_argument("--form", choices=["desktop", "laptop"], help="force the machine type")
     n.add_argument(
@@ -1008,6 +1127,27 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("reap", help="tear down gateways whose browser has exited").set_defaults(
         func=cmd_reap
     )
+
+    m = sub.add_parser(
+        "module", help="manage SOCKS5/VPN provider modules (tor, vpn, 9proxy, mysterium)"
+    )
+    msub = m.add_subparsers(dest="module_cmd", required=True)
+    msub.add_parser("list", help="installed provider modules")
+    ms = msub.add_parser("status", help="a module's live state")
+    ms.add_argument("name")
+    ml = msub.add_parser("leases", help="selectable exits a module offers")
+    ml.add_argument("name")
+    mu = msub.add_parser("up", help="bring a provider up and print its endpoint")
+    mu.add_argument("name")
+    mu.add_argument("--lease", help="which exit to bring up (see `module leases`)")
+    mu.add_argument("--country", help="two-letter code, when the module can target one")
+    mdn = msub.add_parser("down", help="stop a provider")
+    mdn.add_argument("name")
+    mdn.add_argument("--lease")
+    mse = msub.add_parser("setup", help="build or pull a module's image")
+    mse.add_argument("name")
+    msub.add_parser("doctor", help="check installed provider modules")
+    m.set_defaults(func=cmd_module)
     return ap
 
 
@@ -1016,7 +1156,13 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
         return args.func(args)
-    except (store.StoreError, proxy.ProxyError, podman.PodmanError, launch.LaunchError) as exc:
+    except (
+        store.StoreError,
+        proxy.ProxyError,
+        podman.PodmanError,
+        launch.LaunchError,
+        providers.ProviderError,
+    ) as exc:
         return _fail(str(exc))
     except KeyboardInterrupt:
         return 130

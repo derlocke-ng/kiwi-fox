@@ -192,6 +192,70 @@ class ProviderRecord(Strict):
     verified_at: dt.datetime
 
 
+# ---------------------------------------------------------------- provider plugins
+# A provider module turns some upstream (Tor, a VPN tunnel, a residential-proxy
+# account, a Mysterium node) into plain SOCKS5 and exposes nothing else — the
+# gateway, forwarder, firewall rule and DNS design stay single-shaped (see
+# docs/decisions.md). kiwi-fox discovers modules under paths.modules_dir(); each
+# ships a provider.py exposing PROVIDER (a Provider) and MANIFEST.
+
+ProviderAuth = Literal["none", "isolation", "account"]
+#   none       the exposed SOCKS5 takes no credentials
+#   isolation  any user/pass is accepted and used only to separate circuits/sessions
+#              per profile (Tor IsolateSOCKSAuth); kiwi-fox mints a per-profile token
+#   account    fixed credentials the user holds with the provider (9proxy login);
+#              supplied as the profile endpoint's own username/password
+
+
+class Lease(Strict):
+    """One selectable exit a provider can bring up: a Tor exit country, a gluetun
+    server, a 9proxy residential port, a Mysterium provider. ``id`` is what the
+    user passes as ``--lease`` and what is stored on the Endpoint; the rest is for
+    display only."""
+
+    id: str
+    label: str | None = None
+    country: str | None = None
+    city: str | None = None
+    detail: str | None = None
+
+
+class ProviderManifest(Strict):
+    """Static metadata a provider module declares about itself."""
+
+    name: str  # the module id: tor, vpn, 9proxy, mysterium. Also Endpoint.module.
+    title: str
+    description: str = ""
+    version: str = "0.0.0"
+    # True when the module runs its own container(s) that become the SOCKS5
+    # upstream; False for a module that only tags an already-remote SOCKS5.
+    runs_container: bool = True
+    # The podman image the module's container runs, built from its Containerfile.
+    # None lets kiwi-fox derive the conventional name (kiwi-fox/<name>:latest).
+    image: str | None = None
+    # SOCKS5 port the provider container listens on, inside the providers network.
+    socks_port: int = 1080
+    auth: ProviderAuth = "none"
+    # Does using this provider require an account / subscription / identity?
+    needs_account: bool = False
+    # Host binaries `kiwi-fox module doctor` checks for, beyond podman.
+    requires: list[str] = Field(default_factory=list)
+    # Free-form notes surfaced in `kiwi-fox module list`.
+    notes: str = ""
+
+
+class ProviderStatus(Strict):
+    """A provider's live state, for `kiwi-fox module status` and doctor."""
+
+    name: str
+    installed: bool = True
+    image_present: bool = False
+    running: bool = False
+    containers: list[str] = Field(default_factory=list)
+    leases: list[str] = Field(default_factory=list)
+    detail: str = ""
+
+
 class ContainerSpec(Strict):
     """What an engine asks podman for. Golden-file tested; keep it declarative."""
 

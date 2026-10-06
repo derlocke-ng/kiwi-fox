@@ -145,3 +145,58 @@ def secret_rm(name: str) -> None:
 
 def orphans() -> list[str]:
     return [c["Names"][0] for c in ps() if c.get("Names")]
+
+
+# ---------------------------------------------------------------- networks
+# Local provider containers (tor, vpn, 9proxy, mysterium) need their own exit to
+# the internet AND to be reachable by the gateway that forwards into them. They
+# cannot share the gateway's netns — the gateway default-drops everything but one
+# destination, which would strand the provider's own upstream — so they meet on a
+# user-defined bridge instead, and the gateway permits exactly the provider's
+# address on it.
+
+
+def network_exists(name: str) -> bool:
+    return _run(["network", "exists", name], check=False).returncode == 0
+
+
+def network_ensure(name: str) -> None:
+    """Idempotent `podman network create`. A rootless bridge gives attached
+    containers outbound connectivity and lets them reach each other by IP."""
+    if network_exists(name):
+        return
+    # `--ignore` makes a concurrent create a no-op rather than an error.
+    _run(["network", "create", "--ignore", name])
+
+
+def network_rm(name: str) -> None:
+    _run(["network", "rm", name], check=False)
+
+
+def container_ip(name: str, network: str) -> str | None:
+    """The container's IPv4 address on a specific network, or None if it is not
+    running or not attached there yet. The gateway's firewall needs a literal
+    address, so this is how a provider's bridge IP is resolved on the host."""
+    if not is_running(name):
+        return None
+    fmt = '{{(index .NetworkSettings.Networks "' + network + '").IPAddress}}'
+    out = _run(["inspect", name, "--format", fmt], check=False).stdout.strip()
+    return out or None
+
+
+def image_exists(image: str) -> bool:
+    return _run(["image", "exists", image], check=False).returncode == 0
+
+
+def pull(image: str) -> None:
+    _run(["pull", image], timeout=600)
+
+
+def build(
+    image: str, containerfile: str, context: str, *, labels: dict[str, str] | None = None
+) -> None:
+    args = ["build", "-t", image, "-f", containerfile]
+    for key, val in sorted((labels or {}).items()):
+        args += ["--label", f"{key}={val}"]
+    args.append(context)
+    _run(args, timeout=1800)
