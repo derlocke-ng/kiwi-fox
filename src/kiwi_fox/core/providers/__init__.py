@@ -13,6 +13,7 @@ from .base import (
     Provider,
     ProviderContext,
     ProviderError,
+    TunnelProvider,
 )
 from .loader import (
     context_for,
@@ -29,6 +30,7 @@ __all__ = [
     "Provider",
     "ProviderContext",
     "ProviderError",
+    "TunnelProvider",
     "context_for",
     "discover",
     "get_provider",

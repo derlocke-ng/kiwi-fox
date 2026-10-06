@@ -51,6 +51,16 @@ class ProviderContext:
     def container_name(self, lease: str | None = None) -> str:
         return paths.provider_container_name(self.name, lease)
 
+    def adapter_name(self, lease: str | None = None) -> str:
+        """Name of the SOCKS5 adapter sidecar, for a tunnel provider."""
+        return paths.provider_container_name(f"{self.name}-adapter", lease)
+
+    @property
+    def adapter_image(self) -> str:
+        """The adapter image, always built locally (alpine + microsocks), separate
+        from a tunnel image that may be pulled."""
+        return paths.provider_image(f"{self.name}-adapter")
+
     def containerfile(self, subdir: str = "") -> Path:
         base = self.module_dir / "containers"
         return (base / subdir / "Containerfile") if subdir else (base / "Containerfile")
@@ -214,6 +224,116 @@ class ContainerProvider:
             running=bool(running),
             containers=running,
             leases=[lease.id for lease in _safe_leases(self, ctx)],
+        )
+
+
+class TunnelProvider(ContainerProvider):
+    """A provider whose upstream is a tunnel that does not speak SOCKS5 itself — a
+    VPN via gluetun, a Mysterium node. It runs two containers: the tunnel on the
+    providers bridge, and a tiny microsocks adapter sharing the tunnel's network
+    namespace, so the adapter's SOCKS5 rides the tunnel while being reachable on the
+    bridge at the tunnel's own address. Adapting a tunnel into plain SOCKS5 is
+    exactly the module's job.
+
+    A subclass implements ``tunnel_spec`` (the tunnel container) and usually
+    ``tunnel_ready`` (so the exit is live before the window opens). The adapter and
+    the two-container lifecycle are generic.
+    """
+
+    def tunnel_spec(
+        self, ctx: ProviderContext, *, lease: str | None = None, country: str | None = None
+    ) -> ContainerSpec:
+        raise NotImplementedError(f"{self.name}: tunnel_spec must be implemented")
+
+    # The tunnel is the primary container for status/leases purposes.
+    def container_spec(
+        self, ctx: ProviderContext, *, lease: str | None = None, country: str | None = None
+    ) -> ContainerSpec:
+        return self.tunnel_spec(ctx, lease=lease, country=country)
+
+    def adapter_spec(
+        self, ctx: ProviderContext, tunnel: str, *, lease: str | None = None
+    ) -> ContainerSpec:
+        return ContainerSpec(
+            name=ctx.adapter_name(lease),
+            image=ctx.adapter_image,
+            # Share the tunnel's netns: the adapter binds the tunnel's bridge
+            # address and its own egress is the tunnel's default route.
+            network=f"container:{tunnel}",
+            args=[str(self.manifest.socks_port)],
+            cap_drop=["all"],
+            security_opt=["no-new-privileges"],
+            labels={"kiwi-fox.module": self.name, "kiwi-fox.role": "adapter"},
+        )
+
+    def tunnel_ready(self, ctx: ProviderContext, container: str) -> bool:  # noqa: ARG002
+        return True
+
+    def up(
+        self, ctx: ProviderContext, *, lease: str | None = None, country: str | None = None
+    ) -> Endpoint:
+        if not podman.available():
+            raise ProviderError("podman not found")
+        podman.network_ensure(ctx.network)
+        tunnel = self.tunnel_spec(ctx, lease=lease, country=country)
+        if tunnel.network != ctx.network:
+            raise ProviderError(
+                f"{self.name}: tunnel_spec must attach to {ctx.network!r}, got {tunnel.network!r}"
+            )
+        if not podman.is_running(tunnel.name):
+            podman.start(tunnel)
+        ip = self._await_tunnel(ctx, tunnel.name)
+        adapter = self.adapter_spec(ctx, tunnel.name, lease=lease)
+        if not podman.is_running(adapter.name):
+            podman.start(adapter)
+        if not podman.is_running(adapter.name):
+            raise ProviderError(
+                f"{self.name}: SOCKS5 adapter failed to start:\n" + podman.logs(adapter.name)
+            )
+        return Endpoint(
+            host=ip,
+            port=self.manifest.socks_port,
+            username=None,
+            has_password=False,
+            module=self.name,
+            lease=lease,
+        )
+
+    def _await_tunnel(self, ctx: ProviderContext, container: str) -> str:
+        deadline = time.monotonic() + self.ready_timeout
+        last = ""
+        while time.monotonic() < deadline:
+            if not podman.is_running(container):
+                raise ProviderError(
+                    f"{self.name}: tunnel container exited during start:\n" + podman.logs(container)
+                )
+            ip = podman.container_ip(container, ctx.network)
+            if ip and self.tunnel_ready(ctx, container):
+                return ip
+            last = ip or last
+            time.sleep(0.5)
+        raise ProviderError(
+            f"{self.name}: tunnel did not come up within {self.ready_timeout:.0f}s"
+            + (f" (address {last})" if last else "")
+        )
+
+    def down(self, ctx: ProviderContext, *, lease: str | None = None) -> None:
+        # Adapter first: it depends on the tunnel's netns, so podman refuses to
+        # remove the tunnel while the adapter joins it.
+        podman.rm(ctx.adapter_name(lease))
+        podman.rm(ctx.container_name(lease))
+
+    def setup(self, ctx: ProviderContext) -> None:
+        if self.manifest.image and "/" in self.manifest.image:
+            podman.pull(self.manifest.image)
+        cf = ctx.containerfile("adapter")
+        if not cf.exists():
+            raise ProviderError(f"{self.name}: no adapter Containerfile at {cf}")
+        podman.build(
+            ctx.adapter_image,
+            str(cf),
+            str(cf.parent),
+            labels={"app": "kiwi-fox", "kiwi-fox.module": self.name},
         )
 
 

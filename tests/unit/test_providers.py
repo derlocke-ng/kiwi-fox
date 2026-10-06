@@ -316,3 +316,111 @@ def test_release_is_a_noop_for_a_plain_endpoint(monkeypatch):
 def test_container_ip_returns_none_when_not_running(monkeypatch):
     monkeypatch.setattr(podman, "is_running", lambda name: False)
     assert podman.container_ip("x", "kf-providers") is None
+
+
+# ------------------------------------------------------------- tunnel provider
+TUNNEL_MODULE_SRC = """
+from kiwi_fox.core.models import ContainerSpec, Lease, ProviderManifest
+from kiwi_fox.core.providers.base import TunnelProvider
+
+MANIFEST = ProviderManifest(
+    name="faketun",
+    title="Fake Tunnel",
+    description="a fake tunnel provider",
+    version="0.0.0",
+    image="example.com/tunnel:latest",
+    socks_port=1080,
+    auth="none",
+    needs_account=True,
+)
+
+
+class FakeTunnel(TunnelProvider):
+    manifest = MANIFEST
+
+    def tunnel_spec(self, ctx, *, lease=None, country=None):
+        return ContainerSpec(
+            name=ctx.container_name(lease),
+            image=ctx.image,
+            network=ctx.network,
+            cap_add=["NET_ADMIN"],
+            devices=["/dev/net/tun"],
+            labels={"kiwi-fox.module": self.name, "kiwi-fox.role": "tunnel"},
+        )
+
+    def leases(self, ctx):
+        return [Lease(id="nl", country="NL"), Lease(id="se", country="SE")]
+
+
+PROVIDER = FakeTunnel()
+"""
+
+
+def install_tunnel_module(name="faketun"):
+    mdir = paths.module_dir(name)
+    mdir.mkdir(parents=True, exist_ok=True)
+    (mdir / "provider.py").write_text(TUNNEL_MODULE_SRC)
+
+
+def test_tunnel_up_starts_tunnel_then_adapter(monkeypatch):
+    install_tunnel_module()
+    started: list[str] = []
+    monkeypatch.setattr(podman, "available", lambda: True)
+    monkeypatch.setattr(podman, "network_ensure", lambda name: None)
+    monkeypatch.setattr(podman, "start", lambda spec, **k: started.append(spec.name) or "cid")
+    monkeypatch.setattr(podman, "is_running", lambda name: name in started)
+    monkeypatch.setattr(podman, "container_ip", lambda name, net: "10.89.0.11")
+    monkeypatch.setattr(podman, "logs", lambda name, tail=50: "")
+
+    provider, manifest = providers.load("faketun")
+    ctx = providers.context_for("faketun", manifest)
+    endpoint = provider.up(ctx, lease="nl")
+
+    tunnel = paths.provider_container_name("faketun", "nl")
+    adapter = paths.provider_container_name("faketun-adapter", "nl")
+    assert started == [tunnel, adapter]  # tunnel first, then the socks adapter
+    assert endpoint.host == "10.89.0.11"
+    assert endpoint.port == 1080
+    assert endpoint.module == "faketun"
+
+
+def test_tunnel_adapter_joins_the_tunnel_netns(monkeypatch):
+    install_tunnel_module()
+    provider, manifest = providers.load("faketun")
+    ctx = providers.context_for("faketun", manifest)
+    tunnel = ctx.container_name("nl")
+    adapter = provider.adapter_spec(ctx, tunnel, lease="nl")
+    assert adapter.network == f"container:{tunnel}"
+    assert adapter.image == "kiwi-fox/faketun-adapter:latest"
+    assert adapter.args == ["1080"]  # microsocks listen port
+
+
+def test_tunnel_down_removes_adapter_before_tunnel(monkeypatch):
+    install_tunnel_module()
+    removed: list[str] = []
+    monkeypatch.setattr(podman, "rm", lambda name, **k: removed.append(name))
+    provider, manifest = providers.load("faketun")
+    ctx = providers.context_for("faketun", manifest)
+    provider.down(ctx, lease="nl")
+    assert removed == [
+        paths.provider_container_name("faketun-adapter", "nl"),
+        paths.provider_container_name("faketun", "nl"),
+    ]
+
+
+def test_tunnel_rejects_tunnel_spec_off_the_bridge(monkeypatch):
+    install_tunnel_module()
+    monkeypatch.setattr(podman, "available", lambda: True)
+    monkeypatch.setattr(podman, "network_ensure", lambda name: None)
+    provider, manifest = providers.load("faketun")
+    ctx = providers.context_for("faketun", manifest)
+    orig = provider.tunnel_spec
+
+    def bad(c, **k):
+        spec = orig(c, **k)
+        spec.network = "pasta"
+        return spec
+
+    monkeypatch.setattr(provider, "tunnel_spec", bad)
+    with pytest.raises(providers.ProviderError, match="must attach to"):
+        provider.up(ctx, lease="nl")
