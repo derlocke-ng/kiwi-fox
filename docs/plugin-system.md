@@ -153,3 +153,27 @@ kiwi-fox module doctor                # image present? binaries present? running
 
 A provider container is shared across every profile on the same module+lease and is
 torn down only when no running gateway still uses it.
+
+## Residual hardening (known, for follow-up)
+
+The leak-proof guarantee for a managed provider still rests on the gateway's
+nftables default-drop, exactly as for a plain endpoint. Moving the gateway onto a
+shared bridge adds a few things worth hardening further; none weakens the single
+permitted-destination rule, and the leak suite asserts it on the bridge
+(`tests/leak/test_network.py`):
+
+- **The gateway pins the provider's address once, at launch.** The provider's bridge
+  IP is resolved on every launch and the gateway is recreated with it, so the common
+  case is covered. But if a provider container restarts *while* a gateway is running
+  and its IP is reused by another container, that gateway's nft rule is stale until
+  the next launch. A gateway that re-resolves and re-pins during its lifetime would
+  close this.
+- **`kf-providers` is one shared, NAT'd L2 segment.** It cannot be `--internal` —
+  the provider needs its own egress — so a compromised gateway/browser is kept off
+  the internet only by the nft rule (the same barrier as pasta), and its on-link
+  neighbours are other providers and gateways. A per-provider network (one bridge
+  per module+lease, only the gateways using it attached) would shrink the segment.
+- **The gateway still carries `NET_RAW`.** It is pre-existing and unused by nftables,
+  the resolver or the forwarder; on a shared L2 segment it also enables ARP spoofing
+  of neighbours. It should be dropped from the gateway's `cap_add` once verified not
+  to regress the plain-endpoint path on real podman.

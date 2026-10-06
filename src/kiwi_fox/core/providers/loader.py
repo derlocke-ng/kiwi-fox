@@ -16,6 +16,13 @@ from ..models import ProviderManifest
 from .base import Provider, ProviderContext, ProviderError
 
 _SYNTH_RE = re.compile(r"[^0-9a-zA-Z_]")
+# A module name is a single path segment in a safe charset: no separators, no
+# "..", so a name can never escape modules_dir() to load an arbitrary provider.py.
+_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+
+
+def valid_name(name: str) -> bool:
+    return bool(name) and name != ".." and "/" not in name and bool(_NAME_RE.match(name))
 
 
 def discover() -> list[str]:
@@ -32,11 +39,13 @@ def discover() -> list[str]:
 
 
 def is_installed(name: str) -> bool:
-    return (paths.module_dir(name) / "provider.py").exists()
+    return valid_name(name) and (paths.module_dir(name) / "provider.py").exists()
 
 
 def load(name: str) -> tuple[Provider, ProviderManifest]:
     """Import a module's provider.py and return its (PROVIDER, MANIFEST)."""
+    if not valid_name(name):
+        raise ProviderError(f"invalid provider module name {name!r}")
     path = paths.module_dir(name) / "provider.py"
     if not path.exists():
         raise ProviderError(f"provider module {name!r} is not installed ({path} missing)")

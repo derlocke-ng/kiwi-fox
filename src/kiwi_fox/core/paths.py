@@ -88,9 +88,11 @@ def provider_container_name(name: str, lease: str | None = None) -> str:
     module+lease, so its name is keyed on those, not on a profile id."""
     suffix = f"-{lease}" if lease else ""
     raw = f"{PREFIX}-prov-{name}{suffix}"
-    # Container names allow [a-zA-Z0-9._-]; a lease like a 9proxy port or a myst
-    # provider id is already in that set, but be defensive about separators.
-    return "".join(c if (c.isalnum() or c in "._-") else "-" for c in raw)[:63]
+    # Container names allow only [a-zA-Z0-9._-]; a lease like a 9proxy port or a
+    # myst provider id is already in that set, but be defensive. isalnum() is
+    # Unicode-aware and would pass e.g. accented letters podman rejects, so gate
+    # on ASCII first.
+    return "".join(c if (c.isascii() and c.isalnum()) or c in "._-" else "-" for c in raw)[:63]
 
 
 def ensure_tree() -> None:

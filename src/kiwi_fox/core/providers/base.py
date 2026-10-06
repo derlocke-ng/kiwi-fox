@@ -179,7 +179,10 @@ class ContainerProvider:
             username=None,  # per-profile isolation/account creds are set at launch
             has_password=False,
             module=self.name,
-            lease=lease,
+            # Persist the selector that was actually used, so relaunching the
+            # profile reproduces the same exit. A country given without an explicit
+            # lease is the selector, so fold it in rather than losing it.
+            lease=lease if lease is not None else country,
         )
 
     def _await_ready(self, ctx: ProviderContext, container: str) -> str:
@@ -281,6 +284,11 @@ class TunnelProvider(ContainerProvider):
                 f"{self.name}: tunnel_spec must attach to {ctx.network!r}, got {tunnel.network!r}"
             )
         if not podman.is_running(tunnel.name):
+            # The adapter joins the tunnel's netns (--network container:), which
+            # makes the tunnel a dependent container: podman refuses to replace it
+            # while the adapter exists. Remove a stale adapter first, exactly as the
+            # gateway launch removes the browser before replacing the gateway.
+            podman.rm(ctx.adapter_name(lease))
             podman.start(tunnel)
         ip = self._await_tunnel(ctx, tunnel.name)
         adapter = self.adapter_spec(ctx, tunnel.name, lease=lease)
@@ -296,7 +304,7 @@ class TunnelProvider(ContainerProvider):
             username=None,
             has_password=False,
             module=self.name,
-            lease=lease,
+            lease=lease if lease is not None else country,
         )
 
     def _await_tunnel(self, ctx: ProviderContext, container: str) -> str:
@@ -335,6 +343,13 @@ class TunnelProvider(ContainerProvider):
             str(cf.parent),
             labels={"app": "kiwi-fox", "kiwi-fox.module": self.name},
         )
+
+    def status(self, ctx: ProviderContext) -> ProviderStatus:
+        # A tunnel provider needs BOTH images: the tunnel (pulled or built) and the
+        # locally-built adapter. Report ready only when both are present.
+        status = super().status(ctx)
+        status.image_present = status.image_present and podman.image_exists(ctx.adapter_image)
+        return status
 
 
 def _safe_leases(provider: Provider, ctx: ProviderContext) -> list[Lease]:

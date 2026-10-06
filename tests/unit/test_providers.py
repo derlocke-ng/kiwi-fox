@@ -367,6 +367,7 @@ def test_tunnel_up_starts_tunnel_then_adapter(monkeypatch):
     started: list[str] = []
     monkeypatch.setattr(podman, "available", lambda: True)
     monkeypatch.setattr(podman, "network_ensure", lambda name: None)
+    monkeypatch.setattr(podman, "rm", lambda name, **k: None)
     monkeypatch.setattr(podman, "start", lambda spec, **k: started.append(spec.name) or "cid")
     monkeypatch.setattr(podman, "is_running", lambda name: name in started)
     monkeypatch.setattr(podman, "container_ip", lambda name, net: "10.89.0.11")
@@ -424,3 +425,84 @@ def test_tunnel_rejects_tunnel_spec_off_the_bridge(monkeypatch):
     monkeypatch.setattr(provider, "tunnel_spec", bad)
     with pytest.raises(providers.ProviderError, match="must attach to"):
         provider.up(ctx, lease="nl")
+
+
+# ------------------------------------------------- review-hardening regressions
+def test_country_without_lease_is_persisted_as_the_lease(fake_module, monkeypatch):
+    # A profile created with --country but no --lease must reproduce the same exit
+    # on relaunch, so up() folds country into the returned lease.
+    _stub_podman(monkeypatch, running=True, ip="10.89.0.3")
+    provider, manifest = providers.load("faketor")
+    ctx = providers.context_for("faketor", manifest)
+    endpoint = provider.up(ctx, lease=None, country="se")
+    assert endpoint.lease == "se"
+
+
+def test_explicit_lease_wins_over_country(fake_module, monkeypatch):
+    _stub_podman(monkeypatch, running=True, ip="10.89.0.3")
+    provider, manifest = providers.load("faketor")
+    ctx = providers.context_for("faketor", manifest)
+    assert provider.up(ctx, lease="de", country="se").lease == "de"
+
+
+def test_tunnel_up_removes_a_stale_adapter_before_replacing_the_tunnel(monkeypatch):
+    # The adapter joins the tunnel's netns, so podman refuses to replace the tunnel
+    # while the adapter exists — recovery would deadlock. The adapter must be
+    # removed first, like the browser before the gateway.
+    install_tunnel_module()
+    order: list[str] = []
+    running: set[str] = set()  # tunnel starts NOT running -> triggers the restart path
+    monkeypatch.setattr(podman, "available", lambda: True)
+    monkeypatch.setattr(podman, "network_ensure", lambda name: None)
+    monkeypatch.setattr(podman, "rm", lambda name, **k: order.append(f"rm {name}"))
+    monkeypatch.setattr(podman, "is_running", lambda name: name in running)
+    monkeypatch.setattr(podman, "container_ip", lambda name, net: "10.89.0.12")
+    monkeypatch.setattr(podman, "logs", lambda name, tail=50: "")
+
+    def start(spec, **k):
+        order.append(f"start {spec.name}")
+        running.add(spec.name)
+        return "cid"
+
+    monkeypatch.setattr(podman, "start", start)
+    provider, manifest = providers.load("faketun")
+    ctx = providers.context_for("faketun", manifest)
+    provider.up(ctx, lease="nl")
+    tunnel = paths.provider_container_name("faketun", "nl")
+    adapter = paths.provider_container_name("faketun-adapter", "nl")
+    assert order[0] == f"rm {adapter}"  # adapter removed first
+    assert order.index(f"rm {adapter}") < order.index(f"start {tunnel}")
+    assert order.index(f"start {tunnel}") < order.index(f"start {adapter}")
+
+
+def test_provider_container_name_rejects_non_ascii_alnum():
+    # str.isalnum() is Unicode-aware; podman names are ASCII [a-zA-Z0-9._-] only.
+    name = paths.provider_container_name("vpn", "café")
+    assert all((c.isascii() and c.isalnum()) or c in "._-" for c in name)
+    assert "é" not in name
+
+
+def test_loader_rejects_path_traversal_names():
+    from kiwi_fox.core.providers import loader
+
+    assert loader.valid_name("9proxy")
+    assert loader.valid_name("tor")
+    assert not loader.valid_name("../evil")
+    assert not loader.valid_name("..")
+    assert not loader.valid_name("a/b")
+    assert not providers.is_installed("../../etc")
+    with pytest.raises(providers.ProviderError, match="invalid provider module name"):
+        providers.load("../../etc/passwd")
+
+
+def test_tunnel_status_requires_both_images(monkeypatch):
+    install_tunnel_module()
+    provider, manifest = providers.load("faketun")
+    ctx = providers.context_for("faketun", manifest)
+    monkeypatch.setattr(podman, "ps", lambda all_=True: [])
+    # tunnel image present, adapter image missing -> not ready
+    present = {ctx.image}
+    monkeypatch.setattr(podman, "image_exists", lambda img: img in present)
+    assert provider.status(ctx).image_present is False
+    present.add(ctx.adapter_image)
+    assert provider.status(ctx).image_present is True
