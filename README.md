@@ -34,6 +34,24 @@ kiwi-fox-gui                                     # "Kiwi-Fox" in your app grid
 Endpoint formats: `socks5://user:pass@host:port`, `http://…`, `https://…`, and the
 vendor paste format `host:port:user:pass`.
 
+## Exits from provider modules
+
+Instead of an endpoint you were given, a profile can exit through a provider
+module that kiwi-fox runs for you: Tor, a VPN tunnel (gluetun), 9proxy or
+Mysterium. Each module is its own kiwi app and exposes plain SOCKS5; the gateway
+reaches it over a private bridge and still permits exactly one destination.
+
+```
+kiwi install kiwi-plugin-tor                  # or -vpn, -9proxy, -myst
+kiwi-fox setup                                # builds the module's image
+kiwi-fox module list                          # installed modules; `module leases tor` for exits
+kiwi-fox new work --module tor --country de   # the module produces the endpoint
+```
+
+On Tor every profile gets its own circuit. See
+[docs/plugin-system.md](docs/plugin-system.md) for how modules work and how to
+write one.
+
 ## What a new profile is
 
 The commonest machine there is, because rare values are what detectors flag: a
