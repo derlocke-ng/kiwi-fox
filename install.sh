@@ -22,6 +22,18 @@ if [[ "$KIWI_SCOPE" != user ]]; then
     exit 0
 fi
 
+# The launcher's icon is replaced on update (it comes from kiwi-icons), and an
+# icon-theme.cache that predates it keeps the old one in the app grid until the
+# cache is rebuilt — the same refresh kiwi-updater does for its own icon.
+refresh_desktop_caches() {
+    if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+        gtk-update-icon-cache -qtf "$KIWI_PREFIX/share/icons/hicolor" 2>/dev/null || true
+    fi
+    if command -v update-desktop-database >/dev/null 2>&1; then
+        update-desktop-database -q "$KIWI_PREFIX/share/applications" 2>/dev/null || true
+    fi
+}
+
 do_install() {
     mkdir -p "$LIBDIR" "$KIWI_PREFIX/bin"
     rm -rf "$LIBDIR/kiwi_fox" "$LIBDIR/containers"
@@ -46,6 +58,7 @@ EOF
             "$KIWI_PREFIX/share/applications/$APP.desktop" 2>/dev/null || true
         install -Dm644 "$SRC/data/$APP.svg" \
             "$KIWI_PREFIX/share/icons/hicolor/scalable/apps/$APP.svg" 2>/dev/null || true
+        refresh_desktop_caches
     fi
 
     # Blocklist refresh. Images and the engine are NOT built or downloaded here:
@@ -91,6 +104,7 @@ do_uninstall() {
     rm -f "$KIWI_PREFIX/bin/$APP" "$KIWI_PREFIX/bin/$APP-gui"
     rm -f "$KIWI_PREFIX/share/applications/$APP.desktop"
     rm -f "$KIWI_PREFIX/share/icons/hicolor/scalable/apps/$APP.svg"
+    refresh_desktop_caches
     rm -rf "$LIBDIR"
 
     # An ordinary uninstall leaves profiles, fingerprints and the provider cache
