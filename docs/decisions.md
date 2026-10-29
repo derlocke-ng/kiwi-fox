@@ -5,6 +5,20 @@ reach, so that it is not silently undone later.
 
 ## Engine
 
+**The engine is a profile field, not a fingerprint field.** A profile runs one of
+`camoufox`, `firefox` or `torbrowser`, chosen at creation and fixed thereafter
+(browser-data is one Firefox profile directory, so switching would downgrade it or
+carry one identity's state into another). Only `camoufox` is a spoofing engine and
+only it has a `fingerprint.json`; `firefox` shows this machine's own values and
+`torbrowser` its own uniform crowd, so for them a frozen Windows identity would be
+fiction. Engine selection used to live on the fingerprint, which a profile without
+one cannot carry; it now lives on `Profile.engine`, and `store.create` refuses a
+camoufox profile with no fingerprint or a non-spoofing profile with one. The
+Gecko-generic pieces — the proxy/DNS/leak prefs, the `user.js` renderer, the
+container skeleton — live in `engines/gecko.py`; Camoufox layers its Windows
+spoofing on top, and the validator checks the leak prefs for every engine but the
+Windows-coherence prefs for Camoufox alone.
+
 **Pinned upstream Camoufox, launched headfully without Playwright.** Config reaches
 the browser through chunked `CAMOU_CONFIG_*` environment variables read by the C++
 patches at startup; Playwright is only an automation channel we do not want. An own

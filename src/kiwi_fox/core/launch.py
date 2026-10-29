@@ -16,7 +16,8 @@ from pathlib import Path
 
 from . import dns, geometry, paths, podman, providers, proxy, secrets, store
 from .engines import get_engine
-from .engines.camoufox import FORWARDER_PORT, fontconfig_xml
+from .engines.camoufox import fontconfig_xml
+from .engines.gecko import FORWARDER_PORT
 from .fingerprint import validate, validate_against
 from .fingerprint.validator import Issue, errors
 from .models import ContainerSpec, ExitInfo, Fingerprint, Profile, ProviderRecord
@@ -114,9 +115,9 @@ def write_user_js(
     `data_dir` and `extra` exist for the probe, which runs the same prefs in a
     throwaway directory.
     """
-    from .engines.camoufox import user_js
+    from .engines.gecko import user_js
 
-    engine = get_engine(fp.engine)
+    engine = get_engine(profile.engine)
     path = (data_dir or browser_data_dir(profile)) / "user.js"
     path.parent.mkdir(parents=True, exist_ok=True)
     prefs = {**engine.prefs(fp, profile), **(extra or {})}  # type: ignore[attr-defined]
@@ -275,7 +276,7 @@ def write_resolv_conf(profile: Profile) -> Path:
 
 
 def browser_spec(profile: Profile, fp: Fingerprint, gateway: str, exit_ip: str | None):
-    spec = get_engine(fp.engine).build_spec(profile, fp, gateway=gateway, exit_ip=exit_ip)
+    spec = get_engine(profile.engine).build_spec(profile, fp, gateway=gateway, exit_ip=exit_ip)
     if profile.dns.mode == "resolver":
         spec.volumes.append((str(write_resolv_conf(profile)), "/etc/resolv.conf", "ro,z"))
     wayland = _wayland_mount()
@@ -415,7 +416,7 @@ def launch(profile: Profile, *, strict: bool = False, start_url: str | None = No
         fp,
         engine_version=fp.engine_version,
         exit_country=info.country if info else None,
-        prefs=get_engine(fp.engine).prefs(fp, profile),  # type: ignore[attr-defined]
+        prefs=get_engine(profile.engine).prefs(fp, profile),  # type: ignore[attr-defined]
         allow_prefs={"webgl.disabled"} if profile.webgl == "off" else set(),
     )
     from . import gpu

@@ -10,6 +10,12 @@ from pydantic import BaseModel, ConfigDict, Field
 FormFactor = Literal["desktop", "laptop"]
 GpuFamily = Literal["nvidia", "amd", "intel"]
 GpuTier = Literal["integrated", "mid", "high"]
+# Which browser a profile runs. "camoufox" is the spoofing engine (a frozen
+# Windows identity, a fingerprint.json beside the profile). "firefox" and
+# "torbrowser" carry no spoofed identity: stock Firefox shows this machine's own
+# values, Tor Browser its own uniform crowd. Only camoufox profiles have a
+# fingerprint; see store.create.
+EngineName = Literal["camoufox", "firefox", "torbrowser"]
 
 
 class Strict(BaseModel):
@@ -103,7 +109,10 @@ class Fingerprint(Strict):
     """Frozen at profile creation. Regenerating it is an explicit, warned action."""
 
     seed: str
-    engine: str = "camoufox"
+    # A fingerprint only ever belongs to a camoufox profile; the other engines
+    # store none. Narrowed to the literal so a stray value cannot select another
+    # engine, and so existing files (which all carry "camoufox") still load.
+    engine: Literal["camoufox"] = "camoufox"
     engine_version: str
     build_id: str
     form_factor: FormFactor
@@ -138,6 +147,15 @@ class Profile(Strict):
     name: str
     created: dt.datetime
     last_used: dt.datetime | None = None
+    # The browser this profile runs. Fixed at creation: browser-data is one
+    # Firefox profile directory, so switching engines would downgrade it or carry
+    # one identity's state into another. Old profile.json files have no "engine"
+    # key and load as camoufox.
+    engine: EngineName = "camoufox"
+    # For firefox/torbrowser: which installed version to run, or None to follow
+    # the newest installed (right for Tor Browser — security updates, and the
+    # crowd is the current release). camoufox pins its version in the fingerprint.
+    engine_version: str | None = None
     endpoint: Endpoint
     dns: DnsConfig = Field(default_factory=DnsConfig)
     last_exit: ExitInfo | None = None

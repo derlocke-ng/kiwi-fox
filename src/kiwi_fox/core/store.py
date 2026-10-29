@@ -8,7 +8,7 @@ import uuid
 from pathlib import Path
 
 from . import paths, secrets
-from .models import DnsConfig, Endpoint, Fingerprint, Profile, ProviderRecord
+from .models import DnsConfig, Endpoint, EngineName, Fingerprint, Profile, ProviderRecord
 
 
 class StoreError(RuntimeError):
@@ -25,18 +25,29 @@ def _write_json(path: Path, payload: str) -> None:
 def create(
     name: str,
     endpoint: Endpoint,
-    fingerprint: Fingerprint,
+    fingerprint: Fingerprint | None = None,
     *,
+    engine: EngineName = "camoufox",
+    engine_version: str | None = None,
     password: str | None = None,
     dns: DnsConfig | None = None,
     notes: str = "",
 ) -> Profile:
     if find_by_name(name):
         raise StoreError(f"a profile named {name!r} already exists")
+    # The engine/fingerprint contract, checked before anything is written: a
+    # camoufox profile carries a fingerprint, the non-spoofing engines carry none.
+    if engine == "camoufox":
+        if fingerprint is None:
+            raise StoreError("a camoufox profile needs a fingerprint")
+    elif fingerprint is not None:
+        raise StoreError(f"a {engine} profile has no fingerprint")
     profile = Profile(
         id=str(uuid.uuid4()),
         name=name,
         created=dt.datetime.now(dt.UTC),
+        engine=engine,
+        engine_version=engine_version,
         endpoint=endpoint,
         dns=dns or DnsConfig(),
         notes=notes,
@@ -44,8 +55,12 @@ def create(
     pdir = paths.profile_dir(profile.id)
     for sub in ("browser-data", "downloads"):
         (pdir / sub).mkdir(parents=True, exist_ok=True)
+    # The fingerprint first: list_profiles keys on profile.json, so a crash
+    # between the two writes leaves a camoufox profile invisible rather than one
+    # that loads but has no fingerprint.
+    if fingerprint is not None:
+        save_fingerprint(profile.id, fingerprint)
     save(profile)
-    save_fingerprint(profile.id, fingerprint)
     if password:
         secrets.store(profile.id, password, label=f"kiwi-fox {name}")
     return profile
@@ -72,6 +87,17 @@ def load_fingerprint(profile_id: str) -> Fingerprint:
     if not path.exists():
         raise StoreError(f"profile {profile_id!r} has no fingerprint")
     return Fingerprint.model_validate_json(path.read_text())
+
+
+def fingerprint_of(profile: Profile) -> Fingerprint | None:
+    """The profile's fingerprint, or None for a non-spoofing engine.
+
+    A camoufox profile with its fingerprint.json missing still raises (via
+    load_fingerprint): that is a broken profile, not a fingerprint-less one.
+    """
+    if profile.engine != "camoufox":
+        return None
+    return load_fingerprint(profile.id)
 
 
 def list_profiles() -> list[Profile]:

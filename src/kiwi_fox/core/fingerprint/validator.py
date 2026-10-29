@@ -17,15 +17,27 @@ from . import windows11 as w11
 
 Level = Literal["error", "warn"]
 
-REQUIRED_PREFS: dict[str, object] = {
-    "dom.webgpu.enabled": False,
+# The leak-prevention prefs that hold for EVERY Gecko engine: the forwarder is
+# the only way out, so a direct failover or the browser's own DoH must be off.
+# Checked for camoufox, stock Firefox and Tor Browser alike (check_network_prefs).
+NETWORK_PREFS: dict[str, object] = {
     "network.proxy.failover_direct": False,
     "network.trr.mode": 5,
+}
+
+# Camoufox-only: these keep the spoofed Windows claim coherent. Tor Browser needs
+# the OPPOSITE (resistFingerprinting on), so they must never be checked against it.
+COHERENCE_PREFS: dict[str, object] = {
+    "dom.webgpu.enabled": False,
     "privacy.resistFingerprinting": False,
     "privacy.fingerprintingProtection": False,
 }
 
+# What validate() has always required of a camoufox profile's prefs: both sets.
+REQUIRED_PREFS: dict[str, object] = {**COHERENCE_PREFS, **NETWORK_PREFS}
+
 # Prefs that are detectable by their absence — the documented pfox failure.
+# Camoufox-only: Tor Browser legitimately sets privacy.firstparty.isolate.
 FORBIDDEN_PREFS = (
     "webgl.disabled",
     "dom.webaudio.enabled",
@@ -33,6 +45,19 @@ FORBIDDEN_PREFS = (
     "browser.display.use_document_fonts",
     "privacy.firstparty.isolate",
 )
+
+
+def check_network_prefs(prefs: dict[str, object]) -> list[Issue]:
+    """The engine-neutral leak check: run for every engine's prefs.
+
+    Tor Browser additionally needs socks_remote_dns True (it resolves at the
+    exit); that is asserted by the Tor Browser engine, not here.
+    """
+    out: list[Issue] = []
+    for key, want in NETWORK_PREFS.items():
+        if prefs.get(key) != want:
+            out.append(_err("prefs.network", f"{key} must be {want!r}, got {prefs.get(key)!r}"))
+    return out
 
 
 @dataclass(frozen=True)
