@@ -191,6 +191,11 @@ def cmd_check(a: argparse.Namespace) -> int:
     profiles = [store.resolve_ref(a.ref)] if a.ref else store.list_profiles()
     bad = 0
     for p in profiles:
+        # Only camoufox carries a spoofed identity to check. A firefox/torbrowser
+        # profile has no fingerprint; say so and move on rather than abort the run.
+        if p.engine != "camoufox":
+            _p(f"{p.name}: {p.engine} — no spoofed identity to check")
+            continue
         fp = store.load_fingerprint(p.id)
         from .core.engines import get_engine
 
@@ -198,7 +203,7 @@ def cmd_check(a: argparse.Namespace) -> int:
             fp,
             engine_version=fp.engine_version,
             exit_country=p.last_exit.country if p.last_exit else None,
-            prefs=get_engine(fp.engine).prefs(fp, p),  # type: ignore[attr-defined]
+            prefs=get_engine(p.engine).prefs(fp, p),  # type: ignore[attr-defined]
             allow_prefs={"webgl.disabled"} if p.webgl == "off" else set(),
         )
         others = [
