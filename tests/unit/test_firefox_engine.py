@@ -119,7 +119,7 @@ def test_rendered_podman_args_are_stable(ff_profile, tmp_path, monkeypatch):
 def test_engine_dir_needs_an_install(ff_profile, monkeypatch, tmp_path):
     monkeypatch.setattr(firefox_fetch, "latest_installed", lambda: None)
     ff_profile.engine_version = None
-    with pytest.raises(RuntimeError, match="no Firefox engine"):
+    with pytest.raises(RuntimeError, match="engine fetch --engine firefox"):
         Firefox().engine_dir(ff_profile, None)
 
 

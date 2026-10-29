@@ -34,15 +34,9 @@ def _fail(msg: str) -> int:
 # ------------------------------------------------------------------ commands
 def _endpoint_from_module(module: str, *, lease: str | None, country: str | None):
     """Let a provider module produce the endpoint by bringing itself up."""
-    if not providers.is_installed(module):
-        raise providers.ProviderError(f"provider module {module!r} is not installed")
-    prov, manifest = providers.load(module)
-    if not manifest.runs_container:
-        raise providers.ProviderError(
-            f"{module!r} does not produce its own endpoint; pass an ENDPOINT"
-        )
-    ctx = providers.context_for(module, manifest)
-    return prov.up(ctx, lease=lease, country=country), None
+    from .core import modules
+
+    return modules.endpoint_from(module, lease=lease, country=country), None
 
 
 # Spoof-only flags, by their CLI name, with the value that means "given". A

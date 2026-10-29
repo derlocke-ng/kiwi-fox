@@ -35,7 +35,7 @@ class Firefox:
     def engine_dir(self, profile: Profile, fp: Fingerprint | None = None) -> Path:
         version = profile.engine_version or firefox_fetch.latest_installed()
         if not version:
-            raise RuntimeError("no Firefox engine installed; run `kiwi-fox engine fetch firefox`")
+            raise RuntimeError("no Firefox installed; run `kiwi-fox engine fetch --engine firefox`")
         return firefox_fetch.target_dir(version)
 
     # ---------------------------------------------------------------- prefs

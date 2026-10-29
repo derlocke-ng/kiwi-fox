@@ -38,7 +38,8 @@ class Application(Adw.Application):
             application_name="Kiwi-Fox",
             application_icon="dev.kiwinetwork.KiwiFox",
             version=__version__,
-            comments="Isolated Windows 11 browser identities in rootless Podman.",
+            comments="Isolated browser identities in rootless Podman: a spoofed Windows 11 "
+            "machine in Camoufox, stock Firefox, or Tor Browser — each behind its own exit.",
             license_type=Gtk.License.GPL_3_0,
             website="https://github.com/derlocke-ng/kiwi-fox",
         )

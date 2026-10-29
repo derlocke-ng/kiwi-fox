@@ -11,10 +11,16 @@ from gi.repository import Adw, Gio, GLib, Gtk  # noqa: E402
 from kiwi_proxy import paths as proxy_paths  # noqa: E402
 from kiwi_proxy import podman  # noqa: E402
 
-from ..core import launch, secrets, store  # noqa: E402
-from ..core.engines import fetch as engine_fetch  # noqa: E402
+from ..core import launch, modules, secrets, store  # noqa: E402
+from ..core.engines import TITLES, installed_versions  # noqa: E402
 from . import worker  # noqa: E402
-from .dialogs import NewProfileDialog, ProfileDetails, ProfileEditor  # noqa: E402
+from .dialogs import (  # noqa: E402
+    EnginesDialog,
+    NewProfileDialog,
+    ProfileDetails,
+    ProfileEditor,
+    exit_label,
+)
 
 REFRESH_SECONDS = 4
 
@@ -34,6 +40,7 @@ class Window(Adw.ApplicationWindow):
 
         menu = Gio.Menu()
         menu.append("Set up environment", "win.setup")
+        menu.append("Browser engines", "win.engines")
         menu.append("Check environment", "win.doctor")
         menu.append("Stop everything", "win.stop-all")
         menu_button = Gtk.MenuButton(icon_name="open-menu-symbolic", menu_model=menu)
@@ -54,8 +61,8 @@ class Window(Adw.ApplicationWindow):
         self.empty = Adw.StatusPage(
             icon_name="avatar-default-symbolic",
             title="No profiles yet",
-            description="A profile is one identity: its own storage, its own exit and its "
-            "own frozen fingerprint.",
+            description="A profile is one identity: its own storage and its own exit, in "
+            "Camoufox with a frozen Windows fingerprint, in stock Firefox, or in Tor Browser.",
         )
         create = Gtk.Button(label="Create a profile", halign=Gtk.Align.CENTER)
         create.add_css_class("suggested-action")
@@ -76,6 +83,7 @@ class Window(Adw.ApplicationWindow):
 
         for name, handler in (
             ("setup", lambda *_: self._run_setup()),
+            ("engines", lambda *_: EnginesDialog(self._run_setup).present(self)),
             ("doctor", lambda *_: self._check_environment(announce=True)),
             ("stop-all", lambda *_: self._stop_all()),
         ):
@@ -151,7 +159,7 @@ class Window(Adw.ApplicationWindow):
             if profile.last_exit.city:
                 exit_bits.append(profile.last_exit.city)
         where = " · ".join(exit_bits) or "not probed yet"
-        row.set_subtitle(f"{profile.endpoint.label} · {where}")
+        row.set_subtitle(f"{TITLES[profile.engine]} · {exit_label(profile)} · {where}")
         button = row.run_button  # type: ignore[attr-defined]
         if profile.id in self._busy:
             button.set_label("Working…")
@@ -187,20 +195,29 @@ class Window(Adw.ApplicationWindow):
         # defeats the point; so this opens the dialog pre-filled rather than copying.
         dialog = NewProfileDialog(self, self._after_create)
         dialog.name_row.set_text(f"{profile.name}-2")
-        dialog.endpoint_row.set_text(
-            profile.endpoint.label.split(":", 1)[0] + ":" + str(profile.endpoint.port)
-        )
+        dialog.select_engine(profile.engine)
+        if profile.endpoint.module:
+            dialog.select_module(profile.endpoint.module)
+            dialog.exit_country_row.set_text((profile.endpoint.country or "").upper())
+        else:
+            dialog.endpoint_row.set_text(f"{profile.endpoint.host}:{profile.endpoint.port}")
         dialog.present(self)
 
     def _act_delete(self, _action, param) -> None:
         profile = self._profile(param.get_string())
         if not profile:
             return
-        dialog = Adw.AlertDialog(
-            heading=f"Delete {profile.name}?",
-            body="Its identity cannot be regenerated: the seed, fingerprint and browser "
-            "data are removed. Logins tied to this identity will be lost.",
-        )
+        if profile.engine == "camoufox":
+            body = (
+                "Its identity cannot be regenerated: the seed, fingerprint and browser "
+                "data are removed. Logins tied to this identity will be lost."
+            )
+        else:
+            body = (
+                "Its browser data and its exit are removed. Logins tied to this profile "
+                "will be lost."
+            )
+        dialog = Adw.AlertDialog(heading=f"Delete {profile.name}?", body=body)
         dialog.add_response("cancel", "Cancel")
         dialog.add_response("delete", "Delete")
         dialog.set_response_appearance("delete", Adw.ResponseAppearance.DESTRUCTIVE)
@@ -269,13 +286,23 @@ class Window(Adw.ApplicationWindow):
     def _check_environment(self, announce: bool = False) -> None:
         def work():
             missing = []
-            if not podman.available():
+            profiles = store.list_profiles()
+            have_podman = podman.available()
+            if not have_podman:
                 missing.append("podman")
-            if not engine_fetch.installed():
-                missing.append("browser engine")
-            for image in (proxy_paths.GATEWAY_IMAGE, launch.BROWSER_IMAGE):
-                if not podman.image_exists(image):
-                    missing.append(image.split("/")[-1].split(":")[0] + " image")
+            # The engines the profiles need; any one at all before there are profiles.
+            wanted = sorted({p.engine for p in profiles}, key=list(TITLES).index)
+            if not wanted and not any(installed_versions(e) for e in TITLES):
+                missing.append("a browser engine")
+            missing += [TITLES[e] for e in wanted if not installed_versions(e)]
+            if have_podman:
+                for image in (proxy_paths.GATEWAY_IMAGE, launch.BROWSER_IMAGE):
+                    if not podman.image_exists(image):
+                        missing.append(image.split("/")[-1].split(":")[0] + " image")
+            present = {m.name for m in modules.installed()}
+            for name in sorted({p.endpoint.module for p in profiles if p.endpoint.module}):
+                if name not in present:
+                    missing.append(f"the {name} module ({modules.install_hint(name)})")
             if not (proxy_paths.blocklists_dir() / "blocked-names.txt").exists():
                 missing.append("blocklists")
             if not secrets.available():

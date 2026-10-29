@@ -31,6 +31,27 @@ class Engine(Protocol):
     ) -> ContainerSpec: ...
 
 
+# What each engine is called where a person reads it.
+TITLES = {"camoufox": "Camoufox", "firefox": "Firefox", "torbrowser": "Tor Browser"}
+
+
+def installed_versions(name: str) -> list[str]:
+    """The versions of an engine on this machine, oldest first."""
+    if name == "camoufox":
+        from . import fetch
+
+        return fetch.installed()
+    if name == "firefox":
+        from . import firefox_fetch
+
+        return firefox_fetch.installed()
+    if name == "torbrowser":
+        from . import torbrowser_fetch
+
+        return torbrowser_fetch.installed()
+    raise ValueError(f"unknown engine {name!r}")
+
+
 def get_engine(name: str) -> Engine:
     if name == "camoufox":
         from .camoufox import Camoufox
