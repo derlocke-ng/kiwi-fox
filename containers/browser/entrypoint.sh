@@ -1,16 +1,19 @@
 #!/usr/bin/env bash
-# kiwi-fox browser — exec Camoufox headfully, with the engine mounted read-only
-# and the profile mounted read-write.
+# kiwi-fox browser — exec the engine headfully, with it mounted read-only and the
+# profile mounted read-write. The engine and its binary name are passed in:
+# camoufox (the default, so an older gateway env still works), firefox, or a Tor
+# Browser binary.
 #
-# No Playwright, no juggler, no automation channel: all spoofing arrives through
-# the CAMOU_CONFIG_* environment this container was started with, and prefs
-# through the profile's user.js.
+# No Playwright, no juggler, no automation channel: Camoufox's spoofing arrives
+# through the CAMOU_CONFIG_* environment this container was started with, and
+# every engine's prefs through the profile's user.js.
 set -euo pipefail
 
 ENGINE="${KF_ENGINE_DIR:-/opt/camoufox}"
+BIN="${KF_ENGINE_BIN:-camoufox}"
 PROFILE="${KF_PROFILE_DIR:-/profile}"
 
-[ -x "$ENGINE/camoufox" ] || { echo "browser: no engine at $ENGINE" >&2; exit 2; }
+[ -x "$ENGINE/$BIN" ] || { echo "browser: no engine binary at $ENGINE/$BIN" >&2; exit 2; }
 
 # Firefox wants a profile directory that is absolute and already exists, or it
 # shows "profile cannot be loaded, missing or inaccessible" and never starts.
@@ -29,8 +32,8 @@ if [ ! -x "$ENGINE/gfxtest" ] && [ ! -x "$ENGINE/glxtest" ]; then
     echo "browser: no GPU probe helper in the engine — drawing falls back to software" >&2
 fi
 
-echo "browser: launching camoufox for profile $PROFILE"
-exec "$ENGINE/camoufox" \
+echo "browser: launching $BIN for profile $PROFILE"
+exec "$ENGINE/$BIN" \
     -profile "$PROFILE" \
     -no-remote \
     "$@"

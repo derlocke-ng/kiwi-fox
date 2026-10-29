@@ -6,6 +6,7 @@ engines do not, so ``fp`` is optional across the protocol and is None for them.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Protocol
 
 from ..models import ContainerSpec, Fingerprint, Profile
@@ -13,6 +14,11 @@ from ..models import ContainerSpec, Fingerprint, Profile
 
 class Engine(Protocol):
     name: str
+    binary: str  # the executable inside engine_dir, e.g. "camoufox", "firefox"
+
+    def engine_dir(self, profile: Profile, fp: Fingerprint | None) -> Path:
+        """Where this engine is installed on the host (mounted read-only)."""
+        ...
 
     def prefs(self, fp: Fingerprint | None, profile: Profile) -> dict[str, object]: ...
 
@@ -30,9 +36,12 @@ def get_engine(name: str) -> Engine:
         from .camoufox import Camoufox
 
         return Camoufox()
-    # firefox and torbrowser are valid EngineName values but are added in later
-    # changes; until then nothing creates such a profile, so this is unreachable
-    # in normal use and exists to fail loudly rather than silently mis-dispatch.
-    if name in ("firefox", "torbrowser"):
+    if name == "firefox":
+        from .firefox import Firefox
+
+        return Firefox()
+    # torbrowser is a valid EngineName but is added in a later change; until then
+    # nothing creates such a profile, so this fails loudly rather than mis-dispatch.
+    if name == "torbrowser":
         raise ValueError(f"the {name!r} engine is not available in this build yet")
     raise ValueError(f"unknown engine {name!r}")

@@ -19,6 +19,22 @@ container skeleton — live in `engines/gecko.py`; Camoufox layers its Windows
 spoofing on top, and the validator checks the leak prefs for every engine but the
 Windows-coherence prefs for Camoufox alone.
 
+**Stock Firefox is Mozilla's own build, verified and un-spoofed.** The firefox
+engine exists for when uniqueness is not what is wanted: it shows this machine's
+real values — a coherent, ordinary Firefox — rather than a disguise, so it sets
+no fingerprint and no `CAMOU_CONFIG`. Only what the container and the proxy
+require is applied through `user.js`: the proxy and leak prevention shared with
+every engine, WebRTC candidates confined (`ice.no_host`) so a page cannot read
+the host address around the proxy, hardware rendering, and the appearance. The
+tarball is fetched from archive.mozilla.org and verified the way Mozilla
+documents — the detached signature over `SHA512SUMS` against the pinned release
+key `14F2 6682 … D98F 0353`, then the tarball's SHA-512 — because the engine is
+mounted read-only and pinned, so a silent swap would otherwise go unnoticed.
+Updates are turned off through the bundle's `distribution/policies.json`, written
+host-side at fetch time. Firefox renders with its own font set under a dedicated
+`FONTCONFIG_FILE`, kept off Camoufox's path so Camoufox's per-profile fonts are
+unchanged.
+
 **Pinned upstream Camoufox, launched headfully without Playwright.** Config reaches
 the browser through chunked `CAMOU_CONFIG_*` environment variables read by the C++
 patches at startup; Playwright is only an automation channel we do not want. An own
