@@ -102,49 +102,51 @@ stopping the user's session and writing into its history.
 
 ## Network
 
-**The gateway owns the network namespace; the browser joins it.** The kill switch is
-then the absence of a route rather than software that has to notice. Measured
-working rootless on this host.
+The proxy engine — the gateway that owns the namespace, the credential forwarder,
+the resolver, the provider modules — is
+[kiwi-proxy](https://github.com/derlocke-ng/kiwi-proxy) since 0.3.0, and so are the
+decisions behind it: its `docs/decisions.md` (the gateway, credentials as podman
+secrets, SOCKS5-only providers, the providers bridge, injection versus
+passthrough) and `docs/consumers.md` (what a consumer can rely on). What is left
+here is how kiwi-fox uses it.
 
-**Credentials arrive as a podman secret.** Not container env (`podman inspect` shows
-it) and not a bind-mounted 0600 file (the gateway runs as container-root, a subuid,
-and cannot read a file owned by the host user).
+**One exit per profile, under the profile's own id.** The gateway is named after
+the exit and the Tor isolation token is derived from it, so with the profile id as
+the exit id both stay what they were before the split: `kf-gw-<id[:12]>` and
+`kf-<id[:16]>` — the same name kiwi-pentesting looks for, the same Tor circuit.
+kiwi-fox also keeps its own labels on the gateway (`app=kiwi-fox`,
+`kiwi-fox.role=gateway`, `kiwi-fox.profile`).
 
-**Every provider exposes SOCKS5 and nothing else.** Adapting is the module's job, so
-the gateway, forwarder, firewall rule and DNS design stay single-shaped.
+**The exit holds the endpoint and DNS settings; profile.json keeps a copy.**
+`kiwi-proxy set` can change an exit, so a profile that kept its own settings and
+wrote them over the exit at every launch would silently undo that. `store.save`
+writes to the exit and `store.load` reads from it; the copy in profile.json is
+what a profile from before 0.3.0 starts from, and what loads if the exit is gone.
+Exit names are unique in kiwi-proxy: a clash is refused at `kiwi-fox new`, and for
+an older profile whose name a CLI-made exit took in the meantime the exit keeps a
+`<name>-<id[:8]>` label instead — kiwi-fox finds it by id.
 
-**The forwarder can inject the profile credential, or pass the browser's own
-through.** By default (`KF_SOCKS_AUTH=inject`) the gateway's SOCKS5 forwarder answers
-the browser with no-auth and adds the one per-profile credential upstream, which is
-all Camoufox and stock Firefox need. Tor Browser is different: it puts a SOCKS
-username and password on every request — the first-party domain and a per-domain
-nonce — to key a circuit per site, and its SOCKS client offers *only*
-username/password, so a no-auth answer refuses the connection outright. So
-passthrough mode accepts the client's credentials and sends upstream the profile
-token prefixed to the client username (folded to a hash when the pair would exceed
-255 bytes), keeping Tor's `IsolateSOCKSAuth` per-site circuits while the token still
-isolates profiles. New Identity and New Circuit then work through the SOCKS nonce
-alone, with no control port. Passthrough is set only for a Tor Browser profile on an
-isolation provider; every other profile's forwarder is byte-for-byte as before.
+**Closing the window releases the gateway; it does not remove it.** A pentest tool
+or a `kiwi-proxy up` of the same identity may be inside the namespace too, and
+removing the gateway would cut it off. Deleting a profile is the one thing that
+tears the gateway down regardless.
 
-**A provider module is a plugin, discovered on disk, not code baked in here.** The
-contract (`core/providers/`) lives in kiwi-fox because the exit side is becoming a
-full SOCKS5/VPN tunnelling suite, but each provider — tor, vpn, 9proxy, mysterium —
-ships in its own repository and installs under `modules_dir()`. kiwi-fox loads a
-module's `provider.py` by file path, not by import name, so a module named `9proxy`
-(not a legal Python identifier) still loads. See `docs/plugin-system.md`.
+**The fingerprint is checked against the host-side pre-flight only.** For a remote
+exit kiwi-proxy measures it from the host before anything starts, exactly as
+before. A provider exit (Tor) cannot be reached from the host, and measuring it
+through the gateway would add a round trip to every launch and change what
+`--strict` refuses, so the launch does not ask for it.
 
-**A local provider meets the gateway on a bridge, never in its netns.** A provider
-that runs its own container needs an unrestricted exit of its own, which the
-gateway's default-drop would strand if they shared a namespace. So both attach to
-one `kf-providers` bridge and the gateway permits exactly the provider's address on
-it — the single-destination firewall rule is unchanged, only the address now points
-at a container instead of a public proxy. The provider's bridge IP is re-resolved
-every launch because a restart can change it, and a plain remote endpoint keeps
-pasta and reaches its public address directly.
-
-**No EDNS Client Subnet.** The resolver and the browser share one exit, so the
-upstream already sees the right location.
+**Tor Browser's exit passes its SOCKS auth through and resolves remotely, always.**
+Tor Browser puts a per-site username/password on every request to key a circuit
+per site and offers no other SOCKS method, so its exit is `socks_auth=passthrough`
+(kiwi-proxy then sends the profile token prefixed to the browser's username), and
+`.onion` only resolves at a Tor exit, so its DNS mode is remote. kiwi-fox writes
+both onto the exit whatever is set there. It also refuses a Tor Browser profile on
+anything but the tor provider with isolation auth, at creation and at launch,
+before any pre-flight is sent: without those, isolation and `.onion` would be lost
+without a visible error. That is a browser rule, so it lives here; kiwi-proxy adds
+its own (passthrough needs a token to put in front).
 
 ## Fingerprint
 

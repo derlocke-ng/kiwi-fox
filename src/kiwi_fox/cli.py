@@ -935,7 +935,10 @@ def cmd_doctor(a: argparse.Namespace) -> int:
         line += f"; firefox: {', '.join(ff)}"
     if tb:
         line += f"; torbrowser: {', '.join(tb)}"
-    _p(f"engines       {line}" + ("" if (engines or ff or tb) else " — run `kiwi-fox engine fetch`"))
+    _p(
+        f"engines       {line}"
+        + ("" if (engines or ff or tb) else " — run `kiwi-fox engine fetch`")
+    )
     ok &= bool(engines or ff or tb)
     import os
 
