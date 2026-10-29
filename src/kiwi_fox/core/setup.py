@@ -114,7 +114,7 @@ def run(progress: Progress | None = None, *, engine_version: str | None = None) 
 
     installed = engine_fetch.installed()
     if engine_version or not installed:
-        say("Downloading the browser engine (~630 MB)…")
+        say("Downloading Camoufox (~630 MB)…")
         path = engine_fetch.fetch(engine_version)
         version = path.name.removeprefix("camoufox-")
         steps.append(f"engine: camoufox {version}")

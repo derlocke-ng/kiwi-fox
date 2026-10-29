@@ -1,4 +1,4 @@
-.PHONY: run gui images test leak lint fmt engine setup
+.PHONY: run gui images test leak lint fmt engine setup screenshots
 # Prefer the project venv when present (pytest/ruff live there; PyGObject comes
 # from system site-packages, per the tech-stack rule).
 PY := $(shell [ -x .venv/bin/python ] && echo .venv/bin/python || echo python3)
@@ -27,6 +27,11 @@ images:
 
 test:
 	$(PY) -m pytest tests/unit -q
+
+# The screenshots kiwi shows for the app (kiwi.manifest), from the GUI as it is.
+# Needs GTK 4 + libadwaita; xvfb-run gives it a display of its own.
+screenshots:
+	xvfb-run -a -s "-screen 0 1400x1400x24" $(PY) tools/screenshots.py data/screenshots
 
 leak:
 	$(PY) -m pytest tests/leak -q $(ARGS)

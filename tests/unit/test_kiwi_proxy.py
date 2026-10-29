@@ -283,3 +283,32 @@ def test_a_pinned_engine_that_is_gone_names_the_right_fetch(fake_proxy, monkeypa
     monkeypatch.setattr(firefox_fetch, "target_dir", lambda v: tmp_path / f"firefox-{v}")
     with pytest.raises(launch.LaunchError, match="engine fetch 159.0 --engine firefox"):
         launch.launch(_firefox())
+
+
+# ------------------------------------------------- the CLI on non-camoufox profiles
+def test_set_changes_a_firefox_profile_s_name_and_dns(capsys):
+    # `set` loaded a fingerprint first, so a Firefox profile could not even be renamed.
+    from kiwi_fox import cli
+
+    _firefox("plain")
+    assert cli.main(["set", "plain", "--name", "renamed", "--dns-mode", "remote"]) == 0
+    p = store.find_by_name("renamed")
+    assert p is not None and p.dns.mode == "remote"
+    assert exits.load(p.id).name == "renamed"
+
+
+def test_set_refuses_identity_flags_on_a_firefox_profile(capsys):
+    from kiwi_fox import cli
+
+    _firefox("plain")
+    assert cli.main(["set", "plain", "--screen", "2560x1440"]) == 1
+    assert "spoofs nothing" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("argv", [["webgl", "plain"], ["fonts", "plain"], ["selfcheck", "plain"]])
+def test_camoufox_only_commands_say_why(argv, capsys):
+    from kiwi_fox import cli
+
+    _firefox("plain")
+    assert cli.main(argv) == 1
+    assert "is a Firefox profile" in capsys.readouterr().err

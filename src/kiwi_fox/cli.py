@@ -148,7 +148,10 @@ def cmd_new(a: argparse.Namespace) -> int:
 
     version = a.engine_version or engine_fetch.preferred()
     if not version:
-        return _fail("no engine installed; run `kiwi-fox engine fetch` first")
+        return _fail(
+            "Camoufox is not installed; run `kiwi-fox setup` first "
+            "(or choose --engine firefox / torbrowser)"
+        )
 
     try:
         mode, card, series = _webgl_choice(
@@ -233,13 +236,17 @@ def cmd_new(a: argparse.Namespace) -> int:
 def cmd_list(a: argparse.Namespace) -> int:
     profiles = store.list_profiles()
     if not profiles:
-        _p("no profiles yet — `kiwi-fox new <name> <endpoint>`")
+        _p("no profiles yet — `kiwi-fox new NAME socks5://host:port`, or `--module tor` for Tor")
         return 0
-    _p(f"{'NAME':16} {'EXIT':24} {'COUNTRY':8} {'STATE':9} ID")
+    from .core import modules
+    from .core.engines import TITLES
+
+    _p(f"{'NAME':16} {'BROWSER':12} {'EXIT':24} {'COUNTRY':8} {'STATE':9} ID")
     for p in profiles:
         state = "running" if launch.running(p) else "stopped"
         country = (p.last_exit.country if p.last_exit else None) or "-"
-        _p(f"{p.name:16} {p.endpoint.label:24} {country:8} {state:9} {p.id[:8]}")
+        where = modules.exit_label(p.endpoint)
+        _p(f"{p.name:16} {TITLES[p.engine]:12} {where:24} {country:8} {state:9} {p.id[:8]}")
     return 0
 
 
@@ -362,7 +369,7 @@ def cmd_run(a: argparse.Namespace) -> int:
         except KeyboardInterrupt:
             _p("detached; the profile keeps running")
             return 0
-        _p(f"browser exited ({code}); namespace torn down")
+        _p(f"browser exited ({code}); gateway released")
     return 0
 
 
@@ -574,6 +581,8 @@ def cmd_selfcheck(a: argparse.Namespace) -> int:
     from .core import probe as probe_mod
 
     profile = store.resolve_ref(a.ref)
+    if (refused := _camoufox_only(profile, "selfcheck")) is not None:
+        return refused
     what = "this machine, with nothing spoofed" if a.host else profile.name
     _p(f"probing {what} — a separate window opens briefly; your own session is not touched…")
     try:
@@ -613,6 +622,9 @@ def cmd_compare(a: argparse.Namespace) -> int:
     from .core import probe as probe_mod
 
     first, second = store.resolve_ref(a.a), store.resolve_ref(a.b)
+    for profile in (first, second):
+        if (refused := _camoufox_only(profile, "compare")) is not None:
+            return refused
     reports = {}
     for profile in (first, second):
         _p(f"probing {profile.name}…")
@@ -751,6 +763,8 @@ def series_of(card_name: str):
 
 def cmd_webgl(a: argparse.Namespace) -> int:
     profile = store.resolve_ref(a.ref)
+    if (refused := _camoufox_only(profile, "the graphics card it reports")) is not None:
+        return refused
     fp = store.load_fingerprint(profile.id)
     given = (a.mode, a.card, a.series, a.vendor, a.renderer, a.exact)
     changing = any(v is not None for v in given)
@@ -796,28 +810,70 @@ def _ua_issues(profile: Profile, fp: Fingerprint) -> list:
     return [Issue("warn", "ua.custom", f"custom user agent: {note}") for note in notes]
 
 
-def cmd_set(a: argparse.Namespace) -> int:
-    """Change what a profile reports. Nothing is saved unless all of it is coherent."""
-    profile = store.resolve_ref(a.ref)
-    fp = store.load_fingerprint(profile.id)
+def _camoufox_only(profile: Profile, what: str) -> int | None:
+    """A refusal for a command that reads or changes the spoofed Windows machine,
+    which only a Camoufox profile has; None when the profile is one."""
+    if profile.engine == "camoufox":
+        return None
+    from .core.engines import TITLES
+
+    return _fail(
+        f"{profile.name} is a {TITLES[profile.engine]} profile: {what} is about the Windows "
+        "machine a Camoufox profile claims to be, and this one spoofs nothing"
+    )
+
+
+# `set` flags that change the spoofed machine, which only a Camoufox profile has.
+_SET_IDENTITY_FLAGS = (
+    ("--form", "form"),
+    ("--screen", "screen"),
+    ("--country", "country"),
+    ("--timezone", "timezone"),
+    ("--cores", "cores"),
+    ("--audio-rate", "audio_rate"),
+    ("--camera", "camera"),
+    ("--font-add", "font_add"),
+    ("--font-remove", "font_remove"),
+    ("--language", "language"),
+    ("--user-agent", "user_agent"),
+    ("--default-user-agent", "default_user_agent"),
+)
+
+
+def _edited(fp: Fingerprint, a: argparse.Namespace) -> Fingerprint:
     new = fp
+    if a.form:
+        new = edit.with_form(new, a.form)
+    if a.screen:
+        new = edit.with_screen(new, a.screen)
+    if a.country:
+        new = edit.with_region(new, a.country, keep_timezone=bool(a.timezone))
+    if a.timezone:
+        new = edit.with_timezone(new, a.timezone)
+    if a.cores is not None:
+        new = edit.with_cores(new, a.cores)
+    if a.audio_rate:
+        new = edit.with_audio_rate(new, a.audio_rate)
+    if a.camera:
+        new = edit.with_camera(new, a.camera == "yes")
+    if a.font_add or a.font_remove:
+        new = edit.with_fonts(new, add=a.font_add or [], remove=a.font_remove or [])
+    return new
+
+
+def cmd_set(a: argparse.Namespace) -> int:
+    """Change what a profile reports. Nothing is saved unless all of it is coherent.
+
+    A Firefox or Tor Browser profile spoofs nothing, so only its name, exit, DNS
+    and appearance can change."""
+    profile = store.resolve_ref(a.ref)
+    fp = store.fingerprint_of(profile)
+    if fp is None:
+        given = [f for f, attr in _SET_IDENTITY_FLAGS if getattr(a, attr) not in (None, False, [])]
+        if given:
+            return _camoufox_only(profile, ", ".join(given)) or 1
     try:
-        if a.form:
-            new = edit.with_form(new, a.form)
-        if a.screen:
-            new = edit.with_screen(new, a.screen)
-        if a.country:
-            new = edit.with_region(new, a.country, keep_timezone=bool(a.timezone))
-        if a.timezone:
-            new = edit.with_timezone(new, a.timezone)
-        if a.cores is not None:
-            new = edit.with_cores(new, a.cores)
-        if a.audio_rate:
-            new = edit.with_audio_rate(new, a.audio_rate)
-        if a.camera:
-            new = edit.with_camera(new, a.camera == "yes")
-        if a.font_add or a.font_remove:
-            new = edit.with_fonts(new, add=a.font_add or [], remove=a.font_remove or [])
+        new = _edited(fp, a) if fp is not None else None
     except edit.EditError as exc:
         return _fail(str(exc))
 
@@ -839,35 +895,45 @@ def cmd_set(a: argparse.Namespace) -> int:
         endpoint, password = proxy.parse(a.endpoint)
         updates["endpoint"] = endpoint
     if a.dns_mode or a.upstream:
+        if profile.engine == "torbrowser" and a.dns_mode == "resolver":
+            _p("note: Tor Browser resolves at the exit; its DNS mode stays remote")
         updates["dns"] = profile.dns.model_copy(
             update={k: v for k, v in (("mode", a.dns_mode), ("upstream", a.upstream)) if v}
         )
 
     changed = new != fp or bool(updates)
     if changed:
-        issues = validate(new, engine_version=new.engine_version)
-        if hard := errors(issues):
-            for issue in hard:
-                _p(f"  {issue}")
-            return _fail("that would make the profile incoherent; nothing was changed")
+        if new is not None:
+            issues = validate(new, engine_version=new.engine_version)
+            if hard := errors(issues):
+                for issue in hard:
+                    _p(f"  {issue}")
+                return _fail("that would make the profile incoherent; nothing was changed")
         candidate = profile.model_copy(update=updates)
-        if new != fp:
+        if new is not None and new != fp:
             store.save_fingerprint(profile.id, new)
         store.save(candidate)
         if password:
             secrets.store(profile.id, password, label=f"kiwi-fox {candidate.name}")
         profile, fp = candidate, new
     cmd_show(argparse.Namespace(ref=profile.id))
-    for issue in check_window_fits(fp) + _ua_issues(profile, fp):
-        _p(f"  {issue}")
+    if fp is not None:
+        for issue in check_window_fits(fp) + _ua_issues(profile, fp):
+            _p(f"  {issue}")
     if not changed:
         _p("")
-        _p("nothing changed — pass what to change, e.g. --screen 2560x1440; see `kiwi-fox set -h`")
-        _p(
-            "  screens : "
-            + ", ".join(edit.screen_label(s) for s in edit.screen_choices(fp.form_factor))
-        )
-        _p("  regions : " + " ".join(sorted(w11.REGIONS)))
+        if fp is None:
+            _p("nothing changed — pass what to change: --name, --endpoint, --dns-mode, …")
+        else:
+            _p(
+                "nothing changed — pass what to change, e.g. --screen 2560x1440; "
+                "see `kiwi-fox set -h`"
+            )
+            _p(
+                "  screens : "
+                + ", ".join(edit.screen_label(s) for s in edit.screen_choices(fp.form_factor))
+            )
+            _p("  regions : " + " ".join(sorted(w11.REGIONS)))
     elif launch.running(profile):
         _p("  (running — takes effect at the next launch)")
     return 0
@@ -876,7 +942,12 @@ def cmd_set(a: argparse.Namespace) -> int:
 def cmd_fonts(a: argparse.Namespace) -> int:
     from .core.fingerprint import fonts
 
-    have = set(store.load_fingerprint(store.resolve_ref(a.ref).id).fonts) if a.ref else set()
+    have: set[str] = set()
+    if a.ref:
+        profile = store.resolve_ref(a.ref)
+        if (refused := _camoufox_only(profile, "its font list")) is not None:
+            return refused
+        have = set(store.load_fingerprint(profile.id).fonts)
     _p(
         f"{len(fonts.all_core_families())} families ship with every Windows 11 and are always present."
     )
@@ -908,7 +979,11 @@ def cmd_setup(a: argparse.Namespace) -> int:
     _p("")
     for step in steps:
         _p(f"  {step}")
-    _p("\nReady — create a profile with `kiwi-fox new <name> <endpoint>`")
+    _p("\nReady — create a profile:")
+    _p("  kiwi-fox new work socks5://user:pass@host:port        Camoufox, a Windows identity")
+    _p("  kiwi-fox new work --module tor --country de           exit through a provider module")
+    _p("  kiwi-fox new plain HOST:PORT --engine firefox         stock Firefox")
+    _p("  kiwi-fox new anon --engine torbrowser --module tor    Tor Browser")
     return 0
 
 
@@ -1019,7 +1094,11 @@ def build_parser() -> argparse.ArgumentParser:
         "this machine's own values; torbrowser: Tor Browser through --module tor, a "
         "circuit per site (no spoofing flags apply to the non-camoufox engines)",
     )
-    n.add_argument("--country", help="two-letter code; probed from the exit when omitted")
+    n.add_argument(
+        "--country",
+        help="two-letter code: the identity's region and, with --module, the exit country; "
+        "probed from a plain exit when omitted",
+    )
     n.add_argument("--form", choices=["desktop", "laptop"], help="force the machine type")
     n.add_argument(
         "--gpu-family",
@@ -1064,8 +1143,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     n.add_argument("--seed", help="reproduce a previous identity")
     n.add_argument("--engine-version")
-    n.add_argument("--module", help="provider module this endpoint came from")
-    n.add_argument("--lease", help="module lease id (9proxy port, myst provider_id)")
+    n.add_argument(
+        "--module",
+        help="exit through a provider module (tor, vpn, 9proxy, mysterium); without an "
+        "ENDPOINT the module brings itself up and produces one",
+    )
+    n.add_argument(
+        "--lease",
+        help="which of the module's exits (see `kiwi-fox module leases NAME`): a 9proxy "
+        "port, a Mysterium provider id",
+    )
     n.add_argument("--dns-mode", choices=["resolver", "remote"], default="resolver")
     n.add_argument("--upstream", choices=sorted(dns.UPSTREAMS), default=dns.DEFAULT_UPSTREAM)
     n.add_argument("--no-probe", action="store_true", help="skip the exit probe")
@@ -1144,7 +1231,7 @@ def build_parser() -> argparse.ArgumentParser:
     ers.add_argument("version", nargs="?")
     e.set_defaults(func=cmd_engine)
 
-    dn = sub.add_parser("dns", help="resolver stamps and blocklists")
+    dn = sub.add_parser("dns", help="resolver stamps and blocklists (kiwi-proxy's)")
     dsub = dn.add_subparsers(dest="dns_cmd", required=True)
     dsub.add_parser("sync", help="cache DoH resolver stamps")
     du = dsub.add_parser("update", help="download blocklists")
@@ -1227,16 +1314,18 @@ def build_parser() -> argparse.ArgumentParser:
     cp.set_defaults(func=cmd_compare)
 
     su = sub.add_parser(
-        "setup", help="first-run setup: images, engine, tweaks, GPU helpers, blocklists"
+        "setup",
+        help="first-run setup: the browser image and Camoufox, then kiwi-proxy's "
+        "(gateway image, DNS data, module images)",
     )
     su.add_argument("--engine-version", help="pin a specific Camoufox version")
     su.set_defaults(func=cmd_setup)
 
     sub.add_parser("doctor", help="check the environment").set_defaults(func=cmd_doctor)
     sub.add_parser("ps", help="list kiwi-fox containers").set_defaults(func=cmd_ps)
-    sub.add_parser("reap", help="tear down gateways whose browser has exited").set_defaults(
-        func=cmd_reap
-    )
+    sub.add_parser(
+        "reap", help="release gateways whose browser has exited, then kiwi-proxy's sweep"
+    ).set_defaults(func=cmd_reap)
 
     m = sub.add_parser(
         "module",

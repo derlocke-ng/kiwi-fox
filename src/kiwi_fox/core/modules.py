@@ -43,6 +43,19 @@ def installed() -> list[Module]:
     return out
 
 
+def exit_label(endpoint: Endpoint) -> str:
+    """Where a profile exits, the way a person thinks of it: "tor · DE", not the
+    provider's address on the bridge."""
+    if not endpoint.module:
+        return f"{endpoint.host}:{endpoint.port}"
+    bits = [endpoint.module]
+    if endpoint.country:
+        bits.append(endpoint.country.upper())
+    if endpoint.lease:
+        bits.append(f"lease {endpoint.lease}")
+    return " · ".join(bits)
+
+
 def install_hint(name: str) -> str:
     app = PLUGIN_APPS.get(name)
     return f"kiwi install {app}" if app else f"install the {name} provider module"

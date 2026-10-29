@@ -46,17 +46,7 @@ ENGINE_IDENTITY = {
 
 
 def exit_label(profile) -> str:
-    """Where a profile exits, the way a person thinks of it: "tor · DE", not the
-    provider's address on the bridge."""
-    ep = profile.endpoint
-    if not ep.module:
-        return f"{ep.host}:{ep.port}"
-    bits = [ep.module]
-    if ep.country:
-        bits.append(ep.country.upper())
-    if ep.lease:
-        bits.append(f"lease {ep.lease}")
-    return " · ".join(bits)
+    return modules.exit_label(profile.endpoint)
 
 
 def engine_version(profile, fp=None) -> str:
