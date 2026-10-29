@@ -1,14 +1,14 @@
 # kiwi.manifest — app metadata for kiwi-updater
 NAME=kiwi-fox
 DESCRIPTION=Isolated Windows 11 browser identities in rootless Podman
-VERSION=0.2.0
+VERSION=0.3.0
 AUTHOR=derlocke-ng
 HOMEPAGE=https://github.com/derlocke-ng/kiwi-fox
 LICENSE=GPL-3.0-or-later
 
 COMPONENTS=cli gui service
 CATEGORY=Security
-TAGS=browser fingerprint proxy privacy identity profile podman antidetect
+TAGS=browser fingerprint proxy privacy identity profile podman antidetect tor
 
 SCOPES=user
 
@@ -16,8 +16,9 @@ ICON=data/kiwi-fox.svg
 SCREENSHOTS=data/screenshots/1-profiles.png data/screenshots/2-new-profile.png data/screenshots/3-graphics-card.png data/screenshots/4-edit-profile.png
 ABOUT=README.md
 
-# Checked with `command -v` before installing. Images and the browser engine are
+# Checked with `command -v` before installing; kiwi-proxy is a kiwi app, which
+# kiwi installs first when it is missing. Images and the browser engine are
 # fetched by `kiwi-fox setup` on first run, not at install time.
-DEPENDS=podman python3 secret-tool
+DEPENDS=kiwi-proxy podman python3 secret-tool
 
 INSTALLER=install.sh

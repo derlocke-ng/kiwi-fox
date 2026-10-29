@@ -1,14 +1,25 @@
-"""Load and save profiles. One directory per profile, JSON on disk."""
+"""Load and save profiles. One directory per profile, JSON on disk.
+
+Every profile has an exit in kiwi-proxy — the upstream its gateway leaves
+through — registered under the profile's own id with owner "kiwi-fox". Once it
+exists the exit is where the endpoint and DNS settings live (`kiwi-proxy set`
+edits them too): `load` reads them from it, `save` writes them to it, and
+profile.json keeps a copy so a profile still loads on its own.
+"""
 
 from __future__ import annotations
 
 import datetime as dt
-import json
 import uuid
 from pathlib import Path
 
+from kiwi_proxy import exits
+from kiwi_proxy.models import Exit
+
 from . import paths, secrets
-from .models import DnsConfig, Endpoint, EngineName, Fingerprint, Profile, ProviderRecord
+from .models import DnsConfig, Endpoint, EngineName, Fingerprint, Profile
+
+OWNER = "kiwi-fox"
 
 
 class StoreError(RuntimeError):
@@ -35,6 +46,8 @@ def create(
 ) -> Profile:
     if find_by_name(name):
         raise StoreError(f"a profile named {name!r} already exists")
+    if exits.find_by_name(name):
+        raise StoreError(f"kiwi-proxy already has an exit named {name!r}; pick another name")
     # The engine/fingerprint contract, checked before anything is written: a
     # camoufox profile carries a fingerprint, the non-spoofing engines carry none.
     if engine == "camoufox":
@@ -42,6 +55,11 @@ def create(
             raise StoreError("a camoufox profile needs a fingerprint")
     elif fingerprint is not None:
         raise StoreError(f"a {engine} profile has no fingerprint")
+    if engine == "torbrowser" and endpoint.module != "tor":
+        raise StoreError("a Tor Browser profile exits only through the tor provider (--module tor)")
+    if engine == "torbrowser":
+        # What its exit gets anyway (exit_dns); said here too, so the profile shows it.
+        dns = (dns or DnsConfig()).model_copy(update={"mode": "remote"})
     profile = Profile(
         id=str(uuid.uuid4()),
         name=name,
@@ -69,6 +87,66 @@ def create(
 def save(profile: Profile) -> None:
     _write_json(paths.profile_dir(profile.id) / "profile.json", profile.model_dump_json(indent=2))
     _write_json(paths.profile_dir(profile.id) / "dns.json", profile.dns.model_dump_json(indent=2))
+    sync_exit(profile)
+
+
+# --------------------------------------------------------------------- exits
+def exit_dns(profile: Profile) -> DnsConfig:
+    """Tor Browser hands every name to Tor (its proxy settings force remote DNS);
+    a resolver in the namespace would answer from somewhere Tor does not choose."""
+    if profile.engine == "torbrowser":
+        return profile.dns.model_copy(update={"mode": "remote"})
+    return profile.dns.model_copy(deep=True)
+
+
+def exit_socks_auth(profile: Profile) -> str:
+    """Tor Browser sends its own per-site SOCKS credentials for circuit isolation;
+    the forwarder carries them upstream behind the profile's token."""
+    return "passthrough" if profile.engine == "torbrowser" else "inject"
+
+
+def _exit_name(profile: Profile, current: str | None = None) -> str:
+    taken = exits.find_by_name(profile.name)
+    if taken is None or taken.id == profile.id:
+        return profile.name
+    # An exit made with the kiwi-proxy CLI has the name. kiwi-fox finds its exit
+    # by id, so the name is only a label there: keep the one it has.
+    return current or f"{profile.name}-{profile.id[:8]}"
+
+
+def sync_exit(profile: Profile) -> Exit:
+    """The profile's exit, created or brought in line with the profile."""
+    wanted = {
+        "endpoint": profile.endpoint.model_copy(deep=True),
+        "dns": exit_dns(profile),
+        "socks_auth": exit_socks_auth(profile),
+    }
+    if exits.exists(profile.id):
+        ex = exits.load(profile.id)
+        updated = ex.model_copy(update={**wanted, "name": _exit_name(profile, ex.name)})
+        if updated != ex:
+            exits.save(updated)
+        return updated
+    ex = exits.create(
+        _exit_name(profile),
+        wanted["endpoint"],
+        dns=wanted["dns"],
+        exit_id=profile.id,
+        owner=OWNER,
+    )
+    if ex.socks_auth != wanted["socks_auth"]:
+        ex.socks_auth = wanted["socks_auth"]  # type: ignore[assignment]
+        exits.save(ex)
+    return ex
+
+
+def _from_exit(profile: Profile) -> Profile:
+    try:
+        ex = exits.load(profile.id)
+    except Exception:  # noqa: BLE001 - no exit yet (a profile from before kiwi-proxy), or a broken one
+        return profile
+    profile.endpoint, profile.dns = ex.endpoint, ex.dns
+    return profile
 
 
 def save_fingerprint(profile_id: str, fp: Fingerprint) -> None:
@@ -79,7 +157,7 @@ def load(profile_id: str) -> Profile:
     path = paths.profile_dir(profile_id) / "profile.json"
     if not path.exists():
         raise StoreError(f"no such profile {profile_id!r}")
-    return Profile.model_validate_json(path.read_text())
+    return _from_exit(Profile.model_validate_json(path.read_text()))
 
 
 def load_fingerprint(profile_id: str) -> Fingerprint:
@@ -134,6 +212,7 @@ def delete(profile_id: str, *, purge: bool = False) -> None:
     import shutil
 
     secrets.clear(profile_id)
+    exits.delete(profile_id)
     pdir = paths.profile_dir(profile_id)
     if purge:
         shutil.rmtree(pdir, ignore_errors=True)
@@ -145,23 +224,3 @@ def delete(profile_id: str, *, purge: bool = False) -> None:
 def touch(profile: Profile) -> None:
     profile.last_used = dt.datetime.now(dt.UTC)
     save(profile)
-
-
-# ------------------------------------------------------------ provider cache
-def load_providers() -> list[ProviderRecord]:
-    path = paths.providers_cache()
-    if not path.exists():
-        return []
-    return [ProviderRecord.model_validate(r) for r in json.loads(path.read_text())]
-
-
-def record_provider(record: ProviderRecord) -> None:
-    """Provider-reported geo is self-reported; this is what we measured."""
-    kept = [
-        r for r in load_providers() if not (r.module == record.module and r.lease == record.lease)
-    ]
-    kept.append(record)
-    _write_json(
-        paths.providers_cache(),
-        json.dumps([json.loads(r.model_dump_json()) for r in kept], indent=2),
-    )

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "kiwi-fox"
-version = "0.2.0"
+version = "0.3.0"
 description = "Isolated Windows 11 browser identities in rootless Podman"
 requires-python = ">=3.12"
 license = { text = "GPL-3.0-or-later" }
@@ -30,6 +30,8 @@ pythonpath = ["src", "."]
 
 [tool.pyright]
 include = ["src"]
+# kiwi-proxy, from a sibling checkout (see tests/conftest.py).
+extraPaths = ["../kiwi-proxy/src"]
 pythonVersion = "3.12"
 typeCheckingMode = "standard"
 venvPath = "."

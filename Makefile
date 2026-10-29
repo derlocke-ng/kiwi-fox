@@ -2,7 +2,10 @@
 # Prefer the project venv when present (pytest/ruff live there; PyGObject comes
 # from system site-packages, per the tech-stack rule).
 PY := $(shell [ -x .venv/bin/python ] && echo .venv/bin/python || echo python3)
-export PYTHONPATH := src:.
+# kiwi-proxy (the gateway, providers, DNS) from a sibling checkout; the tests
+# find it themselves (tests/conftest.py).
+KIWI_PROXY_SRC ?= ../kiwi-proxy/src
+export PYTHONPATH := src:.:$(KIWI_PROXY_SRC)
 
 setup:
 	python3 -m venv --system-site-packages .venv
@@ -18,8 +21,8 @@ gui:
 engine:
 	$(PY) -m kiwi_fox engine fetch
 
+# The gateway image is kiwi-proxy's: `make -C ../kiwi-proxy images`.
 images:
-	podman build -t kiwi-fox/gateway:latest -f containers/gateway/Containerfile containers/gateway
 	podman build -t kiwi-fox/browser:latest -f containers/browser/Containerfile containers/browser
 
 test:

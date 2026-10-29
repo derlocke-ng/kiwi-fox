@@ -3,6 +3,10 @@
 Deliberately *not* done at install time — building images and downloading a
 ~630 MB engine needs network at the wrong moment and would make `kiwi install`
 look broken. This is the one command a new user runs.
+
+The browser half is done here; the network half — the gateway image, DNS
+resolver stamps, the ad-block list, provider module images — is kiwi-proxy's
+setup, which this calls, so there is still one command.
 """
 
 from __future__ import annotations
@@ -11,13 +15,13 @@ import subprocess
 from collections.abc import Callable
 from pathlib import Path
 
-from . import dns, paths, podman, providers
+from kiwi_proxy import podman
+from kiwi_proxy import setup as proxy_setup
+
+from . import paths, store
 from .engines import fetch as engine_fetch
 
-IMAGES = (
-    ("kiwi-fox/gateway:latest", "gateway"),
-    ("kiwi-fox/browser:latest", "browser"),
-)
+IMAGES = (("kiwi-fox/browser:latest", "browser"),)
 
 Progress = Callable[[str], None]
 
@@ -30,7 +34,7 @@ def containers_dir() -> Path:
     """Where the Containerfiles live, in a checkout or an installed copy."""
     here = Path(__file__).resolve()
     for candidate in (here.parents[3] / "containers", here.parents[2] / "containers"):
-        if (candidate / "gateway" / "Containerfile").exists():
+        if (candidate / "browser" / "Containerfile").exists():
             return candidate
     raise SetupError("cannot find the containers/ directory next to the package")
 
@@ -52,7 +56,7 @@ def source_hash(name: str) -> str:
 def image_state(image: str, name: str) -> str:
     """missing | stale | current. Stale: built from sources an update has since
     replaced — the app is new and the image is not."""
-    if podman._run(["image", "exists", image], check=False).returncode != 0:
+    if not podman.image_exists(image):
         return "missing"
     label = podman._run(
         ["image", "inspect", "--format", f'{{{{index .Labels "{SOURCE_LABEL}"}}}}', image],
@@ -104,7 +108,7 @@ def run(progress: Progress | None = None, *, engine_version: str | None = None) 
     if not podman.available():
         raise SetupError("podman is not installed")
 
-    say("Building container images…")
+    say("Building the browser image…")
     built = build_images(progress)
     steps.append(f"images: {'built ' + ', '.join(built) if built else 'already present'}")
 
@@ -154,46 +158,28 @@ def run(progress: Progress | None = None, *, engine_version: str | None = None) 
     except Exception as exc:  # noqa: BLE001 - never fail setup over a measurement
         steps.append(f"rendering: could not be measured ({exc})")
 
-    say("Fetching DNS resolver stamps…")
+    # Profiles from before kiwi-proxy get their exit now rather than at their
+    # first launch, so `kiwi-proxy list` shows every identity.
+    registered = 0
+    for profile in store.list_profiles():
+        try:
+            store.sync_exit(profile)
+            registered += 1
+        except Exception as exc:  # noqa: BLE001 - one profile must not fail setup
+            steps.append(f"exit for {profile.name}: not registered ({exc})")
+    steps.append(f"exits: {registered} profile(s) registered with kiwi-proxy")
+
+    # Last, because it ends with its own "Done.".
     try:
-        dns.sync_stamps()
-        steps.append(f"dns: {len(dns.load_stamps())} resolver stamps")
-    except Exception as exc:  # noqa: BLE001
-        steps.append(f"dns stamps: failed ({exc})")
-
-    say("Downloading the ad-block list…")
-    try:
-        dns.fetch_blocklist("oisd-big")
-        merged = dns.merged_blocklist(["oisd-big"])
-        count = sum(1 for _ in merged.open())
-        steps.append(f"blocklist: {count} entries")
-    except Exception as exc:  # noqa: BLE001
-        steps.append(f"blocklist: failed ({exc})")
-
-    modules = providers.discover()
-    if modules:
-        say("Preparing provider modules…")
-        for name in modules:
-            try:
-                prov, manifest = providers.load(name)
-                ctx = providers.context_for(name, manifest)
-                prov.setup(ctx)
-                steps.append(f"module {name}: image ready")
-            except Exception as exc:  # noqa: BLE001 - one module must not fail setup
-                steps.append(f"module {name}: setup failed ({exc})")
-
-    say("Done.")
+        steps += proxy_setup.run(progress)
+    except proxy_setup.SetupError as exc:
+        raise SetupError(str(exc)) from exc
     return steps
 
 
 def setup_module(name: str, progress: Progress | None = None) -> None:
     """Build/pull a single provider module's image. For `kiwi-fox module setup`."""
-    if not podman.available():
-        raise SetupError("podman is not installed")
-    if not providers.is_installed(name):
-        raise SetupError(f"provider module {name!r} is not installed")
-    prov, manifest = providers.load(name)
-    ctx = providers.context_for(name, manifest)
-    if progress:
-        progress(f"Preparing provider module {name}…")
-    prov.setup(ctx)
+    try:
+        proxy_setup.setup_module(name, progress)
+    except proxy_setup.SetupError as exc:
+        raise SetupError(str(exc)) from exc

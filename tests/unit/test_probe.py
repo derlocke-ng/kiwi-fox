@@ -11,8 +11,9 @@ import urllib.parse
 from pathlib import Path
 
 import pytest
+from kiwi_proxy import podman
 
-from kiwi_fox.core import launch, paths, podman, probe, store
+from kiwi_fox.core import launch, paths, probe, store
 from kiwi_fox.core.engines.camoufox import PROFILE_MOUNT
 from kiwi_fox.core.fingerprint import webgl
 from kiwi_fox.core.fingerprint import windows11 as w11
@@ -76,7 +77,17 @@ def rig(monkeypatch, tmp_path, fp, profile):
     monkeypatch.setattr(podman, "logs", lambda name, **_k: "")
     monkeypatch.setattr(probe.subprocess, "run", lambda *a, **k: None)
     monkeypatch.setattr(probe.time, "sleep", lambda _s: None)
+
+    def release(exit_id, *, ignore=()):
+        # kiwi-proxy's rule: the gateway stays while anyone is inside it.
+        browser = paths.browser_name(exit_id)
+        if r.running.get(browser) and browser not in ignore:
+            return False
+        r.removed.append(paths.gateway_name(exit_id))
+        return True
+
     monkeypatch.setattr(launch, "start_gateway", start_gateway)
+    monkeypatch.setattr(launch.gateway, "release", release)
     return r
 
 
@@ -114,7 +125,6 @@ def test_a_gateway_it_started_is_torn_down_again(rig, profile):
     probe.probe(profile)
     assert rig.gateways_started == [profile.id]
     assert gateway in rig.removed
-    assert f"secret:{launch.creds_secret_name(profile.id)}" in rig.removed
 
 
 def test_but_not_if_the_user_launched_the_profile_meanwhile(rig, profile, monkeypatch):

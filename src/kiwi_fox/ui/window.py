@@ -8,8 +8,10 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 
 from gi.repository import Adw, Gio, GLib, Gtk  # noqa: E402
+from kiwi_proxy import paths as proxy_paths  # noqa: E402
+from kiwi_proxy import podman  # noqa: E402
 
-from ..core import launch, paths, podman, secrets, store  # noqa: E402
+from ..core import launch, secrets, store  # noqa: E402
 from ..core.engines import fetch as engine_fetch  # noqa: E402
 from . import worker  # noqa: E402
 from .dialogs import NewProfileDialog, ProfileDetails, ProfileEditor  # noqa: E402
@@ -207,7 +209,7 @@ class Window(Adw.ApplicationWindow):
         def on_response(_d, response: str) -> None:
             if response != "delete":
                 return
-            launch.stop(profile)
+            launch.down(profile)
             store.delete(profile.id, purge=True)
             self.refresh()
             self._toast(f"Deleted {profile.name}")
@@ -271,10 +273,10 @@ class Window(Adw.ApplicationWindow):
                 missing.append("podman")
             if not engine_fetch.installed():
                 missing.append("browser engine")
-            for image in ("kiwi-fox/gateway:latest", "kiwi-fox/browser:latest"):
-                if podman._run(["image", "exists", image], check=False).returncode != 0:
+            for image in (proxy_paths.GATEWAY_IMAGE, launch.BROWSER_IMAGE):
+                if not podman.image_exists(image):
                     missing.append(image.split("/")[-1].split(":")[0] + " image")
-            if not (paths.blocklists_dir() / "blocked-names.txt").exists():
+            if not (proxy_paths.blocklists_dir() / "blocked-names.txt").exists():
                 missing.append("blocklists")
             if not secrets.available():
                 missing.append("secret-tool")

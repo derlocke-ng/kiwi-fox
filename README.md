@@ -9,15 +9,22 @@ coherent, ordinary Windows 11 machine, with its own region, exit and storage.
 For people who manage several accounts they own or are authorised to run and do
 not want those accounts cross-linked by browser fingerprint or IP.
 
+The network half — the sealed gateway, the exits, the provider modules — is
+[kiwi-proxy](https://github.com/derlocke-ng/kiwi-proxy), which kiwi-fox installs
+and drives: every profile is one kiwi-proxy exit. The same exits serve
+kiwi-pentesting's tools and applications on the host.
+
 ## Install
 
 ```
-kiwi install kiwi-fox      # or: ./install.sh install
-kiwi-fox setup             # images, browser engine, blocklists (first run only)
+kiwi install kiwi-fox      # brings kiwi-proxy along; or: ./install.sh install
+kiwi-fox setup             # images, browser engine, DNS data (first run only)
 ```
 
 `setup` is a separate step on purpose: it builds container images and downloads a
-~630 MB browser engine, which should not happen silently during an install.
+~630 MB browser engine, which should not happen silently during an install. It
+runs kiwi-proxy's setup too (the gateway image, resolver stamps, the ad-block
+list, module images), so it is still one command.
 
 ## Use
 
@@ -37,30 +44,32 @@ vendor paste format `host:port:user:pass`.
 ## Exits from provider modules
 
 Instead of an endpoint you were given, a profile can exit through a provider
-module that kiwi-fox runs for you: Tor, a VPN tunnel (gluetun), 9proxy or
+module that kiwi-proxy runs for you: Tor, a VPN tunnel (gluetun), 9proxy or
 Mysterium. Each module is its own kiwi app and exposes plain SOCKS5; the gateway
 reaches it over a private bridge and still permits exactly one destination.
 
 ```
 kiwi install kiwi-plugin-tor                  # or -vpn, -9proxy, -myst
 kiwi-fox setup                                # builds the module's image
-kiwi-fox module list                          # installed modules; `module leases tor` for exits
+kiwi-fox module list                          # = `kiwi-proxy module list`; `module leases tor`
 kiwi-fox new work --module tor --country de   # the module produces the endpoint
 ```
 
-On Tor every profile gets its own circuit. See
-[docs/plugin-system.md](docs/plugin-system.md) for how modules work and how to
-write one.
+On Tor every profile gets its own circuit. How modules work and how to write one:
+kiwi-proxy's [docs/plugin-system.md](https://github.com/derlocke-ng/kiwi-proxy/blob/main/docs/plugin-system.md).
 
 ## Browser engine
 
-A profile runs one of two engines, chosen at creation:
+A profile runs one of three engines, chosen at creation:
 
 - **`camoufox`** (default) — a spoofed, frozen Windows 11 identity. A page sees a
   coherent, ordinary Windows machine. This is everything above.
 - **`firefox`** — stock Mozilla Firefox, no spoofing: a page sees this machine's
   own values. Less unique, but nothing is faked and nothing can slip — for when
   a real, ordinary Firefox through the same isolated exit is what you want.
+- **`torbrowser`** — the Tor Browser bundle, unmodified, through the tor
+  provider module: Tor Browser's own uniform fingerprint and a circuit per
+  site, Whonix-style.
 
 ```
 kiwi-fox engine fetch --engine firefox        # Mozilla's build, signature-verified
@@ -72,8 +81,23 @@ A firefox profile has no fingerprint and ignores the identity flags
 (`--webgl`, `--card`, `--screen`, …); it keeps the endpoint, DNS, appearance and
 the same leak-proof gateway. Its traffic still exits only through the one
 permitted destination, WebRTC cannot leak the host address, and the engine is
-pinned and mounted read-only with updates turned off. A Tor Browser engine that
-uses the tor provider the Whonix way is in progress.
+pinned and mounted read-only with updates turned off.
+
+```
+kiwi install kiwi-plugin-tor
+kiwi-fox engine fetch --engine torbrowser     # signature-verified against the pinned Tor key
+kiwi-fox new anon --engine torbrowser --module tor
+kiwi-fox run anon
+```
+
+Like Whonix, Tor Browser runs without its own tor: `TOR_PROVIDER=none` points it
+at the gateway, whose only route is the tor provider. Tor Browser keys a circuit
+per first-party site with its SOCKS credentials, and the gateway passes those
+through behind the profile's own token, so sites stay on separate circuits and
+profiles stay apart; New Identity and New Circuit work without a control port.
+DNS resolves at the exit, so `.onion` works. It refuses any exit but the tor
+module. The download is checked against the Tor Browser Developers' signing key,
+pinned by fingerprint, and the bundle is mounted read-only and never patched.
 
 ## What a new profile is
 
@@ -160,7 +184,7 @@ kiwi-fox set work --language local      # back to the region's own
 ## How a profile is isolated
 
 ```
-gateway container   owns the network namespace
+gateway container   kiwi-proxy's, for the profile's exit; owns the network namespace
                     nftables: default drop, one permitted destination
                     forwarder: adds proxy credentials, the browser never sees them
                     dnscrypt-proxy: ad-blocking, upstream through the same exit
@@ -169,6 +193,10 @@ browser container   joins that namespace — no routing table of its own
 
 The kill switch is the absence of a route, not software that has to notice. If the
 gateway dies the profile simply loses connectivity.
+
+Each profile's exit carries the profile's name in `kiwi-proxy list`. A pentest
+tool or `kiwi-proxy up` can join the same namespace; closing the browser then
+leaves the gateway to them, and deleting the profile takes it down.
 
 ## What it does not do
 
@@ -183,8 +211,10 @@ No automation, no bots, no bulk account creation. Interactive browsing only.
 
 ## Requirements
 
-Rootless Podman, a Wayland session (X11 works with a weaker boundary), Python
-3.12+, GTK4 + libadwaita for the GUI, and `secret-tool` for credential storage.
+Rootless Podman, [kiwi-proxy](https://github.com/derlocke-ng/kiwi-proxy), a
+Wayland session (X11 works with a weaker boundary), Python 3.12+, GTK4 +
+libadwaita for the GUI, and `secret-tool` for credential storage. `gpg` and
+`gpgv` verify the Firefox and Tor Browser downloads.
 On a machine whose desktop runs on the proprietary NVIDIA driver, also
 `nvidia-container-toolkit` with its CDI spec generated.
 

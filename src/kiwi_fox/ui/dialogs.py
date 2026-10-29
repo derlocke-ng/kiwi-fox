@@ -8,8 +8,10 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 
 from gi.repository import Adw, Gtk  # noqa: E402
+from kiwi_proxy import dns, exits  # noqa: E402
+from kiwi_proxy import endpoint as proxy  # noqa: E402
 
-from ..core import dns, geometry, launch, proxy, secrets, store  # noqa: E402
+from ..core import geometry, launch, secrets, store  # noqa: E402
 from ..core.engines import fetch as engine_fetch  # noqa: E402
 from ..core.engines.camoufox import webgl_report  # noqa: E402
 from ..core.fingerprint import (  # noqa: E402
@@ -341,6 +343,9 @@ class NewProfileDialog(Adw.Dialog):
             return
         if store.find_by_name(name):
             self._say(f"A profile named {name!r} already exists.")
+            return
+        if exits.find_by_name(name):
+            self._say(f"kiwi-proxy already has an exit named {name!r}; pick another name.")
             return
         try:
             endpoint, password = proxy.parse(spec)

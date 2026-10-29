@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import argparse
 import json
-import shutil
 import sys
 
+from kiwi_proxy import dns, exits, gateway, podman, providers
+from kiwi_proxy import endpoint as proxy
+from kiwi_proxy import paths as proxy_paths
+
 from . import __version__
-from .core import dns, geometry, gpu, launch, paths, podman, providers, proxy, secrets, store
+from .core import geometry, gpu, launch, paths, secrets, store
 from .core.engines import fetch as engine_fetch
 from .core.fingerprint import edit, generate, validate, validate_against, webgl
 from .core.fingerprint import windows11 as w11
@@ -39,8 +42,7 @@ def _endpoint_from_module(module: str, *, lease: str | None, country: str | None
             f"{module!r} does not produce its own endpoint; pass an ENDPOINT"
         )
     ctx = providers.context_for(module, manifest)
-    endpoint = prov.up(ctx, lease=lease, country=country)
-    return endpoint, None
+    return prov.up(ctx, lease=lease, country=country), None
 
 
 # Spoof-only flags, by their CLI name, with the value that means "given". A
@@ -94,7 +96,44 @@ def _new_firefox(a: argparse.Namespace, endpoint, password) -> int:
     return 0
 
 
+def _new_torbrowser(a: argparse.Namespace, endpoint, password) -> int:
+    from .core.engines import torbrowser_fetch
+
+    given = _spoof_flags_given(a)
+    if given:
+        return _fail(
+            f"Tor Browser keeps its own uniform fingerprint, so {', '.join(given)} do not apply"
+        )
+    if endpoint.module != "tor":
+        return _fail("Tor Browser exits only through the tor provider: create it with --module tor")
+    if a.dns_mode == "resolver":
+        _p("note: Tor Browser resolves at the exit; DNS mode is remote regardless")
+    version = a.engine_version or torbrowser_fetch.latest_installed()
+    profile = store.create(
+        a.name,
+        endpoint,
+        None,
+        engine="torbrowser",
+        engine_version=version,
+        password=password,
+        dns=DnsConfig(mode="remote", upstream=a.upstream),
+    )
+    _p(f"created {profile.name}  {profile.id}")
+    if version:
+        _p(f"  engine  : Tor Browser {version}")
+    else:
+        _p("  engine  : Tor Browser (none installed — kiwi-fox engine fetch --engine torbrowser)")
+    _p("  identity: Tor Browser's own uniform fingerprint, untouched")
+    _p("  circuits: one per first-party site (New Identity / New Circuit work)")
+    if endpoint.country or endpoint.lease:
+        _p("  note    : pinning a Tor exit shrinks your anonymity set")
+    _p(f"  exit    : {endpoint.label}")
+    return 0
+
+
 def cmd_new(a: argparse.Namespace) -> int:
+    # Tor Browser produces no endpoint from a plain address — it needs the tor
+    # module — so allow `new NAME --engine torbrowser --module tor` with no ENDPOINT.
     if a.endpoint:
         endpoint, password = proxy.parse(a.endpoint)
         endpoint.module = a.module
@@ -110,6 +149,8 @@ def cmd_new(a: argparse.Namespace) -> int:
 
     if a.engine == "firefox":
         return _new_firefox(a, endpoint, password)
+    if a.engine == "torbrowser":
+        return _new_torbrowser(a, endpoint, password)
 
     version = a.engine_version or engine_fetch.preferred()
     if not version:
@@ -222,6 +263,15 @@ def _show_common(p) -> None:
 
 def cmd_show(a: argparse.Namespace) -> int:
     p = store.resolve_ref(a.ref)
+    if p.engine == "torbrowser":
+        from .core.engines import torbrowser_fetch
+
+        _show_common(p)
+        version = p.engine_version or torbrowser_fetch.latest_installed() or "none installed"
+        _p(f"  engine    Tor Browser {version}")
+        _p("  identity  Tor Browser's own uniform fingerprint, untouched")
+        _p("  circuits  one per first-party site (New Identity / New Circuit work)")
+        return 0
     if p.engine != "camoufox":
         from .core.engines import firefox_fetch
 
@@ -334,7 +384,7 @@ def cmd_delete(a: argparse.Namespace) -> int:
     p = store.resolve_ref(a.ref)
     if not a.yes:
         return _fail(f"this removes {p.name}; pass --yes to confirm")
-    launch.stop(p)
+    launch.down(p)
     store.delete(p.id, purge=a.purge)
     _p(f"deleted {p.name}" + (" (purged)" if a.purge else ""))
     return 0
@@ -440,7 +490,7 @@ def cmd_engine(a: argparse.Namespace) -> int:
         return 0
 
     if a.engine_cmd == "list":
-        from .core.engines import firefox_fetch
+        from .core.engines import firefox_fetch, torbrowser_fetch
 
         any_found = False
         for v in engine_fetch.installed():
@@ -450,10 +500,13 @@ def cmd_engine(a: argparse.Namespace) -> int:
                 if engine_fetch.search_is_disabled(engine_fetch.target_dir(v))
                 else "search ok"
             )
-            _p(f"camoufox {v}  {paths.engines_dir() / f'camoufox-{v}'}  [{state}]")
+            _p(f"camoufox   {v}  {paths.engines_dir() / f'camoufox-{v}'}  [{state}]")
         for v in firefox_fetch.installed():
             any_found = True
-            _p(f"firefox  {v}  {firefox_fetch.target_dir(v)}  [signature verified]")
+            _p(f"firefox    {v}  {firefox_fetch.target_dir(v)}  [signature verified]")
+        for v in torbrowser_fetch.installed():
+            any_found = True
+            _p(f"torbrowser {v}  {torbrowser_fetch.target_dir(v)}  [signature verified]")
         if not any_found:
             _p("none installed")
         return 0
@@ -473,6 +526,18 @@ def cmd_engine(a: argparse.Namespace) -> int:
             return _fail(str(exc))
         print()
         _p(f"firefox ready at {path}")
+        return 0
+
+    if getattr(a, "engine", "camoufox") == "torbrowser":
+        from .core.engines import torbrowser_fetch
+
+        try:
+            path = torbrowser_fetch.fetch(a.version, force=a.force, progress=progress)
+        except Exception as exc:  # noqa: BLE001
+            print()
+            return _fail(str(exc))
+        print()
+        _p(f"tor browser ready at {path}")
         return 0
 
     try:
@@ -832,92 +897,11 @@ def cmd_fonts(a: argparse.Namespace) -> int:
     return 0
 
 
-def _module_status_line(name: str) -> tuple[str, bool]:
-    try:
-        prov, manifest = providers.load(name)
-    except providers.ProviderError as exc:
-        return f"{name:12} broken: {exc}", False
-    ctx = providers.context_for(name, manifest)
-    status = prov.status(ctx)
-    missing = [b for b in prov.requirements() if not shutil.which(b)]
-    img = "image yes" if status.image_present else "image MISSING (run `kiwi-fox module setup`)"
-    run = "running" if status.running else "idle"
-    req = f" · missing: {', '.join(missing)}" if missing else ""
-    ok = status.image_present and not missing
-    return f"{name:12} {img} · {run}{req}", ok
-
-
 def cmd_module(a: argparse.Namespace) -> int:
-    cmd = a.module_cmd
-    if cmd == "list":
-        names = providers.discover()
-        if not names:
-            _p("no provider modules installed")
-            _p("install one, e.g.: kiwi install kiwi-plugin-tor")
-            return 0
-        for name in names:
-            try:
-                _prov, manifest = providers.load(name)
-            except providers.ProviderError as exc:
-                _p(f"{name:12} (broken: {exc})")
-                continue
-            acct = " · account required" if manifest.needs_account else ""
-            desc = f" — {manifest.description}" if manifest.description else ""
-            _p(f"{name:12} {manifest.title}{desc}{acct}")
-        return 0
-    if cmd == "status":
-        line, _ok = _module_status_line(a.name)
-        _p(line)
-        return 0
-    if cmd == "leases":
-        prov, manifest = providers.load(a.name)
-        ctx = providers.context_for(a.name, manifest)
-        leases = prov.leases(ctx)
-        if not leases:
-            _p(f"{a.name}: no selectable leases (the default exit is used)")
-            return 0
-        for lease in leases:
-            loc = " ".join(x for x in (lease.country, lease.city) if x)
-            _p(f"{lease.id:20} {lease.label or ''} {loc} {lease.detail or ''}".rstrip())
-        return 0
-    if cmd == "up":
-        prov, manifest = providers.load(a.name)
-        ctx = providers.context_for(a.name, manifest)
-        endpoint = prov.up(ctx, lease=a.lease, country=a.country)
-        lease = f" --lease {a.lease}" if a.lease else ""
-        _p(f"{a.name} up — endpoint socks5://{endpoint.host}:{endpoint.port}")
-        _p(
-            f"  create a profile: kiwi-fox new <name> socks5://{endpoint.host}:{endpoint.port} "
-            f"--module {a.name}{lease}"
-        )
-        return 0
-    if cmd == "down":
-        prov, manifest = providers.load(a.name)
-        ctx = providers.context_for(a.name, manifest)
-        prov.down(ctx, lease=a.lease)
-        _p(f"{a.name} down")
-        return 0
-    if cmd == "setup":
-        from .core import setup
+    """Provider modules are kiwi-proxy's; `kiwi-fox module …` is `kiwi-proxy module …`."""
+    from kiwi_proxy import cli as proxy_cli
 
-        try:
-            setup.setup_module(a.name, progress=lambda m: _p(f"  {m}"))
-        except setup.SetupError as exc:
-            return _fail(str(exc))
-        _p(f"{a.name}: image ready")
-        return 0
-    if cmd == "doctor":
-        names = providers.discover()
-        if not names:
-            _p("no provider modules installed")
-            return 0
-        ok = True
-        for name in names:
-            line, line_ok = _module_status_line(name)
-            _p(line)
-            ok &= line_ok
-        return 0 if ok else 1
-    return _fail(f"unknown module command {cmd!r}")
+    return proxy_cli.main(["module", *a.args])
 
 
 def cmd_setup(a: argparse.Namespace) -> int:
@@ -941,27 +925,39 @@ def cmd_doctor(a: argparse.Namespace) -> int:
     _p(
         f"secret-tool   {'yes' if secrets.available() else 'MISSING (credentials cannot be stored)'}"
     )
-    from .core.engines import firefox_fetch
+    from .core.engines import firefox_fetch, torbrowser_fetch
 
     engines = engine_fetch.installed()
     ff = firefox_fetch.installed()
+    tb = torbrowser_fetch.installed()
     line = f"camoufox: {', '.join(engines) or 'none'}"
     if ff:
         line += f"; firefox: {', '.join(ff)}"
-    _p(f"engines       {line}" + ("" if (engines or ff) else " — run `kiwi-fox engine fetch`"))
-    ok &= bool(engines or ff)
+    if tb:
+        line += f"; torbrowser: {', '.join(tb)}"
+    _p(
+        f"engines       {line}"
+        + ("" if (engines or ff or tb) else " — run `kiwi-fox engine fetch`")
+    )
+    ok &= bool(engines or ff or tb)
     import os
 
     wayland = os.environ.get("WAYLAND_DISPLAY")
     _p(f"wayland       {wayland or 'none (no window can open)'}")
+    import kiwi_proxy
+    from kiwi_proxy import setup as proxy_setup
+
+    _p(f"kiwi-proxy    {kiwi_proxy.__version__}")
     stamps = dns.load_stamps()
     _p(f"dns stamps    {len(stamps) or 'none — run `kiwi-fox dns sync`'}")
-    blocklist = paths.blocklists_dir() / "blocked-names.txt"
+    blocklist = proxy_paths.blocklists_dir() / "blocked-names.txt"
     _p(f"blocklist     {blocklist if blocklist.exists() else 'none — run `kiwi-fox dns update`'}")
     from .core import setup
 
-    for image, name in setup.IMAGES:
-        state = setup.image_state(image, name) if podman.available() else "missing"
+    images = [(setup.image_state, i, n) for i, n in setup.IMAGES]
+    images += [(proxy_setup.image_state, i, n) for i, n in proxy_setup.IMAGES]
+    for state_of, image, name in images:
+        state = state_of(image, name) if podman.available() else "missing"
         note = {
             "current": "yes",
             "stale": "outdated — built by an earlier version; run `kiwi-fox setup`",
@@ -970,6 +966,7 @@ def cmd_doctor(a: argparse.Namespace) -> int:
         _p(f"image         {image} {note}")
         ok &= state != "missing"
     _p(f"profiles      {len(store.list_profiles())}")
+    _p(f"modules       {', '.join(providers.discover()) or 'none'}")
     version = engine_fetch.preferred()
     if version and podman.available():
         gpu.measure(engine_fetch.target_dir(version))
@@ -991,7 +988,12 @@ def cmd_reap(a: argparse.Namespace) -> int:
 
 
 def cmd_ps(a: argparse.Namespace) -> int:
-    rows = podman.ps()
+    """kiwi-fox's own containers: browsers and the gateways they joined. Provider
+    containers are kiwi-proxy's (`kiwi-proxy ps`)."""
+    out = podman._run(
+        ["ps", "--all", "--format", "json", "--filter", f"label={paths.LABEL}"], check=False
+    ).stdout
+    rows = json.loads(out or "[]") if podman.available() else []
     if not rows:
         _p("no kiwi-fox containers")
         return 0
@@ -1017,10 +1019,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     n.add_argument(
         "--engine",
-        choices=["camoufox", "firefox"],
+        choices=["camoufox", "firefox", "torbrowser"],
         default="camoufox",
         help="camoufox (default): a spoofed Windows identity; firefox: stock Firefox, "
-        "this machine's own values, no spoofing (fewer identity flags apply)",
+        "this machine's own values; torbrowser: Tor Browser through --module tor, a "
+        "circuit per site (no spoofing flags apply to the non-camoufox engines)",
     )
     n.add_argument("--country", help="two-letter code; probed from the exit when omitted")
     n.add_argument("--form", choices=["desktop", "laptop"], help="force the machine type")
@@ -1116,7 +1119,7 @@ def build_parser() -> argparse.ArgumentParser:
     ef.add_argument("version", nargs="?", help="e.g. 152.0.4; latest non-prerelease by default")
     ef.add_argument(
         "--engine",
-        choices=["camoufox", "firefox"],
+        choices=["camoufox", "firefox", "torbrowser"],
         default="camoufox",
         help="which engine to fetch (default camoufox)",
     )
@@ -1242,36 +1245,30 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     m = sub.add_parser(
-        "module", help="manage SOCKS5/VPN provider modules (tor, vpn, 9proxy, mysterium)"
+        "module",
+        help="manage SOCKS5/VPN provider modules (tor, vpn, 9proxy, mysterium) — kiwi-proxy's",
+        add_help=False,
     )
-    msub = m.add_subparsers(dest="module_cmd", required=True)
-    msub.add_parser("list", help="installed provider modules")
-    ms = msub.add_parser("status", help="a module's live state")
-    ms.add_argument("name")
-    ml = msub.add_parser("leases", help="selectable exits a module offers")
-    ml.add_argument("name")
-    mu = msub.add_parser("up", help="bring a provider up and print its endpoint")
-    mu.add_argument("name")
-    mu.add_argument("--lease", help="which exit to bring up (see `module leases`)")
-    mu.add_argument("--country", help="two-letter code, when the module can target one")
-    mdn = msub.add_parser("down", help="stop a provider")
-    mdn.add_argument("name")
-    mdn.add_argument("--lease")
-    mse = msub.add_parser("setup", help="build or pull a module's image")
-    mse.add_argument("name")
-    msub.add_parser("doctor", help="check installed provider modules")
+    m.add_argument("args", nargs=argparse.REMAINDER, help="as for `kiwi-proxy module`")
     m.set_defaults(func=cmd_module)
     return ap
 
 
 def main(argv: list[str] | None = None) -> int:
+    argv = sys.argv[1:] if argv is None else list(argv)
+    if argv[:1] == ["module"]:
+        # All of it is kiwi-proxy's, --help included, which kiwi-fox's own
+        # parser would take for one of its options.
+        return cmd_module(argparse.Namespace(args=argv[1:]))
     paths.ensure_tree()
     args = build_parser().parse_args(argv)
     try:
         return args.func(args)
     except (
         store.StoreError,
-        proxy.ProxyError,
+        proxy.EndpointError,
+        exits.ExitError,
+        gateway.GatewayError,
         podman.PodmanError,
         launch.LaunchError,
         providers.ProviderError,

@@ -15,7 +15,11 @@ KIWI_PREFIX="${KIWI_PREFIX:-$HOME/.local}"
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP=kiwi-fox
 LIBDIR="$KIWI_PREFIX/lib/$APP"
+# The proxy engine: gateways, providers, DNS. A separate kiwi app (DEPENDS),
+# whose package the launchers put on the path.
+PROXY_LIB="$KIWI_PREFIX/lib/kiwi-proxy"
 DATA="${XDG_DATA_HOME:-$HOME/.local/share}/$APP"
+UNITDIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 
 if [[ "$KIWI_SCOPE" != user ]]; then
     echo "install.sh: $APP is user-scope only; nothing to do for scope '$KIWI_SCOPE'"
@@ -25,6 +29,15 @@ fi
 # The launcher's icon is replaced on update (it comes from kiwi-icons), and an
 # icon-theme.cache that predates it keeps the old one in the app grid until the
 # cache is rebuilt — the same refresh kiwi-updater does for its own icon.
+# kiwi-fox refreshed DNS blocklists itself until 0.3.0; kiwi-proxy's timer
+# does it now, so the old units go.
+retire_blocklist_timer() {
+    [[ -e "$UNITDIR/$APP-blocklists.timer" || -e "$UNITDIR/$APP-blocklists.service" ]] || return 0
+    systemctl --user disable --now "$APP-blocklists.timer" 2>/dev/null || true
+    rm -f "$UNITDIR/$APP-blocklists."{service,timer}
+    systemctl --user daemon-reload 2>/dev/null || true
+}
+
 refresh_desktop_caches() {
     if command -v gtk-update-icon-cache >/dev/null 2>&1; then
         gtk-update-icon-cache -qtf "$KIWI_PREFIX/share/icons/hicolor" 2>/dev/null || true
@@ -42,7 +55,7 @@ do_install() {
 
     cat > "$KIWI_PREFIX/bin/$APP" <<EOF
 #!/usr/bin/env bash
-export PYTHONPATH="$LIBDIR\${PYTHONPATH:+:\$PYTHONPATH}"
+export PYTHONPATH="$LIBDIR:$PROXY_LIB\${PYTHONPATH:+:\$PYTHONPATH}"
 exec python3 -m kiwi_fox "\$@"
 EOF
     chmod +x "$KIWI_PREFIX/bin/$APP"
@@ -50,7 +63,7 @@ EOF
     if [[ "${KIWI_GUI:-1}" == 1 ]]; then
         cat > "$KIWI_PREFIX/bin/$APP-gui" <<EOF
 #!/usr/bin/env bash
-export PYTHONPATH="$LIBDIR\${PYTHONPATH:+:\$PYTHONPATH}"
+export PYTHONPATH="$LIBDIR:$PROXY_LIB\${PYTHONPATH:+:\$PYTHONPATH}"
 exec python3 -m kiwi_fox.ui "\$@"
 EOF
         chmod +x "$KIWI_PREFIX/bin/$APP-gui"
@@ -61,34 +74,19 @@ EOF
         refresh_desktop_caches
     fi
 
-    # Blocklist refresh. Images and the engine are NOT built or downloaded here:
-    # that is slow, needs network at the wrong moment, and belongs to first run.
-    local unitdir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
-    mkdir -p "$unitdir"
-    cat > "$unitdir/$APP-blocklists.service" <<EOF
-[Unit]
-Description=Refresh kiwi-fox DNS blocklists
-[Service]
-Type=oneshot
-ExecStart=$KIWI_PREFIX/bin/$APP dns update
-EOF
-    cat > "$unitdir/$APP-blocklists.timer" <<EOF
-[Unit]
-Description=Refresh kiwi-fox DNS blocklists daily
-[Timer]
-OnCalendar=daily
-Persistent=true
-RandomizedDelaySec=2h
-[Install]
-WantedBy=timers.target
-EOF
-    systemctl --user daemon-reload 2>/dev/null || true
-    systemctl --user enable --now "$APP-blocklists.timer" 2>/dev/null || true
+    # Images and the engine are NOT built or downloaded here: that is slow,
+    # needs network at the wrong moment, and belongs to first run.
+    retire_blocklist_timer
+
+    if [[ ! -f "$PROXY_LIB/kiwi_proxy/gateway.py" ]]; then
+        echo "note: kiwi-proxy is not installed at $PROXY_LIB — $APP needs it:"
+        echo "    kiwi install kiwi-proxy"
+    fi
 
     echo "installed $APP to $KIWI_PREFIX"
     echo
     echo "First run needs one command — it builds the container images, downloads the"
-    echo "browser engine and fetches the blocklists:"
+    echo "browser engine and, through kiwi-proxy, fetches the DNS data:"
     echo
     echo "    $APP setup"
     echo
@@ -97,22 +95,38 @@ EOF
 
 do_update() { do_install; }
 
+# The network half of every identity: the exits kiwi-fox registered in
+# kiwi-proxy, and their gateways. Only with --purge, with the identities.
+purge_exits() {
+    [[ -f "$PROXY_LIB/kiwi_proxy/exits.py" ]] || return 0
+    PYTHONPATH="$PROXY_LIB" python3 - <<'EOF' || true
+from kiwi_proxy import exits, gateway
+
+for ex in exits.list_exits():
+    if ex.owner == "kiwi-fox":
+        gateway.down(ex.id)
+        exits.delete(ex.id)
+EOF
+}
+
 do_uninstall() {
-    systemctl --user disable --now "$APP-blocklists.timer" 2>/dev/null || true
-    rm -f "${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/$APP-blocklists."{service,timer}
-    systemctl --user daemon-reload 2>/dev/null || true
+    local purge=0
+    [[ "${KIWI_PURGE:-0}" == 1 || "${2:-}" == --purge ]] && purge=1
+    # While the command still exists: close every window, release its gateway.
+    "$KIWI_PREFIX/bin/$APP" stop >/dev/null 2>&1 || true
+    retire_blocklist_timer
     rm -f "$KIWI_PREFIX/bin/$APP" "$KIWI_PREFIX/bin/$APP-gui"
     rm -f "$KIWI_PREFIX/share/applications/$APP.desktop"
     rm -f "$KIWI_PREFIX/share/icons/hicolor/scalable/apps/$APP.svg"
     refresh_desktop_caches
     rm -rf "$LIBDIR"
 
-    # An ordinary uninstall leaves profiles, fingerprints and the provider cache
-    # alone, so reinstalling resumes where you left off. --purge deletes
-    # identities that cannot be regenerated.
-    if [[ "${KIWI_PURGE:-0}" == 1 || "${2:-}" == --purge ]]; then
+    # An ordinary uninstall leaves profiles, fingerprints and their exits alone,
+    # so reinstalling resumes where you left off. --purge deletes identities
+    # that cannot be regenerated.
+    if (( purge )); then
         echo "purging $DATA — profiles and their identities are being deleted"
-        "$KIWI_PREFIX/bin/$APP" stop 2>/dev/null || true
+        purge_exits
         rm -rf "$DATA"
     else
         echo "kept $DATA (pass --purge to remove profiles and identities)"
