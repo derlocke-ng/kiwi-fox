@@ -22,7 +22,9 @@ import time
 import urllib.parse
 from pathlib import Path
 
-from . import geometry, launch, paths, podman, store
+from kiwi_proxy import podman
+
+from . import geometry, launch, paths, store
 from .engines.camoufox import PROFILE_MOUNT
 from .fingerprint import webgl
 from .fingerprint import windows11 as w11
@@ -242,7 +244,7 @@ def probe(profile: Profile, *, timeout: int = 70, raw: bool = False, skip: str =
         launch.install_langpack(subject, fp, data)
         launch.write_fontconfig(profile, fp)
 
-        spec = launch.browser_spec(subject, fp, gateway, None)
+        spec = launch.browser_spec(subject, fp, gateway, None, launch.resolv_conf(profile))
         spec.name = name
         real = paths.profile_dir(profile.id)
         swap = {
@@ -297,10 +299,8 @@ def probe(profile: Profile, *, timeout: int = 70, raw: bool = False, skip: str =
         podman.rm(name)
         if started_gateway:
             # Not launch.stop(): that would also remove a browser the user started
-            # in the meantime. The gateway refuses to go while one depends on it.
-            if not podman.is_running(paths.browser_name(profile.id)):
-                podman.rm(gateway)
-                podman.secret_rm(launch.creds_secret_name(profile.id))
+            # in the meantime. release() leaves the gateway to whoever is inside.
+            launch.release(profile)
         else:
             _stop_servers(gateway)
         shutil.rmtree(scratch, ignore_errors=True)

@@ -13,8 +13,8 @@ import tempfile
 from pathlib import Path
 
 import pytest
+from kiwi_proxy import podman
 
-from kiwi_fox.core import podman
 from kiwi_fox.core.engines import firefox_fetch, get_engine
 from kiwi_fox.core.engines.firefox import Firefox
 from kiwi_fox.core.models import Endpoint, Profile

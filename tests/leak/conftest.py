@@ -1,6 +1,7 @@
 import pytest
+from kiwi_proxy import podman
 
-from kiwi_fox.core import paths, podman, store
+from kiwi_fox.core import paths, store
 
 
 def pytest_addoption(parser):

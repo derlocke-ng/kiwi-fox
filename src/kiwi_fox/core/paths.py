@@ -1,9 +1,15 @@
-"""Where everything lives on disk. XDG, user scope only — no root anywhere."""
+"""Where everything lives on disk. XDG, user scope only — no root anywhere.
+
+Gateways, providers, modules and DNS data are kiwi-proxy's (``kiwi_proxy.paths``);
+this is the browser side: profiles, engines, browser containers.
+"""
 
 from __future__ import annotations
 
 import os
 from pathlib import Path
+
+from kiwi_proxy import paths as kiwi_paths
 
 APP = "kiwi-fox"
 LABEL = f"app={APP}"
@@ -43,92 +49,21 @@ def engines_dir() -> Path:
     return data_dir() / "engines"
 
 
-def blocklists_dir() -> Path:
-    return data_dir() / "blocklists"
-
-
-def providers_cache() -> Path:
-    return data_dir() / "providers.json"
-
-
-def modules_dir() -> Path:
-    """Where provider plugins are installed, one directory per module (tor, vpn,
-    9proxy, mysterium). kiwi-updater drops each module's package here; kiwi-fox
-    discovers them by scanning this directory."""
-    return data_dir() / "modules"
-
-
-def module_dir(name: str) -> Path:
-    return modules_dir() / name
-
-
-def modules_state_dir() -> Path:
-    """Per-module writable runtime state (leases, caches), kept out of the
-    read-only installed module directory."""
-    return data_dir() / "modules-state"
-
-
-def module_state_dir(name: str) -> Path:
-    return modules_state_dir() / name
-
-
-# The shared podman network local provider containers and the gateways that use
-# them attach to, so a gateway can reach its provider's SOCKS5 while its own
-# nftables still permits exactly one destination. Plain (already-remote) SOCKS5
-# endpoints never touch it; those gateways stay on pasta.
-PROVIDERS_NETWORK = f"{PREFIX}-providers"
-# Created with a fixed subnet so providers get deterministic static addresses: a
-# gateway's firewall pin then stays valid across a provider restart, and a freed
-# address cannot be handed to a different container. Picked high in 10.x to avoid
-# podman's usual auto-allocated ranges.
-PROVIDERS_SUBNET = "10.89.231.0/24"
-PROVIDERS_GATEWAY_IP = "10.89.231.1"
-
-
-def provider_static_ip(name: str, lease: str | None = None) -> str:
-    """A deterministic address in PROVIDERS_SUBNET for a module+lease, so the same
-    provider always comes up on the same IP. Uses a stable hash (not Python's
-    salted hash()) over the host octet range .2–.254."""
-    import hashlib
-
-    key = f"{name}:{lease or ''}".encode()
-    octet = 2 + int(hashlib.sha256(key).hexdigest(), 16) % 253  # 2..254
-    prefix = PROVIDERS_SUBNET.rsplit(".", 1)[0]  # "10.89.231"
-    return f"{prefix}.{octet}"
-
-
-def provider_image(name: str) -> str:
-    return f"{APP}/{name}:latest"
-
-
-def provider_container_name(name: str, lease: str | None = None) -> str:
-    """A provider container is shared across every profile that uses the same
-    module+lease, so its name is keyed on those, not on a profile id."""
-    suffix = f"-{lease}" if lease else ""
-    raw = f"{PREFIX}-prov-{name}{suffix}"
-    # Container names allow only [a-zA-Z0-9._-]; a lease like a 9proxy port or a
-    # myst provider id is already in that set, but be defensive. isalnum() is
-    # Unicode-aware and would pass e.g. accented letters podman rejects, so gate
-    # on ASCII first.
-    return "".join(c if (c.isascii() and c.isalnum()) or c in "._-" else "-" for c in raw)[:63]
-
-
 def ensure_tree() -> None:
     for d in (
         data_dir(),
         config_dir(),
         profiles_dir(),
         engines_dir(),
-        blocklists_dir(),
-        modules_dir(),
-        modules_state_dir(),
         runtime_dir(),
     ):
         d.mkdir(parents=True, exist_ok=True)
 
 
 def gateway_name(profile_id: str) -> str:
-    return f"{PREFIX}-gw-{profile_id[:12]}"
+    """The profile's gateway. kiwi-proxy names it after the exit, and a profile's
+    exit id is the profile id, so it is the kf-gw-<id[:12]> it always was."""
+    return kiwi_paths.gateway_name(profile_id)
 
 
 def browser_name(profile_id: str) -> str:

@@ -4,26 +4,36 @@ The gateway container owns the network namespace; the browser joins it and has
 no routing table of its own, so the kill switch is the absence of a route
 rather than software that has to notice. Measured working rootless on this host
 (novafox ANALYSIS.md §4).
+
+The gateway is kiwi-proxy's: a profile's exit (store.sync_exit) is brought up
+with `gateway.up`, and the browser joins `Gateway.name`. What stays here is the
+browser half, and the rules a browser imposes on its exit.
 """
 
 from __future__ import annotations
 
 import contextlib
-import datetime as dt
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import dns, geometry, paths, podman, providers, proxy, secrets, store
+from kiwi_proxy import endpoint, exits, gateway, podman, providers
+
+from . import geometry, paths, secrets, store
 from .engines import get_engine
 from .engines.camoufox import fontconfig_xml
-from .engines.gecko import FORWARDER_PORT
 from .fingerprint import validate, validate_against
 from .fingerprint.validator import Issue, errors
-from .models import ContainerSpec, ExitInfo, Fingerprint, Profile, ProviderRecord
+from .models import ExitInfo, Fingerprint, Profile
 
-GATEWAY_IMAGE = "kiwi-fox/gateway:latest"
 BROWSER_IMAGE = "kiwi-fox/browser:latest"
+# Errors the network half can raise; launch turns every one into a LaunchError.
+_NETWORK_ERRORS = (
+    gateway.GatewayError,
+    providers.ProviderError,
+    endpoint.EndpointError,
+    podman.PodmanError,
+)
 
 
 class LaunchError(RuntimeError):
@@ -47,57 +57,10 @@ def runtime_dir(profile_id: str) -> Path:
     return d
 
 
-def creds_secret_name(profile_id: str) -> str:
-    return f"{paths.PREFIX}-creds-{profile_id[:12]}"
-
-
-def _provider_auth(module: str | None) -> str:
-    """The managed provider's auth mode, or 'none' for a plain/remote endpoint."""
-    if not providers.manages(module):
-        return "none"
-    try:
-        return providers.manifest_of(module).auth
-    except providers.ProviderError:
-        return "none"
-
-
-def write_credentials(profile: Profile) -> str:
-    """Credentials reach the gateway as a podman secret, never as container env
-    (`podman inspect` shows env) and never as a bind-mounted 0600 file (the
-    gateway runs as container-root, a subuid, so it could not read it)."""
-    name = creds_secret_name(profile.id)
-    user = profile.endpoint.username or ""
-    password = secrets.lookup(profile.id) or ""
-    if not user and _provider_auth(profile.endpoint.module) == "isolation":
-        # Mint a stable per-profile token so the provider gives each profile its own
-        # circuit/session (e.g. Tor IsolateSOCKSAuth): same profile -> same exit
-        # across launches, different profiles -> different exits. The value is an
-        # isolation key, not a secret, so deriving it from the profile id is fine.
-        user = f"kf-{profile.id[:16]}"
-        password = profile.id
-    podman.secret_set(name, f"{user}\n{password}\n")
-    return name
-
-
 def write_fontconfig(profile: Profile, fp: Fingerprint) -> Path:
     path = paths.profile_dir(profile.id) / "fonts.conf"
     path.write_text(fontconfig_xml(fp))
     return path
-
-
-def write_resolver_config(profile: Profile) -> Path | None:
-    if profile.dns.mode != "resolver":
-        return None
-    blocklist = dns.merged_blocklist(profile.dns.blocklists)
-    cfg = dns.toml_config(
-        profile.dns.upstream,
-        blocklist="/blocklist/blocked-names.txt",
-        forwarder="127.0.0.1",
-        forwarder_port=FORWARDER_PORT,
-    )
-    path = runtime_dir(profile.id) / "dnscrypt-proxy.toml"
-    path.write_text(cfg)
-    return blocklist and path
 
 
 def browser_data_dir(profile: Profile) -> Path:
@@ -218,76 +181,26 @@ def reset_toolbar_layout(profile: Profile) -> bool:
 
 
 # -------------------------------------------------------------------- specs
-def gateway_spec(
+def gateway_labels(profile: Profile) -> dict[str, str]:
+    """kiwi-fox's own labels on a profile's gateway, beside kiwi-proxy's. Kept as
+    they always were: kiwi-pentesting finds a browser identity's gateway by
+    app=kiwi-fox and kiwi-fox.role=gateway."""
+    return {"app": "kiwi-fox", "kiwi-fox.role": "gateway", "kiwi-fox.profile": profile.id}
+
+
+def browser_spec(
     profile: Profile,
-    endpoint_ip: str,
-    *,
-    endpoint_port: int | None = None,
-    network: str = "pasta",
-    socks_auth: str = "inject",
-    dns_mode: str | None = None,
-) -> ContainerSpec:
-    rt = runtime_dir(profile.id)
-    secret = creds_secret_name(profile.id)
-    target = f"/run/secrets/{secret}"
-    volumes: list[tuple[str, str, str]] = []
-    mode = dns_mode or profile.dns.mode
-    env = {
-        "KF_ENDPOINT_IP": endpoint_ip,
-        "KF_ENDPOINT_PORT": str(endpoint_port or profile.endpoint.port),
-        "KF_FORWARDER_PORT": str(FORWARDER_PORT),
-        "KF_DNS_MODE": mode,
-        "KF_CREDS_FILE": target,
-    }
-    # The forwarder defaults to injecting the profile credential; passthrough
-    # (Tor Browser) also carries the browser's own SOCKS auth, for per-site
-    # circuits. Only set it when it differs, so every other profile's env is
-    # unchanged.
-    if socks_auth != "inject":
-        env["KF_SOCKS_AUTH"] = socks_auth
-    if mode == "resolver":
-        # ",z" relabels for SELinux: without it an enforcing host denies the
-        # container read access to anything under $HOME.
-        volumes += [
-            (str(rt / "dnscrypt-proxy.toml"), "/run/kf/dnscrypt-proxy.toml", "ro,z"),
-            (str(paths.blocklists_dir()), "/blocklist", "ro,z"),
-        ]
-    return ContainerSpec(
-        name=paths.gateway_name(profile.id),
-        image=GATEWAY_IMAGE,
-        # A plain/remote endpoint keeps pasta — it is a public address the gateway
-        # reaches directly. A managed local provider lives on the shared providers
-        # bridge, so the gateway joins that bridge to reach exactly its SOCKS5.
-        network=network,
-        env=env,
-        volumes=volumes,
-        secrets=[(secret, target)],
-        cap_drop=["all"],
-        # NET_ADMIN to build the ruleset, NET_BIND_SERVICE because the resolver
-        # listens on 53 and dropping all caps denies that even to container-root.
-        # NET_RAW is deliberately NOT granted: nftables, dnscrypt-proxy and the
-        # forwarder use no raw sockets, and on the shared providers bridge it would
-        # let a compromised gateway/browser ARP-spoof sibling containers.
-        cap_add=["NET_ADMIN", "NET_BIND_SERVICE"],
-        security_opt=["no-new-privileges"],
-        userns=None,  # needs container-root to configure its own netns
-        labels={"app": "kiwi-fox", "kiwi-fox.profile": profile.id, "kiwi-fox.role": "gateway"},
-    )
-
-
-def write_resolv_conf(profile: Profile) -> Path:
-    """The browser is a separate container with its own mount namespace, so it
-    needs its own resolv.conf pointing at the gateway's resolver. Mounted rather
-    than written, because --dns cannot be combined with --network container:."""
-    path = runtime_dir(profile.id) / "resolv.conf"
-    path.write_text(f"nameserver {dns.LISTEN_ADDR}\noptions edns0 trust-ad\n")
-    return path
-
-
-def browser_spec(profile: Profile, fp: Fingerprint, gateway: str, exit_ip: str | None):
+    fp: Fingerprint | None,
+    gateway: str,
+    exit_ip: str | None,
+    resolv_conf: str | None = None,
+):
+    """`resolv_conf` is the gateway's (Gateway.resolv_conf): the browser has its
+    own mount namespace, so in resolver mode it mounts the file that points at
+    the resolver inside the namespace. None in remote DNS mode."""
     spec = get_engine(profile.engine).build_spec(profile, fp, gateway=gateway, exit_ip=exit_ip)
-    if profile.dns.mode == "resolver":
-        spec.volumes.append((str(write_resolv_conf(profile)), "/etc/resolv.conf", "ro,z"))
+    if resolv_conf:
+        spec.volumes.append((resolv_conf, "/etc/resolv.conf", "ro,z"))
     wayland = _wayland_mount()
     if wayland:
         src, dst = wayland
@@ -315,102 +228,78 @@ def _wayland_mount() -> tuple[str, str] | None:
     return str(src), f"/run/user/{os.getuid()}/{disp}"
 
 
-# ------------------------------------------------------------------- launch
-@dataclass
-class EndpointPlan:
-    """How to wire the gateway to this profile's exit."""
-
-    ip: str  # literal address the gateway's firewall permits
-    port: int  # SOCKS5 port on that address
-    network: str  # "pasta" for a remote exit, the providers bridge for a local one
-    info: ExitInfo | None = None  # measured exit, when the host could reach it
-    notes: list[str] = field(default_factory=list)
-
-
-def ensure_provider(profile: Profile) -> EndpointPlan:
-    """Bring up a managed provider (idempotent) and return its live SOCKS5 address
-    on the providers bridge. The provider's own exit is measured later, through the
-    gateway, because the host is not on that rootless bridge."""
+# ------------------------------------------------------------------ network
+def _network_error(exc: Exception, profile: Profile) -> LaunchError:
+    msg = str(exc)
     module = profile.endpoint.module
-    prov, manifest = providers.load(module)
-    ctx = providers.context_for(module, manifest)
-    try:
-        # Replay both the lease and the country stored on the profile, so an exit
-        # selected by country at creation is reproduced after a provider teardown
-        # (not silently reset to the provider's default, which would contradict the
-        # frozen fingerprint).
-        endpoint = prov.up(ctx, lease=profile.endpoint.lease, country=profile.endpoint.country)
-    except providers.ProviderError as exc:
-        raise LaunchError(f"provider {module!r} could not start: {exc}") from exc
-    lease = f" (lease {profile.endpoint.lease})" if profile.endpoint.lease else ""
-    return EndpointPlan(
-        ip=endpoint.host,
-        port=endpoint.port,
-        network=paths.PROVIDERS_NETWORK,
-        info=None,
-        notes=[f"provider {module} up at {endpoint.host}:{endpoint.port}{lease}"],
-    )
-
-
-def preflight(profile: Profile) -> EndpointPlan:
-    """Decide the gateway's upstream and, for a remote exit, measure it.
-
-    A managed local provider is brought up on the providers bridge; a plain exit is
-    resolved to a literal address on the host and probed so a region is known
-    before the window opens."""
-    if providers.manages(profile.endpoint.module):
-        return ensure_provider(profile)
-
-    notes: list[str] = []
-    endpoint_ip = proxy.resolve(profile.endpoint.host)
-    if endpoint_ip != profile.endpoint.host:
-        notes.append(f"resolved {profile.endpoint.host} -> {endpoint_ip}")
-    password = secrets.lookup(profile.id)
-    try:
-        info = proxy.preflight(profile.endpoint, password)
-    except Exception as exc:  # noqa: BLE001 - never block the launch on this
-        notes.append(f"pre-flight could not reach the exit: {exc}")
-        return EndpointPlan(endpoint_ip, profile.endpoint.port, "pasta", None, notes)
-    if profile.endpoint.module:
-        store.record_provider(
-            ProviderRecord(
-                module=profile.endpoint.module,
-                lease=profile.endpoint.lease or profile.endpoint.label,
-                ip=info.ip,
-                country=info.country,
-                city=info.city,
-                asn=info.asn,
-                verified_at=dt.datetime.now(dt.UTC),
-            )
+    old = paths.data_dir() / "modules" / (module or "")
+    if isinstance(exc, providers.ProviderError) and module and old.is_dir():
+        # Since 0.3.0 provider modules install into kiwi-proxy. One from before
+        # still sits in kiwi-fox's old directory, where nothing looks any more.
+        msg += (
+            f"\n  ({old} is a kiwi-fox 0.2 copy of it; update kiwi-plugin-{module}, "
+            "which now installs into kiwi-proxy)"
         )
-    return EndpointPlan(endpoint_ip, profile.endpoint.port, "pasta", info, notes)
+    return LaunchError(msg)
 
 
-def _start_gateway(profile: Profile, plan: EndpointPlan) -> ContainerSpec:
-    gw = gateway_spec(profile, plan.ip, endpoint_port=plan.port, network=plan.network)
-    # The browser joins the gateway's network namespace, which makes it a dependent
-    # container: podman refuses to replace the gateway while it exists, with
-    # "has dependent containers which must be removed before it". So the browser
-    # goes first, even when it is already stopped.
-    podman.rm(paths.browser_name(profile.id))
-    podman.start(gw)
-    if not podman.is_running(gw.name):
-        raise LaunchError(f"gateway failed to start:\n{podman.logs(gw.name)}")
-    return gw
+def exit_of(profile: Profile):
+    """The profile's exit in kiwi-proxy (exit id = profile id), in line with it."""
+    try:
+        return store.sync_exit(profile)
+    except exits.ExitError as exc:
+        raise LaunchError(f"cannot register the exit for {profile.name!r}: {exc}") from exc
+
+
+def plan(profile: Profile) -> gateway.EndpointPlan:
+    """Decide the upstream and, for a remote exit, measure it from the host, so
+    the region is known before the window opens. A managed provider is brought
+    up here; its exit sits on the providers bridge, out of the host's reach."""
+    try:
+        return gateway.plan(exit_of(profile), secrets.lookup(profile.id))
+    except _NETWORK_ERRORS as exc:
+        raise _network_error(exc, profile) from exc
+
+
+def up(profile: Profile, *, measure: bool = False) -> gateway.Gateway:
+    """Bring the profile's gateway up, or join the one already running for it: a
+    pentest tool or a `kiwi-proxy up` of the same identity shares the namespace.
+
+    `measure` also measures the exit through the gateway. Off by default: the
+    pre-flight already measured a remote exit, and for a provider exit (Tor) the
+    round trip would delay every window."""
+    ex = exit_of(profile)
+    try:
+        return gateway.up(
+            ex,
+            password=secrets.lookup(profile.id),
+            labels=gateway_labels(profile),
+            measure=measure,
+        )
+    except _NETWORK_ERRORS as exc:
+        raise _network_error(exc, profile) from exc
+
+
+def release(profile: Profile, *, ignore: tuple[str, ...] = ()) -> bool:
+    """Done with the identity's gateway: it goes unless something else is still
+    inside it (other than `ignore`) or `kiwi-proxy up` holds it."""
+    return gateway.release(profile.id, ignore=ignore)
+
+
+def resolv_conf(profile: Profile) -> str | None:
+    """What a container joining the profile's gateway mounts at /etc/resolv.conf
+    (None in remote DNS mode), for a gateway this process did not bring up."""
+    path = gateway.write_resolv_conf(exit_of(profile))
+    return str(path) if path else None
 
 
 def start_gateway(profile: Profile) -> tuple[str, ExitInfo | None]:
-    """Bring up a profile's network namespace with no browser in it.
-
-    For the probe, which needs the namespace and nothing else. Only call this
-    when the gateway is not already running: it replaces it.
-    """
+    """Bring up a profile's network namespace with no browser in it, for the
+    probe. A gateway already up for the profile is joined, not replaced."""
     if not podman.available():
         raise LaunchError("podman not found")
-    plan = preflight(profile)
-    write_credentials(profile)
-    write_resolver_config(profile)
-    return _start_gateway(profile, plan).name, plan.info
+    gw = up(profile)
+    return gw.name, gw.info
 
 
 def launch(profile: Profile, *, strict: bool = False, start_url: str | None = None) -> LaunchResult:
@@ -421,8 +310,8 @@ def launch(profile: Profile, *, strict: bool = False, start_url: str | None = No
     # through every step below.
     fp = store.fingerprint_of(profile)
 
-    plan = preflight(profile)
-    info, notes = plan.info, list(plan.notes)
+    pre = plan(profile)
+    info, notes = pre.info, list(pre.notes)
 
     from . import gpu
     from .fingerprint.validator import check_network_prefs
@@ -490,8 +379,6 @@ def launch(profile: Profile, *, strict: bool = False, start_url: str | None = No
         hint = fp.engine_version if (profile.engine == "camoufox" and fp) else profile.engine
         raise LaunchError(f"engine missing at {engine_dir}; run `kiwi-fox engine fetch {hint}`")
 
-    write_credentials(profile)
-    write_resolver_config(profile)
     write_user_js(profile, fp)
     if profile.engine == "camoufox":
         assert fp is not None
@@ -502,10 +389,11 @@ def launch(profile: Profile, *, strict: bool = False, start_url: str | None = No
         reset_toolbar_layout(profile)
         geometry.prepare(profile, fp)
 
-    gw = _start_gateway(profile, plan)
+    gw = up(profile)
+    notes += [n for n in gw.notes if n not in notes]
 
     clear_stale_lock(profile)
-    br = browser_spec(profile, fp, gw.name, info.ip if info else None)
+    br = browser_spec(profile, fp, gw.name, info.ip if info else None, gw.resolv_conf)
     if start_url:
         br.args = [start_url]
     if "WAYLAND_DISPLAY" not in br.env:
@@ -513,7 +401,7 @@ def launch(profile: Profile, *, strict: bool = False, start_url: str | None = No
     try:
         podman.start(br)
     except podman.PodmanError as exc:
-        podman.rm(gw.name)
+        release(profile, ignore=(br.name,))
         raise LaunchError(f"browser failed to start: {exc}") from exc
 
     if info:
@@ -522,38 +410,21 @@ def launch(profile: Profile, *, strict: bool = False, start_url: str | None = No
     return LaunchResult(profile, gw.name, br.name, info, warnings, notes)
 
 
-def _provider_users(module: str | None, lease: str | None, *, exclude_id: str) -> int:
-    """How many other profiles with a running gateway share this module+lease."""
-    return sum(
-        1
-        for p in store.list_profiles()
-        if p.id != exclude_id
-        and p.endpoint.module == module
-        and p.endpoint.lease == lease
-        and podman.is_running(paths.gateway_name(p.id))
-    )
-
-
-def release_provider(profile: Profile) -> None:
-    """Stop a managed provider once no running gateway still uses it. A provider
-    container is shared across profiles on the same module+lease, so it must not be
-    torn down while another profile is still exiting through it."""
-    module = profile.endpoint.module
-    if not providers.manages(module):
-        return
-    if _provider_users(module, profile.endpoint.lease, exclude_id=profile.id) > 0:
-        return
-    with contextlib.suppress(providers.ProviderError):
-        prov, manifest = providers.load(module)
-        ctx = providers.context_for(module, manifest)
-        prov.down(ctx, lease=profile.endpoint.lease)
-
-
 def stop(profile: Profile) -> None:
-    podman.rm(paths.browser_name(profile.id))
-    podman.rm(paths.gateway_name(profile.id))
-    podman.secret_rm(creds_secret_name(profile.id))
-    release_provider(profile)
+    """The window is closed: the browser goes, and its gateway with it unless
+    another user of the identity — a pentest tool, `kiwi-proxy up` — remains."""
+    if not podman.available():
+        return
+    browser = paths.browser_name(profile.id)
+    podman.rm(browser)
+    release(profile, ignore=(browser,))
+
+
+def down(profile: Profile) -> None:
+    """Tear the identity's gateway down, whoever is inside (deleting a profile)."""
+    if podman.available():
+        podman.rm(paths.browser_name(profile.id))
+    gateway.down(profile.id)
 
 
 def running(profile: Profile) -> bool:
@@ -571,41 +442,19 @@ def wait_and_teardown(profile: Profile) -> int:
     return code
 
 
-def reconcile_providers() -> list[str]:
-    """Fail closed any running gateway whose permitted provider address has drifted.
-
-    Providers get a deterministic static IP, so this should never fire; it is a
-    backstop. If a gateway's pinned KF_ENDPOINT_IP no longer matches its provider's
-    current bridge address, the gateway's firewall would be pointing at whatever now
-    holds that address — a wrong exit, and in account-auth mode a credential leak —
-    so the gateway is torn down (the browser loses its route) rather than left live.
-    """
-    stopped = []
-    for p in store.list_profiles():
-        if not providers.manages(p.endpoint.module):
-            continue
-        gw = paths.gateway_name(p.id)
-        if not podman.is_running(gw):
-            continue
-        pinned = podman.container_env(gw, "KF_ENDPOINT_IP")
-        current = podman.container_ip(
-            paths.provider_container_name(p.endpoint.module, p.endpoint.lease),
-            paths.PROVIDERS_NETWORK,
-        )
-        if pinned and current and pinned != current:
-            stop(p)
-            stopped.append(p.name)
-    return stopped
-
-
 def reap() -> list[str]:
-    """Stop gateways whose browser is gone, and any whose provider address drifted.
-    Safe to call at any time."""
+    """Stop gateways whose browser is gone, then whatever kiwi-proxy finds unused
+    or pointing at a drifted provider address. Safe to call at any time."""
+    if not podman.available():
+        return []
     cleaned = []
+    names = {}
     for p in store.list_profiles():
         gw, br = paths.gateway_name(p.id), paths.browser_name(p.id)
+        names[gw] = p.name
         if podman.is_running(gw) and not podman.is_running(br):
-            stop(p)
-            cleaned.append(p.name)
-    cleaned += reconcile_providers()
+            podman.rm(br)
+            if release(p, ignore=(br,)):
+                cleaned.append(p.name)
+    cleaned += [names.get(name, name) for name in gateway.reap()]
     return cleaned

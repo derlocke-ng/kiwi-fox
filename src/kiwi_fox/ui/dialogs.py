@@ -8,8 +8,10 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 
 from gi.repository import Adw, Gtk  # noqa: E402
+from kiwi_proxy import dns  # noqa: E402
+from kiwi_proxy import endpoint as proxy  # noqa: E402
 
-from ..core import dns, geometry, launch, proxy, secrets, store  # noqa: E402
+from ..core import geometry, launch, secrets, store  # noqa: E402
 from ..core.engines import fetch as engine_fetch  # noqa: E402
 from ..core.engines.camoufox import webgl_report  # noqa: E402
 from ..core.fingerprint import (  # noqa: E402

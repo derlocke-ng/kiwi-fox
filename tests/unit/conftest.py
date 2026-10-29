@@ -1,4 +1,5 @@
 import datetime as dt
+from types import SimpleNamespace
 
 import pytest
 
@@ -29,6 +30,53 @@ def _hermetic(tmp_path, monkeypatch):
         return pack
 
     monkeypatch.setattr("kiwi_fox.core.engines.fetch.langpack", langpack)
+
+
+@pytest.fixture
+def fake_proxy(monkeypatch):
+    """kiwi-proxy at its boundary: gateways come up at once, containers are
+    recorded instead of run. What kiwi-proxy does inside up() is its own tests'
+    business; these check what kiwi-fox asks of it."""
+    from kiwi_proxy import gateway, podman
+
+    from kiwi_fox.core import paths
+
+    rec = SimpleNamespace(
+        plans=[], ups=[], released=[], downed=[], started=[], removed=[], running=set()
+    )
+    rec.plan = gateway.EndpointPlan("203.0.113.9", 1080, "pasta", None, [])
+
+    def plan(ex, password=None, *, measure=True):
+        rec.plans.append(SimpleNamespace(exit=ex, password=password, measure=measure))
+        return rec.plan
+
+    def up(ex, *, password=None, labels=None, measure=True, **_k):
+        rec.ups.append(SimpleNamespace(exit=ex, password=password, labels=labels, measure=measure))
+        return gateway.Gateway(
+            exit_id=ex.id,
+            name=paths.gateway_name(ex.id),
+            resolv_conf="/run/kiwi-proxy/resolv.conf" if ex.dns.mode == "resolver" else None,
+            notes=["gateway up"],
+        )
+
+    def release(exit_id, *, ignore=()):
+        rec.released.append((exit_id, tuple(ignore)))
+        return True
+
+    def start(spec, **_k):
+        rec.started.append(spec)
+        return spec.name
+
+    monkeypatch.setattr(gateway, "plan", plan)
+    monkeypatch.setattr(gateway, "up", up)
+    monkeypatch.setattr(gateway, "release", release)
+    monkeypatch.setattr(gateway, "down", lambda exit_id: rec.downed.append(exit_id))
+    monkeypatch.setattr(gateway, "reap", lambda: [])
+    monkeypatch.setattr(podman, "available", lambda: True)
+    monkeypatch.setattr(podman, "start", start)
+    monkeypatch.setattr(podman, "rm", lambda name, **_k: rec.removed.append(name))
+    monkeypatch.setattr(podman, "is_running", lambda name: name in rec.running)
+    return rec
 
 
 @pytest.fixture

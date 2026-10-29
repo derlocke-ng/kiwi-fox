@@ -4,8 +4,8 @@ import json
 from pathlib import Path
 
 import pytest
+from kiwi_proxy import podman
 
-from kiwi_fox.core import podman
 from kiwi_fox.core.engines.camoufox import CHUNK, Camoufox, chunk_env, fontconfig_xml
 from kiwi_fox.core.fingerprint import fonts
 
@@ -255,16 +255,17 @@ def test_run_uses_replace_so_concurrent_starts_cannot_collide(engine, fp, profil
     assert args[:2] == ["run", "--replace"]
 
 
-def test_stop_removes_the_browser_before_the_gateway(monkeypatch, profile):
+def test_stop_removes_the_browser_before_releasing_the_gateway(fake_proxy, profile):
     # The browser shares the gateway's netns, so podman refuses to remove or
-    # replace the gateway while it exists.
-    from kiwi_fox.core import launch, paths, podman
+    # replace the gateway while it exists; and a pentest tool on the same identity
+    # keeps it, so stop() releases rather than removes it.
+    from kiwi_fox.core import launch, paths
 
-    order: list[str] = []
-    monkeypatch.setattr(podman, "rm", lambda name, **k: order.append(name))
-    monkeypatch.setattr(podman, "secret_rm", lambda name: None)
     launch.stop(profile)
-    assert order == [paths.browser_name(profile.id), paths.gateway_name(profile.id)]
+    browser = paths.browser_name(profile.id)
+    assert fake_proxy.removed == [browser]
+    assert fake_proxy.released == [(profile.id, (browser,))]
+    assert fake_proxy.downed == []
 
 
 # ------------------------------------------------------------------ graphics

@@ -30,6 +30,8 @@ pythonpath = ["src", "."]
 
 [tool.pyright]
 include = ["src"]
+# kiwi-proxy, from a sibling checkout (see tests/conftest.py).
+extraPaths = ["../kiwi-proxy/src"]
 pythonVersion = "3.12"
 typeCheckingMode = "standard"
 venvPath = "."
