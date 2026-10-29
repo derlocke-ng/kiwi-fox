@@ -113,6 +113,20 @@ and cannot read a file owned by the host user).
 **Every provider exposes SOCKS5 and nothing else.** Adapting is the module's job, so
 the gateway, forwarder, firewall rule and DNS design stay single-shaped.
 
+**The forwarder can inject the profile credential, or pass the browser's own
+through.** By default (`KF_SOCKS_AUTH=inject`) the gateway's SOCKS5 forwarder answers
+the browser with no-auth and adds the one per-profile credential upstream, which is
+all Camoufox and stock Firefox need. Tor Browser is different: it puts a SOCKS
+username and password on every request — the first-party domain and a per-domain
+nonce — to key a circuit per site, and its SOCKS client offers *only*
+username/password, so a no-auth answer refuses the connection outright. So
+passthrough mode accepts the client's credentials and sends upstream the profile
+token prefixed to the client username (folded to a hash when the pair would exceed
+255 bytes), keeping Tor's `IsolateSOCKSAuth` per-site circuits while the token still
+isolates profiles. New Identity and New Circuit then work through the SOCKS nonce
+alone, with no control port. Passthrough is set only for a Tor Browser profile on an
+isolation provider; every other profile's forwarder is byte-for-byte as before.
+
 **A provider module is a plugin, discovered on disk, not code baked in here.** The
 contract (`core/providers/`) lives in kiwi-fox because the exit side is becoming a
 full SOCKS5/VPN tunnelling suite, but each provider — tor, vpn, 9proxy, mysterium —

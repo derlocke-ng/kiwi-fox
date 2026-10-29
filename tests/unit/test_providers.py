@@ -243,6 +243,18 @@ def test_gateway_spec_stays_on_pasta_for_a_plain_endpoint():
     assert spec.network == "pasta"
     assert spec.env["KF_ENDPOINT_IP"] == "203.0.113.9"
     assert spec.env["KF_ENDPOINT_PORT"] == "1080"
+    # Default forwarder mode: no KF_SOCKS_AUTH key, so every existing env is unchanged.
+    assert "KF_SOCKS_AUTH" not in spec.env
+
+
+def test_gateway_spec_passthrough_and_forced_dns():
+    spec = launch.gateway_spec(
+        _profile(), "203.0.113.9", socks_auth="passthrough", dns_mode="remote"
+    )
+    assert spec.env["KF_SOCKS_AUTH"] == "passthrough"
+    assert spec.env["KF_DNS_MODE"] == "remote"
+    # Forced remote: no dnscrypt toml / blocklist mount even for a resolver profile.
+    assert not any(dst == "/run/kf/dnscrypt-proxy.toml" for _s, dst, _o in spec.volumes)
 
 
 def test_gateway_spec_joins_the_bridge_for_a_local_provider():

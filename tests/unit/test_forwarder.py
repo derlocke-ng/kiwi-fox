@@ -130,6 +130,146 @@ def test_empty_credentials_mean_no_auth(tmp_path):
     assert fwd.read_credentials(str(creds)) == (None, None)
 
 
+# --------------------------------------------------------------- passthrough
+class AuthUpstream:
+    """A SOCKS5 server that honours USER_PASS and records the credentials it got."""
+
+    def __init__(self) -> None:
+        self.creds: list[tuple[str, str]] = []
+        self.server: asyncio.Server | None = None
+
+    async def start(self) -> int:
+        self.server = await asyncio.start_server(self._handle, "127.0.0.1", 0)
+        return self.server.sockets[0].getsockname()[1]
+
+    async def _handle(self, r: asyncio.StreamReader, w: asyncio.StreamWriter) -> None:
+        ver, n = await r.readexactly(2)
+        methods = set(await r.readexactly(n))
+        if 2 in methods:
+            w.write(bytes([5, 2]))
+            await w.drain()
+            await r.readexactly(1)  # auth ver
+            ulen = (await r.readexactly(1))[0]
+            user = (await r.readexactly(ulen)).decode()
+            plen = (await r.readexactly(1))[0]
+            pw = (await r.readexactly(plen)).decode()
+            self.creds.append((user, pw))
+            w.write(bytes([1, 0]))
+            await w.drain()
+        else:
+            w.write(bytes([5, 0]))
+            await w.drain()
+        _ver, _cmd, _rsv, atyp = await r.readexactly(4)
+        host = (
+            await r.readexactly((await r.readexactly(1))[0])
+            if atyp == 3
+            else await r.readexactly(4 if atyp == 1 else 16)
+        )
+        await r.readexactly(2)
+        del host
+        w.write(bytes([5, 0, 0, 1]) + b"\x00\x00\x00\x00\x00\x00" + PAYLOAD)
+        await w.drain()
+        w.close()
+
+
+async def _passthrough_roundtrip(up_user, up_pass, mode, client_methods, client_creds):
+    upstream = AuthUpstream()
+    up_port = await upstream.start()
+    up = fwd.Upstream("127.0.0.1", up_port, up_user, up_pass, mode)
+    server = await asyncio.start_server(lambda r, w: fwd.handle(r, w, up), "127.0.0.1", 0)
+    local_port = server.sockets[0].getsockname()[1]
+    reader, writer = await asyncio.open_connection("127.0.0.1", local_port)
+    writer.write(bytes([5, len(client_methods)]) + bytes(client_methods))
+    await writer.drain()
+    chosen = await reader.readexactly(2)
+    if chosen[1] == 0xFF:
+        writer.close()
+        server.close()
+        upstream.server.close()  # type: ignore[union-attr]
+        return chosen, [], None
+    if chosen[1] == 2:
+        cu, cp = client_creds
+        writer.write(bytes([1, len(cu)]) + cu.encode() + bytes([len(cp)]) + cp.encode())
+        await writer.drain()
+        assert await reader.readexactly(2) == bytes([1, 0])
+    writer.write(bytes([5, 1, 0, 3, len(b"example.com")]) + b"example.com" + struct.pack("!H", 443))
+    await writer.drain()
+    reply = await reader.readexactly(4)
+    await reader.readexactly({1: 6, 3: 0, 4: 18}[reply[3]])
+    await reader.read(len(PAYLOAD))
+    writer.close()
+    server.close()
+    upstream.server.close()  # type: ignore[union-attr]
+    return chosen, upstream.creds, reply
+
+
+def test_passthrough_forwards_client_auth_with_the_token_prefix():
+    chosen, creds, reply = asyncio.run(
+        _passthrough_roundtrip(
+            "kf-tok", "profilepw", fwd.PASSTHROUGH, [0, 2], ("example.com", "nonceA")
+        )
+    )
+    assert chosen == bytes([5, 2])
+    assert reply[1] == 0
+    # The upstream saw the token + the client's username, and the client's password.
+    assert creds == [("kf-tok:example.com", "nonceA")]
+
+
+def test_passthrough_distinct_sites_get_distinct_usernames():
+    _c, creds_a, _r = asyncio.run(
+        _passthrough_roundtrip("kf-tok", "pw", fwd.PASSTHROUGH, [2], ("a.com", "n"))
+    )
+    _c, creds_b, _r = asyncio.run(
+        _passthrough_roundtrip("kf-tok", "pw", fwd.PASSTHROUGH, [2], ("b.com", "n"))
+    )
+    assert creds_a[0][0] != creds_b[0][0]
+
+
+def test_passthrough_same_site_new_nonce_keeps_user_changes_password():
+    # New Circuit for this site: same first-party, fresh nonce -> same upstream
+    # username (same circuit key) but a different password.
+    _c, creds1, _r = asyncio.run(
+        _passthrough_roundtrip("kf-tok", "pw", fwd.PASSTHROUGH, [2], ("a.com", "nonce1"))
+    )
+    _c, creds2, _r = asyncio.run(
+        _passthrough_roundtrip("kf-tok", "pw", fwd.PASSTHROUGH, [2], ("a.com", "nonce2"))
+    )
+    assert creds1[0][0] == creds2[0][0]
+    assert creds1[0][1] != creds2[0][1]
+
+
+def test_passthrough_no_auth_client_uses_the_profile_pair():
+    # dnscrypt-proxy and plain Firefox offer only NO_AUTH even in passthrough mode.
+    chosen, creds, reply = asyncio.run(
+        _passthrough_roundtrip("kf-tok", "profilepw", fwd.PASSTHROUGH, [0], None)
+    )
+    assert chosen == bytes([5, 0])
+    assert creds == [("kf-tok", "profilepw")]
+
+
+def test_inject_mode_refuses_a_userpass_only_client():
+    chosen, _creds, _reply = asyncio.run(
+        _passthrough_roundtrip("kf-tok", "pw", fwd.INJECT, [2], ("x", "y"))
+    )
+    assert chosen == bytes([5, 0xFF])
+
+
+def test_passthrough_cannot_impersonate_another_bucket():
+    # A client username that itself looks like a token still lands behind OUR token.
+    _c, creds, _r = asyncio.run(
+        _passthrough_roundtrip("kf-tok", "pw", fwd.PASSTHROUGH, [2], ("kf-other:evil", "n"))
+    )
+    assert creds[0][0].startswith("kf-tok:")
+
+
+def test_combine_user_folds_over_length():
+    long_site = "a" * 300
+    folded = fwd.combine_user("kf-tok", long_site)
+    assert len(folded.encode()) <= 255
+    assert folded == fwd.combine_user("kf-tok", long_site)  # deterministic
+    assert folded != fwd.combine_user("kf-tok", "b" * 300)  # distinct inputs differ
+
+
 @pytest.mark.parametrize("cmd", [2, 3])
 def test_bind_and_udp_associate_are_refused(cmd):
     # SOCKS5 UDP is unavailable upstream anyway; refuse rather than hang.

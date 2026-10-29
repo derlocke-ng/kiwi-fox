@@ -224,19 +224,28 @@ def gateway_spec(
     *,
     endpoint_port: int | None = None,
     network: str = "pasta",
+    socks_auth: str = "inject",
+    dns_mode: str | None = None,
 ) -> ContainerSpec:
     rt = runtime_dir(profile.id)
     secret = creds_secret_name(profile.id)
     target = f"/run/secrets/{secret}"
     volumes: list[tuple[str, str, str]] = []
+    mode = dns_mode or profile.dns.mode
     env = {
         "KF_ENDPOINT_IP": endpoint_ip,
         "KF_ENDPOINT_PORT": str(endpoint_port or profile.endpoint.port),
         "KF_FORWARDER_PORT": str(FORWARDER_PORT),
-        "KF_DNS_MODE": profile.dns.mode,
+        "KF_DNS_MODE": mode,
         "KF_CREDS_FILE": target,
     }
-    if profile.dns.mode == "resolver":
+    # The forwarder defaults to injecting the profile credential; passthrough
+    # (Tor Browser) also carries the browser's own SOCKS auth, for per-site
+    # circuits. Only set it when it differs, so every other profile's env is
+    # unchanged.
+    if socks_auth != "inject":
+        env["KF_SOCKS_AUTH"] = socks_auth
+    if mode == "resolver":
         # ",z" relabels for SELinux: without it an enforcing host denies the
         # container read access to anything under $HOME.
         volumes += [
