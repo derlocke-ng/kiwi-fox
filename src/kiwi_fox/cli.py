@@ -96,7 +96,44 @@ def _new_firefox(a: argparse.Namespace, endpoint, password) -> int:
     return 0
 
 
+def _new_torbrowser(a: argparse.Namespace, endpoint, password) -> int:
+    from .core.engines import torbrowser_fetch
+
+    given = _spoof_flags_given(a)
+    if given:
+        return _fail(
+            f"Tor Browser keeps its own uniform fingerprint, so {', '.join(given)} do not apply"
+        )
+    if endpoint.module != "tor":
+        return _fail("Tor Browser exits only through the tor provider: create it with --module tor")
+    if a.dns_mode == "resolver":
+        _p("note: Tor Browser resolves at the exit; DNS mode is remote regardless")
+    version = a.engine_version or torbrowser_fetch.latest_installed()
+    profile = store.create(
+        a.name,
+        endpoint,
+        None,
+        engine="torbrowser",
+        engine_version=version,
+        password=password,
+        dns=DnsConfig(mode="remote", upstream=a.upstream),
+    )
+    _p(f"created {profile.name}  {profile.id}")
+    if version:
+        _p(f"  engine  : Tor Browser {version}")
+    else:
+        _p("  engine  : Tor Browser (none installed — kiwi-fox engine fetch --engine torbrowser)")
+    _p("  identity: Tor Browser's own uniform fingerprint, untouched")
+    _p("  circuits: one per first-party site (New Identity / New Circuit work)")
+    if endpoint.country or endpoint.lease:
+        _p("  note    : pinning a Tor exit shrinks your anonymity set")
+    _p(f"  exit    : {endpoint.label}")
+    return 0
+
+
 def cmd_new(a: argparse.Namespace) -> int:
+    # Tor Browser produces no endpoint from a plain address — it needs the tor
+    # module — so allow `new NAME --engine torbrowser --module tor` with no ENDPOINT.
     if a.endpoint:
         endpoint, password = proxy.parse(a.endpoint)
         endpoint.module = a.module
@@ -112,6 +149,8 @@ def cmd_new(a: argparse.Namespace) -> int:
 
     if a.engine == "firefox":
         return _new_firefox(a, endpoint, password)
+    if a.engine == "torbrowser":
+        return _new_torbrowser(a, endpoint, password)
 
     version = a.engine_version or engine_fetch.preferred()
     if not version:
@@ -224,6 +263,15 @@ def _show_common(p) -> None:
 
 def cmd_show(a: argparse.Namespace) -> int:
     p = store.resolve_ref(a.ref)
+    if p.engine == "torbrowser":
+        from .core.engines import torbrowser_fetch
+
+        _show_common(p)
+        version = p.engine_version or torbrowser_fetch.latest_installed() or "none installed"
+        _p(f"  engine    Tor Browser {version}")
+        _p("  identity  Tor Browser's own uniform fingerprint, untouched")
+        _p("  circuits  one per first-party site (New Identity / New Circuit work)")
+        return 0
     if p.engine != "camoufox":
         from .core.engines import firefox_fetch
 
@@ -442,7 +490,7 @@ def cmd_engine(a: argparse.Namespace) -> int:
         return 0
 
     if a.engine_cmd == "list":
-        from .core.engines import firefox_fetch
+        from .core.engines import firefox_fetch, torbrowser_fetch
 
         any_found = False
         for v in engine_fetch.installed():
@@ -452,10 +500,13 @@ def cmd_engine(a: argparse.Namespace) -> int:
                 if engine_fetch.search_is_disabled(engine_fetch.target_dir(v))
                 else "search ok"
             )
-            _p(f"camoufox {v}  {paths.engines_dir() / f'camoufox-{v}'}  [{state}]")
+            _p(f"camoufox   {v}  {paths.engines_dir() / f'camoufox-{v}'}  [{state}]")
         for v in firefox_fetch.installed():
             any_found = True
-            _p(f"firefox  {v}  {firefox_fetch.target_dir(v)}  [signature verified]")
+            _p(f"firefox    {v}  {firefox_fetch.target_dir(v)}  [signature verified]")
+        for v in torbrowser_fetch.installed():
+            any_found = True
+            _p(f"torbrowser {v}  {torbrowser_fetch.target_dir(v)}  [signature verified]")
         if not any_found:
             _p("none installed")
         return 0
@@ -475,6 +526,18 @@ def cmd_engine(a: argparse.Namespace) -> int:
             return _fail(str(exc))
         print()
         _p(f"firefox ready at {path}")
+        return 0
+
+    if getattr(a, "engine", "camoufox") == "torbrowser":
+        from .core.engines import torbrowser_fetch
+
+        try:
+            path = torbrowser_fetch.fetch(a.version, force=a.force, progress=progress)
+        except Exception as exc:  # noqa: BLE001
+            print()
+            return _fail(str(exc))
+        print()
+        _p(f"tor browser ready at {path}")
         return 0
 
     try:
@@ -862,15 +925,18 @@ def cmd_doctor(a: argparse.Namespace) -> int:
     _p(
         f"secret-tool   {'yes' if secrets.available() else 'MISSING (credentials cannot be stored)'}"
     )
-    from .core.engines import firefox_fetch
+    from .core.engines import firefox_fetch, torbrowser_fetch
 
     engines = engine_fetch.installed()
     ff = firefox_fetch.installed()
+    tb = torbrowser_fetch.installed()
     line = f"camoufox: {', '.join(engines) or 'none'}"
     if ff:
         line += f"; firefox: {', '.join(ff)}"
-    _p(f"engines       {line}" + ("" if (engines or ff) else " — run `kiwi-fox engine fetch`"))
-    ok &= bool(engines or ff)
+    if tb:
+        line += f"; torbrowser: {', '.join(tb)}"
+    _p(f"engines       {line}" + ("" if (engines or ff or tb) else " — run `kiwi-fox engine fetch`"))
+    ok &= bool(engines or ff or tb)
     import os
 
     wayland = os.environ.get("WAYLAND_DISPLAY")
@@ -950,10 +1016,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     n.add_argument(
         "--engine",
-        choices=["camoufox", "firefox"],
+        choices=["camoufox", "firefox", "torbrowser"],
         default="camoufox",
         help="camoufox (default): a spoofed Windows identity; firefox: stock Firefox, "
-        "this machine's own values, no spoofing (fewer identity flags apply)",
+        "this machine's own values; torbrowser: Tor Browser through --module tor, a "
+        "circuit per site (no spoofing flags apply to the non-camoufox engines)",
     )
     n.add_argument("--country", help="two-letter code; probed from the exit when omitted")
     n.add_argument("--form", choices=["desktop", "laptop"], help="force the machine type")
@@ -1049,7 +1116,7 @@ def build_parser() -> argparse.ArgumentParser:
     ef.add_argument("version", nargs="?", help="e.g. 152.0.4; latest non-prerelease by default")
     ef.add_argument(
         "--engine",
-        choices=["camoufox", "firefox"],
+        choices=["camoufox", "firefox", "torbrowser"],
         default="camoufox",
         help="which engine to fetch (default camoufox)",
     )

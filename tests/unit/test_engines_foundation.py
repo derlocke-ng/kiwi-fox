@@ -105,9 +105,8 @@ def test_get_engine_firefox():
     assert get_engine("firefox").name == "firefox"
 
 
-def test_get_engine_future_engines_fail_loudly():
-    with pytest.raises(ValueError, match="not available"):
-        get_engine("torbrowser")
+def test_get_engine_torbrowser():
+    assert get_engine("torbrowser").name == "torbrowser"
 
 
 def test_get_engine_unknown():

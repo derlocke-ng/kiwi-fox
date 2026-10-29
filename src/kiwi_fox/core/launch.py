@@ -243,6 +243,26 @@ def _network_error(exc: Exception, profile: Profile) -> LaunchError:
     return LaunchError(msg)
 
 
+def check_tor_browser_exit(profile: Profile) -> None:
+    """Tor Browser exits only through the tor provider: its per-site circuits are
+    the isolation auth the forwarder passes through, and .onion resolves only at
+    a Tor exit. A plain or account endpoint would quietly lose both, so it is
+    refused — a browser rule, beside kiwi-proxy's own (passthrough needs a token)."""
+    from .engines.torbrowser import REQUIRED_MODULE
+
+    module = profile.endpoint.module
+    if module != REQUIRED_MODULE:
+        raise LaunchError(
+            "Tor Browser exits only through the tor provider module (create it with --module tor)"
+        )
+    try:
+        auth = providers.manifest_of(module).auth
+    except providers.ProviderError as exc:
+        raise _network_error(exc, profile) from exc
+    if auth != "isolation":
+        raise LaunchError("the tor provider must use isolation auth for Tor Browser")
+
+
 def exit_of(profile: Profile):
     """The profile's exit in kiwi-proxy (exit id = profile id), in line with it."""
     try:
@@ -309,6 +329,9 @@ def launch(profile: Profile, *, strict: bool = False, start_url: str | None = No
     # Only camoufox carries a fingerprint; the non-spoofing engines pass None
     # through every step below.
     fp = store.fingerprint_of(profile)
+    if profile.engine == "torbrowser":
+        # Before the pre-flight: a wrong exit is refused before anything is sent.
+        check_tor_browser_exit(profile)
 
     pre = plan(profile)
     info, notes = pre.info, list(pre.notes)

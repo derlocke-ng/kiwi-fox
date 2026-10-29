@@ -10,6 +10,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from kiwi_proxy import gateway
+
 from .. import desktop, gpu, paths
 from ..models import ContainerSpec, Profile
 
@@ -17,9 +19,10 @@ from ..models import ContainerSpec, Profile
 PROFILE_MOUNT = "/profile"
 
 # Gateway loopback services, in the netns the browser shares with the gateway.
-FORWARDER_HOST = "127.0.0.1"
-FORWARDER_PORT = 1080
-RESOLVER_HOST = "127.0.0.2"
+# kiwi-proxy's contract (docs/consumers.md): its forwarder and resolver.
+FORWARDER_HOST, _port = gateway.FORWARDER.rsplit(":", 1)
+FORWARDER_PORT = int(_port)
+RESOLVER_HOST = gateway.RESOLVER
 
 
 def accelerated(profile: Profile) -> bool:

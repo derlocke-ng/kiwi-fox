@@ -40,8 +40,8 @@ def get_engine(name: str) -> Engine:
         from .firefox import Firefox
 
         return Firefox()
-    # torbrowser is a valid EngineName but is added in a later change; until then
-    # nothing creates such a profile, so this fails loudly rather than mis-dispatch.
     if name == "torbrowser":
-        raise ValueError(f"the {name!r} engine is not available in this build yet")
+        from .torbrowser import TorBrowser
+
+        return TorBrowser()
     raise ValueError(f"unknown engine {name!r}")

@@ -32,6 +32,18 @@ if [ ! -x "$ENGINE/gfxtest" ] && [ ! -x "$ENGINE/glxtest" ]; then
     echo "browser: no GPU probe helper in the engine — drawing falls back to software" >&2
 fi
 
+# Tor Browser ships its own fonts and fontconfig and expects to run from its
+# Browser/ directory, the way start-tor-browser sets it up. Wire that without
+# start-tor-browser (which would try to write into the read-only bundle).
+if [ -n "${KF_TORBROWSER:-}" ]; then
+    tb_fc="$ENGINE/Browser/TorBrowser/Data/fontconfig"
+    if [ -f "$tb_fc/fonts.conf" ]; then
+        export FONTCONFIG_PATH="$tb_fc"
+        export FONTCONFIG_FILE="$tb_fc/fonts.conf"
+    fi
+    cd "$ENGINE/Browser" || { echo "browser: no Browser dir at $ENGINE" >&2; exit 2; }
+fi
+
 echo "browser: launching $BIN for profile $PROFILE"
 exec "$ENGINE/$BIN" \
     -profile "$PROFILE" \

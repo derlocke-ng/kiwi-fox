@@ -55,6 +55,11 @@ def create(
             raise StoreError("a camoufox profile needs a fingerprint")
     elif fingerprint is not None:
         raise StoreError(f"a {engine} profile has no fingerprint")
+    if engine == "torbrowser" and endpoint.module != "tor":
+        raise StoreError("a Tor Browser profile exits only through the tor provider (--module tor)")
+    if engine == "torbrowser":
+        # What its exit gets anyway (exit_dns); said here too, so the profile shows it.
+        dns = (dns or DnsConfig()).model_copy(update={"mode": "remote"})
     profile = Profile(
         id=str(uuid.uuid4()),
         name=name,
