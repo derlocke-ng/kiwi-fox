@@ -21,20 +21,3 @@ def running_profile(pytestconfig):
         if podman.is_running(paths.gateway_name(p.id)):
             return p
     pytest.skip("no running profile; start one with `kiwi-fox run <name>`")
-
-
-@pytest.fixture(scope="session")
-def gateway(running_profile):
-    return paths.gateway_name(running_profile.id)
-
-
-def sh(container: str, script: str) -> str:
-    return podman.exec_(container, ["sh", "-c", script]).stdout.strip()
-
-
-def dig_status(container: str, name: str) -> str:
-    out = sh(container, f"dig +time=10 @127.0.0.2 {name} 2>&1")
-    for line in out.splitlines():
-        if "status:" in line:
-            return line.split("status:")[1].split(",")[0].strip()
-    return "NO-RESPONSE"
