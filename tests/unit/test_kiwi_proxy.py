@@ -214,3 +214,101 @@ def test_kiwi_fox_module_help_is_kiwi_proxy_s(capsys):
         cli.main(["module", "--help"])
     assert stop.value.code == 0
     assert "usage: kiwi-proxy module" in capsys.readouterr().out
+
+
+# ------------------------------------------------------------------ modules
+class _FakeProvider:
+    def __init__(self):
+        self.ups = []
+
+    def up(self, ctx, *, lease=None, country=None):
+        self.ups.append((lease, country))
+        return Endpoint(host="10.89.231.5", port=9050, module="tor", lease=lease, country=country)
+
+    def leases(self, ctx):
+        return []
+
+
+def _fake_modules(monkeypatch, names=("tor",), runs_container=True):
+    from kiwi_fox.core.models import ProviderManifest
+
+    prov = _FakeProvider()
+    manifests = {
+        n: ProviderManifest(name=n, title=n.title(), runs_container=runs_container) for n in names
+    }
+    monkeypatch.setattr(providers, "discover", lambda: list(names))
+    monkeypatch.setattr(providers, "is_installed", lambda n: n in manifests)
+    monkeypatch.setattr(providers, "load", lambda n: (prov, manifests[n]))
+    monkeypatch.setattr(providers, "context_for", lambda n, m: None)
+    return prov
+
+
+def test_installed_modules_are_listed(monkeypatch):
+    from kiwi_fox.core import modules
+
+    _fake_modules(monkeypatch, ("tor", "vpn"))
+    assert [(m.name, m.title, m.produces_endpoint) for m in modules.installed()] == [
+        ("tor", "Tor", True),
+        ("vpn", "Vpn", True),
+    ]
+
+
+def test_an_endpoint_from_a_module_brings_it_up_with_lease_and_country(monkeypatch):
+    from kiwi_fox.core import modules
+
+    prov = _fake_modules(monkeypatch)
+    ep = modules.endpoint_from("tor", lease=None, country="de")
+    assert (ep.module, ep.country) == ("tor", "de")
+    assert prov.ups == [(None, "de")]
+
+
+def test_a_missing_module_names_the_app_to_install(monkeypatch):
+    from kiwi_fox.core import modules
+
+    _fake_modules(monkeypatch, ())
+    with pytest.raises(providers.ProviderError, match="kiwi install kiwi-plugin-myst"):
+        modules.endpoint_from("mysterium")
+
+
+def test_no_engine_installed_is_a_launch_error_not_a_traceback(fake_proxy, monkeypatch):
+    # engine_dir() raises RuntimeError when none of that engine is installed; the
+    # CLI only reports LaunchError and friends, so it escaped as a traceback.
+    monkeypatch.setattr(firefox_fetch, "latest_installed", lambda: None)
+    p = store.create("unpinned", _endpoint(), None, engine="firefox")
+    with pytest.raises(launch.LaunchError, match="engine fetch --engine firefox"):
+        launch.launch(p)
+
+
+def test_a_pinned_engine_that_is_gone_names_the_right_fetch(fake_proxy, monkeypatch, tmp_path):
+    monkeypatch.setattr(firefox_fetch, "target_dir", lambda v: tmp_path / f"firefox-{v}")
+    with pytest.raises(launch.LaunchError, match="engine fetch 159.0 --engine firefox"):
+        launch.launch(_firefox())
+
+
+# ------------------------------------------------- the CLI on non-camoufox profiles
+def test_set_changes_a_firefox_profile_s_name_and_dns(capsys):
+    # `set` loaded a fingerprint first, so a Firefox profile could not even be renamed.
+    from kiwi_fox import cli
+
+    _firefox("plain")
+    assert cli.main(["set", "plain", "--name", "renamed", "--dns-mode", "remote"]) == 0
+    p = store.find_by_name("renamed")
+    assert p is not None and p.dns.mode == "remote"
+    assert exits.load(p.id).name == "renamed"
+
+
+def test_set_refuses_identity_flags_on_a_firefox_profile(capsys):
+    from kiwi_fox import cli
+
+    _firefox("plain")
+    assert cli.main(["set", "plain", "--screen", "2560x1440"]) == 1
+    assert "spoofs nothing" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("argv", [["webgl", "plain"], ["fonts", "plain"], ["selfcheck", "plain"]])
+def test_camoufox_only_commands_say_why(argv, capsys):
+    from kiwi_fox import cli
+
+    _firefox("plain")
+    assert cli.main(argv) == 1
+    assert "is a Firefox profile" in capsys.readouterr().err

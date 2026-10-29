@@ -354,3 +354,102 @@ def test_main_window_constructs():
     from kiwi_fox.ui.window import Window
 
     Window()
+
+
+# ------------------------------------------------------------- engines and exits
+def _plain(name, engine, **endpoint):
+    """A non-camoufox profile, stored the way the CLI and the dialog store one."""
+    from kiwi_fox.core import store
+    from kiwi_fox.core.models import Endpoint
+
+    ep = Endpoint(**({"host": "203.0.113.4", "port": 1080} | endpoint))
+    return store.create(name, ep, None, engine=engine)
+
+
+@pytest.mark.parametrize("engine", ["firefox", "torbrowser"])
+def test_details_and_editor_open_for_a_profile_without_a_fingerprint(engine):
+    # Both dialogs loaded a fingerprint unconditionally, so a Firefox or Tor
+    # Browser profile raised "has no fingerprint" and never opened.
+    from kiwi_fox.ui.dialogs import ProfileDetails, ProfileEditor
+
+    p = _plain(f"p-{engine}", engine, host="10.89.231.5", port=9050, module="tor", country="de")
+    ProfileDetails(p)
+    editor = ProfileEditor(p)
+    assert editor._fp is None
+    assert not hasattr(editor, "graphics"), "no Windows identity to edit"
+
+
+def test_saving_a_firefox_profile_keeps_it_fingerprint_free():
+    from kiwi_fox.core import store
+    from kiwi_fox.ui.dialogs import ProfileEditor
+
+    p = _plain("ff", "firefox")
+    editor = ProfileEditor(p)
+    editor.name_row.set_text("ff-renamed")
+    editor.dns_row.set_selected(1)
+    editor._on_save()
+    saved = store.find_by_name("ff-renamed")
+    assert saved is not None and saved.dns.mode == "remote"
+    assert store.fingerprint_of(saved) is None
+
+
+def test_a_module_exit_is_shown_by_module_not_by_bridge_address():
+    from kiwi_fox.ui.dialogs import exit_label
+
+    p = _plain("t", "torbrowser", host="10.89.231.5", port=9050, module="tor", country="de")
+    assert exit_label(p) == "tor · DE"
+    assert exit_label(_plain("f", "firefox")) == "203.0.113.4:1080"
+
+
+def test_new_profile_shows_only_what_the_engine_uses():
+    from kiwi_fox.ui.dialogs import NewProfileDialog
+
+    dialog = NewProfileDialog(Adw.ApplicationWindow(), lambda p: None)
+    expect = {
+        # engine: (Windows identity + graphics, DNS)
+        "camoufox": (True, True),
+        "firefox": (False, True),
+        "torbrowser": (False, False),
+    }
+    for engine, (identity, dns) in expect.items():
+        dialog.select_engine(engine)
+        assert dialog.engine == engine
+        assert dialog.identity.get_visible() == identity, engine
+        assert dialog.graphics_group.get_visible() == identity, engine
+        assert dialog.network.get_visible() == dns, engine
+
+
+def test_tor_browser_is_held_to_the_tor_module(monkeypatch):
+    from kiwi_fox.core import modules
+    from kiwi_fox.ui import dialogs
+
+    tor = modules.Module("tor", "Tor", "exit through the Tor network", False, True)
+    vpn = modules.Module("vpn", "VPN (gluetun)", "a tunnel", True, True)
+    monkeypatch.setattr(modules, "installed", lambda: [vpn, tor])
+    monkeypatch.setattr(modules, "leases", lambda name: [])
+    dialog = dialogs.NewProfileDialog(Adw.ApplicationWindow(), lambda p: None)
+    dialog.select_module("vpn")
+    dialog.select_engine("torbrowser")
+    assert dialog.module is tor
+    assert not dialog.exit_row.get_sensitive()
+    assert dialog.create_button.get_sensitive()
+
+
+def test_tor_browser_without_the_tor_module_says_how_to_get_it(monkeypatch):
+    from kiwi_fox.core import modules
+    from kiwi_fox.ui import dialogs
+
+    monkeypatch.setattr(modules, "installed", lambda: [])
+    dialog = dialogs.NewProfileDialog(Adw.ApplicationWindow(), lambda p: None)
+    dialog.select_engine("torbrowser")
+    assert not dialog.create_button.get_sensitive()
+    assert "kiwi install kiwi-plugin-tor" in dialog.exit_note.get_subtitle()
+
+
+def test_engines_dialog_offers_each_engine():
+    from kiwi_fox.ui.dialogs import ENGINES, EnginesDialog
+
+    dialog = EnginesDialog(lambda: None)
+    assert list(dialog._rows) == ENGINES
+    labels = {e: row.button.get_label() for e, row in dialog._rows.items()}
+    assert labels == {"camoufox": "Set up", "firefox": "Download", "torbrowser": "Download"}

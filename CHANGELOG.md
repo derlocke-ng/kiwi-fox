@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.3.1
+
+The GUI and the texts catch up with 0.3.0.
+
+- **GUI for every engine and exit.** New profile chooses the browser — Camoufox,
+  Firefox or Tor Browser — and the exit: an endpoint, or an installed provider
+  module with its country and lease. The Windows identity and graphics sections
+  are Camoufox's; Tor Browser is held to the tor module.
+- **Firefox and Tor Browser profiles open in the GUI.** Details and Edit raised
+  "has no fingerprint" for them. Rows now say which browser and exit ("Tor
+  Browser · tor · DE"), and Duplicate keeps both.
+- **Browser engines** in the menu downloads and updates Firefox and Tor Browser
+  (signature-verified) and sets Camoufox up.
+- The environment check names the engines and modules the profiles need, and no
+  longer fails silently on a machine without podman.
+- **`kiwi-fox set` works on Firefox and Tor Browser profiles** (name, endpoint,
+  DNS, appearance); it loaded a fingerprint first. `webgl`, `fonts`, `selfcheck`
+  and `compare` say they are about Camoufox's Windows machine instead of "has no
+  fingerprint".
+- A missing Firefox or Tor Browser is a plain error with the right
+  `kiwi-fox engine fetch … --engine …`, not a traceback or the wrong command.
+- Texts: the install message, `setup`/`list`/`new` help and hints, the README,
+  the desktop entry and the About dialog describe three engines, provider modules
+  and kiwi-proxy. `kiwi-fox list` shows the browser.
+- New screenshots (`make screenshots` renders them from the GUI), and the GUI tests
+  run in CI.
+
 ## 0.3.0
 
 The proxy engine is its own app now: [kiwi-proxy](https://github.com/derlocke-ng/kiwi-proxy).

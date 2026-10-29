@@ -1,10 +1,12 @@
 # Kiwi-Fox
 
-Isolated Windows 11 browser identities in rootless Podman.
+Isolated browser identities in rootless Podman.
 
-Each profile is one persistent identity: its own storage, its own proxy exit, its
-own ad-blocking DNS resolver and its own frozen fingerprint. A website sees a
-coherent, ordinary Windows 11 machine, with its own region, exit and storage.
+Each profile is one persistent identity: its own storage, its own proxy exit and
+its own ad-blocking DNS resolver, in one of three browsers. In **Camoufox** (the
+default) it also has a frozen fingerprint: a website sees a coherent, ordinary
+Windows 11 machine with its own region. **Firefox** is stock Firefox, spoofing
+nothing; **Tor Browser** is Tor Browser, through Tor.
 
 For people who manage several accounts they own or are authorised to run and do
 not want those accounts cross-linked by browser fingerprint or IP.
@@ -37,6 +39,10 @@ kiwi-fox check                                   # is every profile still cohere
 kiwi-fox selfcheck work                          # measure what pages see, then audit it
 kiwi-fox-gui                                     # "Kiwi-Fox" in your app grid
 ```
+
+The GUI does all of it: **New profile** picks the browser and the exit (an endpoint
+or a provider module), **Browser engines** in the menu downloads Firefox and Tor
+Browser, and **Set up environment** is `kiwi-fox setup`.
 
 Endpoint formats: `socks5://user:pass@host:port`, `http://…`, `https://…`, and the
 vendor paste format `host:port:user:pass`.
@@ -101,7 +107,7 @@ pinned by fingerprint, and the bundle is mounted read-only and never patched.
 
 ## What a new profile is
 
-The commonest machine there is, because rare values are what detectors flag: a
+A Camoufox profile is the commonest machine there is, because rare values are what detectors flag: a
 1920x1080 screen, the fonts every Windows 11 has and no others, and this
 machine's own graphics card as Firefox on Windows words it. Region, language,
 timezone and voices follow the exit. Everything can be changed afterwards.
@@ -113,8 +119,8 @@ allows, which can be more than the claimed screen has.
 
 ## Changing a profile
 
-Everything a profile reports can be changed after it was created — in the GUI
-under **Edit…**, or:
+Everything a Camoufox profile reports can be changed after it was created — in the
+GUI under **Edit…**, or:
 
 ```
 kiwi-fox set work --screen 2560x1440 --cores 12
@@ -129,9 +135,12 @@ Edits are checked together and nothing is saved unless the result is coherent. O
 thing is not there because it does not exist: the Windows version. Firefox sends
 the same user agent on Windows 10 and 11.
 
+A Firefox or Tor Browser profile spoofs nothing, so only its name, endpoint, DNS
+and (Firefox) appearance change: `kiwi-fox set plain --name other --dns-mode remote`.
+
 ## Graphics
 
-Firefox does not tell a page which graphics card you have. It reports the *group*
+This and the next section are about Camoufox profiles. Firefox does not tell a page which graphics card you have. It reports the *group*
 the card is in, with the same text for every card in the group — an RTX 4060 on
 real Windows reads `ANGLE (NVIDIA, NVIDIA GeForce GTX 980 Direct3D11 vs_5_0
 ps_5_0), or similar`, and so do a GTX 1650 and an RTX 4090. That text is what a
@@ -171,7 +180,7 @@ tried if the machine has one, and the measurement says whether that worked.
 
 ## Language
 
-A profile is the Firefox of its region: a Dutch profile is a Dutch Firefox, with
+A Camoufox profile is the Firefox of its region: a Dutch profile is a Dutch Firefox, with
 Dutch menus, Dutch form messages, `nl, en-US, en` as its languages and Dutch date
 formats — the list and the `Accept-Language` header are the ones that build of
 Firefox ships with. The language pack comes from Mozilla on first launch.
@@ -225,8 +234,9 @@ the new version changed what they are built from, and does nothing otherwise.
 
 GPL-3.0-or-later — see [LICENSE](LICENSE).
 
-The browser engine is [Camoufox](https://github.com/daijro/camoufox) (MPL-2.0),
-pinned and fetched at setup time, never redistributed here. Three small pieces
+The browser engines — [Camoufox](https://github.com/daijro/camoufox) (MPL-2.0),
+Mozilla's Firefox and the Tor Project's Tor Browser — are fetched at setup or on
+request, never redistributed here. Three small pieces
 derived from MPL-2.0 sources are included and stay under that licence:
 
 - `src/kiwi_fox/core/fingerprint/data/webgl-windows.json` — WebGL records of real

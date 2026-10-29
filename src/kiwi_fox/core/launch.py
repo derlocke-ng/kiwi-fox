@@ -340,7 +340,10 @@ def launch(profile: Profile, *, strict: bool = False, start_url: str | None = No
     from .fingerprint.validator import check_network_prefs
 
     prefs = engine.prefs(fp, profile)  # type: ignore[attr-defined]
-    engine_dir = engine.engine_dir(profile, fp)  # type: ignore[attr-defined]
+    try:
+        engine_dir = engine.engine_dir(profile, fp)  # type: ignore[attr-defined]
+    except RuntimeError as exc:  # none of that engine installed: say so, plainly
+        raise LaunchError(str(exc)) from exc
     binary = engine.binary  # type: ignore[attr-defined]
 
     if profile.gpu_accel and gpu.measurement() is None and (engine_dir / binary).exists():
@@ -399,8 +402,12 @@ def launch(profile: Profile, *, strict: bool = False, start_url: str | None = No
         )
 
     if not (engine_dir / binary).exists():
-        hint = fp.engine_version if (profile.engine == "camoufox" and fp) else profile.engine
-        raise LaunchError(f"engine missing at {engine_dir}; run `kiwi-fox engine fetch {hint}`")
+        if profile.engine == "camoufox" and fp:
+            hint = f"kiwi-fox engine fetch {fp.engine_version}"
+        else:
+            version = f" {profile.engine_version}" if profile.engine_version else ""
+            hint = f"kiwi-fox engine fetch{version} --engine {profile.engine}"
+        raise LaunchError(f"engine missing at {engine_dir}; run `{hint}`")
 
     write_user_js(profile, fp)
     if profile.engine == "camoufox":

@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "kiwi-fox"
-version = "0.3.0"
-description = "Isolated Windows 11 browser identities in rootless Podman"
+version = "0.3.1"
+description = "Isolated browser identities in rootless Podman: Camoufox (a spoofed Windows 11), Firefox or Tor Browser"
 requires-python = ">=3.12"
 license = { text = "GPL-3.0-or-later" }
 dependencies = ["pydantic>=2.6"]

@@ -85,12 +85,22 @@ EOF
 
     echo "installed $APP to $KIWI_PREFIX"
     echo
-    echo "First run needs one command — it builds the container images, downloads the"
-    echo "browser engine and, through kiwi-proxy, fetches the DNS data:"
+    echo "First run:  $APP setup"
+    echo "  the browser image and Camoufox (~630 MB), then kiwi-proxy's setup: the"
+    echo "  gateway image, DNS data and the images of any provider modules"
     echo
-    echo "    $APP setup"
+    if [[ "${KIWI_GUI:-1}" == 1 ]]; then
+        echo "Then create a profile in Kiwi-Fox (app grid, or $APP-gui), or here:"
+    else
+        echo "Then create a profile:"
+    fi
+    echo "  $APP new work socks5://user:pass@host:port       Camoufox, a Windows 11 identity"
+    echo "  $APP new work --module tor --country de          through a provider module"
+    echo "  $APP new plain HOST:PORT --engine firefox        stock Firefox"
+    echo "  $APP new anon --engine torbrowser --module tor   Tor Browser"
     echo
-    echo "Then create an identity:  $APP new work socks5://host:port"
+    echo "Firefox / Tor Browser:  $APP engine fetch --engine firefox   (or torbrowser)"
+    echo "Provider modules:       kiwi install kiwi-plugin-tor   (or -vpn, -9proxy, -myst)"
 }
 
 do_update() { do_install; }

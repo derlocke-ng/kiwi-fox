@@ -7,11 +7,12 @@ import gi
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 
-from gi.repository import Adw, Gtk  # noqa: E402
+from gi.repository import Adw, GLib, Gtk  # noqa: E402
 from kiwi_proxy import dns, exits  # noqa: E402
 from kiwi_proxy import endpoint as proxy  # noqa: E402
 
-from ..core import geometry, launch, secrets, store  # noqa: E402
+from ..core import geometry, launch, modules, paths, secrets, store  # noqa: E402
+from ..core.engines import TITLES, installed_versions  # noqa: E402
 from ..core.engines import fetch as engine_fetch  # noqa: E402
 from ..core.engines.camoufox import webgl_report  # noqa: E402
 from ..core.fingerprint import (  # noqa: E402
@@ -24,10 +25,40 @@ from ..core.fingerprint import (  # noqa: E402
 from ..core.fingerprint import windows11 as w11  # noqa: E402
 from ..core.fingerprint.validator import check_webgl_mode, check_window_fits, errors  # noqa: E402
 from ..core.models import DnsConfig  # noqa: E402
-from ..core.paths import profile_dir  # noqa: E402
 from . import worker  # noqa: E402
 
 COUNTRIES = ["(from the exit)", "DE", "AT", "CH", "NL", "SE", "FR", "FI", "NO", "DK", "GB", "US"]
+
+# The three browsers a profile can run, in the order they are offered.
+ENGINES = ["camoufox", "firefox", "torbrowser"]
+ENGINE_ABOUT = {
+    "camoufox": "A spoofed, frozen Windows 11 machine: websites see an ordinary Windows PC "
+    "with its own region, screen and graphics card.",
+    "firefox": "Stock Firefox, nothing spoofed: websites see this machine's own values. Less "
+    "unique, and nothing faked that could slip.",
+    "torbrowser": "The Tor Browser bundle, unmodified, through the tor module: Tor Browser's "
+    "own uniform fingerprint and a circuit per site.",
+}
+ENGINE_IDENTITY = {
+    "firefox": "None — this machine's own Firefox, nothing spoofed",
+    "torbrowser": "Tor Browser's own uniform fingerprint, untouched",
+}
+
+
+def exit_label(profile) -> str:
+    return modules.exit_label(profile.endpoint)
+
+
+def engine_version(profile, fp=None) -> str:
+    """The engine version a profile runs, as text."""
+    if fp is not None:
+        return fp.engine_version
+    have = installed_versions(profile.engine)
+    if profile.engine_version:
+        installed = profile.engine_version in have
+        return profile.engine_version + ("" if installed else " (not installed)")
+    return f"{have[-1]} (newest installed)" if have else "not installed"
+
 
 # One control decides what a page is told about the graphics card. Each choice
 # shows only what it needs underneath, and one row always says, in plain words,
@@ -253,50 +284,80 @@ def describe_graphics(profile, fp) -> str:
 
 
 class NewProfileDialog(Adw.Dialog):
-    """Create one identity. The exit is probed first so locale and timezone can
-    be drawn to match it rather than guessed."""
+    """Create one identity: which browser, where it exits, and — for Camoufox —
+    the Windows machine it claims to be. A plain exit is probed first, so locale
+    and timezone can be drawn to match it rather than guessed."""
 
     def __init__(self, parent: Adw.ApplicationWindow, on_created) -> None:
-        super().__init__(title="New profile", content_width=640, content_height=760)
+        super().__init__(title="New profile", content_width=640, content_height=780)
         self._parent = parent
         self._on_created = on_created
+        # Only modules that produce an endpoint of their own can be an exit here.
+        self._modules = [m for m in modules.installed() if m.produces_endpoint]
+        self._leases: list = []
 
         page = Adw.PreferencesPage()
-        identity = Adw.PreferencesGroup(title="Identity")
+        profile = Adw.PreferencesGroup(title="Profile")
         self.name_row = Adw.EntryRow(title="Name")
-        identity.add(self.name_row)
+        profile.add(self.name_row)
+        self.engine_row = Adw.ComboRow(title="Browser")
+        self.engine_row.set_model(Gtk.StringList.new([TITLES[e] for e in ENGINES]))
+        self.engine_row.set_subtitle_lines(0)
+        profile.add(self.engine_row)
+        self.engine_state = Adw.ActionRow(title="Installed", use_markup=False)
+        profile.add(self.engine_state)
+        page.add(profile)
 
+        # -------------------------------------------------------------- exit
+        exit_group = Adw.PreferencesGroup(
+            title="Exit", description="Where this profile's traffic leaves — the only route it has."
+        )
+        self.exit_row = Adw.ComboRow(title="Exit through")
+        self.exit_row.set_model(
+            Gtk.StringList.new(["A SOCKS5 endpoint", *[m.title for m in self._modules]])
+        )
+        exit_group.add(self.exit_row)
         self.endpoint_row = Adw.EntryRow(title="SOCKS5 endpoint")
         self.endpoint_row.set_text("10.64.0.1:1080")
-        identity.add(self.endpoint_row)
+        exit_group.add(self.endpoint_row)
+        self.exit_country_row = Adw.EntryRow(title="Exit country (two letters, optional)")
+        exit_group.add(self.exit_country_row)
+        self.lease_row = Adw.ComboRow(title="Which exit")
+        exit_group.add(self.lease_row)
+        self.exit_note = Adw.ActionRow(use_markup=False)
+        self.exit_note.set_subtitle_lines(0)
+        exit_group.add(self.exit_note)
+        page.add(exit_group)
 
+        # ---------------------------------------------- the Windows identity
+        self.identity = Adw.PreferencesGroup(title="Identity")
         self.country_row = Adw.ComboRow(
             title="Region", subtitle="locale and timezone are drawn to match"
         )
         self.country_row.set_model(Gtk.StringList.new(COUNTRIES))
-        identity.add(self.country_row)
+        self.identity.add(self.country_row)
 
         self.form_row = Adw.ComboRow(title="Machine")
         self.form_row.set_model(Gtk.StringList.new(["(random)", "desktop", "laptop"]))
-        identity.add(self.form_row)
+        self.identity.add(self.form_row)
 
         self.language_row = Adw.ComboRow(
             title="Browser language",
             subtitle="the region's own Firefox, or an English one used there",
         )
         self.language_row.set_model(Gtk.StringList.new([label for _key, label in LANGUAGES]))
-        identity.add(self.language_row)
-        page.add(identity)
+        self.identity.add(self.language_row)
+        page.add(self.identity)
 
-        graphics = Adw.PreferencesGroup(
+        self.graphics_group = Adw.PreferencesGroup(
             title="Graphics",
             description="Firefox tells a page the series a card belongs to, never the "
             "card. Can be changed later.",
         )
-        self.graphics = GraphicsChooser(graphics)
-        page.add(graphics)
+        self.graphics = GraphicsChooser(self.graphics_group)
+        page.add(self.graphics_group)
 
-        network = Adw.PreferencesGroup(
+        self.network = Adw.PreferencesGroup(
             title="DNS",
             description="The resolver runs in the profile's own namespace and its "
             "upstream leaves through the same exit as the traffic.",
@@ -305,11 +366,12 @@ class NewProfileDialog(Adw.Dialog):
         self.dns_row.set_model(
             Gtk.StringList.new(["resolver (ad-blocking)", "remote (at the proxy)"])
         )
-        network.add(self.dns_row)
+        self.network.add(self.dns_row)
         self.upstream_row = Adw.ComboRow(title="Upstream")
         self.upstream_row.set_model(Gtk.StringList.new(sorted(dns.UPSTREAMS)))
-        network.add(self.upstream_row)
-        page.add(network)
+        self.upstream_row.set_selected(sorted(dns.UPSTREAMS).index(dns.DEFAULT_UPSTREAM))
+        self.network.add(self.upstream_row)
+        page.add(self.network)
 
         self.status = Adw.PreferencesGroup()
         self.status_label = Gtk.Label(wrap=True, xalign=0, visible=False)
@@ -331,13 +393,106 @@ class NewProfileDialog(Adw.Dialog):
         view.set_content(page)
         self.set_child(view)
 
+        self.engine_row.connect("notify::selected", self._on_engine)
+        self.exit_row.connect("notify::selected", self._on_exit)
+        self._on_engine()
+
+    # ------------------------------------------------------------- choices
+    @property
+    def engine(self) -> str:
+        return ENGINES[self.engine_row.get_selected()]
+
+    def select_engine(self, engine: str) -> None:
+        self.engine_row.set_selected(ENGINES.index(engine))
+
+    @property
+    def module(self):
+        """The chosen provider module, or None for a SOCKS5 endpoint."""
+        index = self.exit_row.get_selected()
+        return self._modules[index - 1] if index > 0 else None
+
+    def select_module(self, name: str | None) -> None:
+        names = [m.name for m in self._modules]
+        self.exit_row.set_selected(names.index(name) + 1 if name in names else 0)
+
+    def _on_engine(self, *_args) -> None:
+        engine = self.engine
+        self.engine_row.set_subtitle(ENGINE_ABOUT[engine])
+        have = installed_versions(engine)
+        if have:
+            self.engine_state.set_subtitle(f"{TITLES[engine]} {have[-1]}")
+        elif engine == "camoufox":
+            self.engine_state.set_subtitle("Not yet — run “Set up environment” from the menu")
+        else:
+            self.engine_state.set_subtitle(
+                "Not yet — the profile can be created now; download it under "
+                "“Browser engines” in the menu before launching"
+            )
+        camoufox = engine == "camoufox"
+        self.identity.set_visible(camoufox)
+        self.graphics_group.set_visible(camoufox)
+        # Tor Browser resolves every name at the exit (.onion has no local answer).
+        self.network.set_visible(engine != "torbrowser")
+        if engine == "torbrowser":
+            # Tor Browser exits only through the tor module, whose circuits it keys.
+            self.select_module("tor")
+        self.exit_row.set_sensitive(engine != "torbrowser")
+        self._on_exit()
+
+    def _on_exit(self, *_args) -> None:
+        module = self.module
+        self.endpoint_row.set_visible(module is None)
+        self.exit_country_row.set_visible(module is not None)
+        self.lease_row.set_visible(False)
+        blocked = False
+        if self.engine == "torbrowser" and (module is None or module.name != "tor"):
+            note = (
+                "Tor Browser exits only through the tor module, which is not installed: "
+                f"{modules.install_hint('tor')}"
+            )
+            blocked = True
+        elif module is None:
+            note = "host:port, socks5://user:pass@host:port, or host:port:user:pass"
+            if not self._modules:
+                note += (
+                    ". Provider modules give a profile Tor, a VPN, 9proxy or Mysterium "
+                    "as its exit instead: kiwi install kiwi-plugin-tor (or -vpn, -9proxy, -myst)"
+                )
+        else:
+            note = module.description or module.title
+            if module.needs_account:
+                note += " · needs an account with the provider"
+            if self.engine == "torbrowser":
+                note += " · pinning a country shrinks your anonymity set"
+            self._load_leases(module.name)
+        self.exit_note.set_title("Endpoint" if module is None else module.title)
+        self.exit_note.set_subtitle(note)
+        self.create_button.set_sensitive(not blocked)
+
+    def _load_leases(self, name: str) -> None:
+        def work():
+            return modules.leases(name)
+
+        def done(leases) -> None:
+            if self.module is None or self.module.name != name:
+                return  # another choice was made meanwhile
+            self._leases = list(leases)
+            labels = ["the module's default"] + [
+                " ".join(x for x in (lease.label or lease.id, lease.country, lease.city) if x)
+                for lease in self._leases
+            ]
+            self.lease_row.set_model(Gtk.StringList.new(labels))
+            self.lease_row.set_visible(bool(self._leases))
+
+        worker.run(work, done, lambda _exc: None)  # no leases to offer is not an error
+
     def _say(self, text: str) -> None:
         self.status_label.set_text(text)
         self.status_label.set_visible(bool(text))
 
+    # -------------------------------------------------------------- create
     def _on_create(self, *_args) -> None:
         name = self.name_row.get_text().strip()
-        spec = self.endpoint_row.get_text().strip()
         if not name:
             self._say("Give the profile a name.")
             return
@@ -347,19 +502,36 @@ class NewProfileDialog(Adw.Dialog):
         if exits.find_by_name(name):
             self._say(f"kiwi-proxy already has an exit named {name!r}; pick another name.")
             return
-        try:
-            endpoint, password = proxy.parse(spec)
-        except proxy.ProxyError as exc:
-            self._say(str(exc))
-            return
-        if problem := self.graphics.problem():
-            self._say(f"Graphics: {problem}")
-            return
+        engine, module = self.engine, self.module
+        endpoint = password = None
+        exit_country = lease = None
+        if module is None:
+            try:
+                endpoint, password = proxy.parse(self.endpoint_row.get_text().strip())
+            except proxy.ProxyError as exc:
+                self._say(str(exc))
+                return
+        else:
+            exit_country = self.exit_country_row.get_text().strip().lower() or None
+            if exit_country and not (len(exit_country) == 2 and exit_country.isalpha()):
+                self._say("The exit country is a two-letter code, like DE or SE.")
+                return
+            index = self.lease_row.get_selected()
+            if self.lease_row.get_visible() and index > 0:
+                lease = self._leases[index - 1].id
 
-        version = engine_fetch.preferred()
-        if not version:
-            self._say("No engine installed yet — run Setup first.")
-            return
+        version = None
+        if engine == "camoufox":
+            if problem := self.graphics.problem():
+                self._say(f"Graphics: {problem}")
+                return
+            version = engine_fetch.preferred()
+            if not version:
+                self._say("Camoufox is not installed yet — run “Set up environment” first.")
+                return
+        else:
+            have = installed_versions(engine)
+            version = have[-1] if have else None
 
         country = COUNTRIES[self.country_row.get_selected()]
         country = None if country.startswith("(") else country
@@ -371,17 +543,40 @@ class NewProfileDialog(Adw.Dialog):
         upstream = sorted(dns.UPSTREAMS)[self.upstream_row.get_selected()]
 
         self.create_button.set_sensitive(False)
-        self._say("Probing the exit…")
+        if module is not None:
+            self._say(f"Bringing {module.title} up…")
+        else:
+            self._say("Probing the exit…" if engine == "camoufox" else "Creating the profile…")
+
+        def say(text: str) -> None:
+            GLib.idle_add(self._say, text)
 
         def work():
-            probed = country
-            exit_info = None
-            if probed is None:
+            ep, exit_info = endpoint, None
+            if module is not None:
+                ep = modules.endpoint_from(module.name, lease=lease, country=exit_country)
+            dns_cfg = DnsConfig(mode=mode, upstream=upstream)
+            if engine != "camoufox":
+                return store.create(
+                    name,
+                    ep,
+                    None,
+                    engine=engine,  # type: ignore[arg-type]
+                    engine_version=version,
+                    password=password,
+                    dns=dns_cfg,
+                ), None
+            probed = country or (exit_country.upper() if exit_country else None)
+            if probed is None and module is None:
+                # A provider sits on a bridge the host cannot reach; only a plain
+                # exit can be probed from here.
+                say("Probing the exit…")
                 try:
-                    exit_info = proxy.preflight(endpoint, password)
+                    exit_info = proxy.preflight(ep, password)
                     probed = exit_info.country
                 except Exception:  # noqa: BLE001 - fall back to a default region
                     probed = None
+            say("Drawing the identity…")
             fp = generate(
                 engine_version=version,
                 country=probed,
@@ -393,18 +588,12 @@ class NewProfileDialog(Adw.Dialog):
             others = [
                 store.load_fingerprint(p.id)
                 for p in store.list_profiles()
-                if (profile_dir(p.id) / "fingerprint.json").exists()
+                if (paths.profile_dir(p.id) / "fingerprint.json").exists()
             ]
             issues += validate_against(fp, others)
             if hard := errors(issues):
                 raise RuntimeError("; ".join(str(i) for i in hard))
-            profile = store.create(
-                name,
-                endpoint,
-                fp,
-                password=password,
-                dns=DnsConfig(mode=mode, upstream=upstream),
-            )
+            profile = store.create(name, ep, fp, password=password, dns=dns_cfg)
             for field, value in graphics.items():
                 setattr(profile, field, value)
             profile.language = language  # type: ignore[assignment]
@@ -448,13 +637,15 @@ class ProfileEditor(Adw.Dialog):
 
     Nothing is saved unless the whole result is coherent: the same check a launch
     runs. What is not here is not settable — the Windows version, because Firefox
-    sends the same user agent for 10 and 11.
+    sends the same user agent for 10 and 11. Firefox and Tor Browser profiles
+    spoof nothing, so only their name, exit and DNS are here.
     """
 
     def __init__(self, profile, on_saved=None) -> None:
         super().__init__(title=f"Edit {profile.name}", content_width=660, content_height=780)
         self._profile = profile
-        self._fp = fp = store.load_fingerprint(profile.id)
+        engine = profile.engine
+        self._fp = fp = store.fingerprint_of(profile)
         self._on_saved = on_saved
         page = Adw.PreferencesPage()
 
@@ -466,16 +657,25 @@ class ProfileEditor(Adw.Dialog):
         self.name_row = Adw.EntryRow(title="Name")
         self.name_row.set_text(profile.name)
         group.add(self.name_row)
-        self._endpoint_before = profile.endpoint.label
+        group.add(_row("Browser", f"{TITLES[engine]} {engine_version(profile, fp)}"))
+        self._endpoint_before = f"{profile.endpoint.host}:{profile.endpoint.port}"
         self.endpoint_row = Adw.EntryRow(title="SOCKS5 endpoint")
         self.endpoint_row.set_text(self._endpoint_before)
-        group.add(self.endpoint_row)
+        if profile.endpoint.module:
+            # A module made this endpoint (an address on its bridge), so it is not
+            # typed in; a different module or country is a new identity.
+            exit_row = _row(
+                "Exit", f"{exit_label(profile)} — set by the {profile.endpoint.module} module"
+            )
+            exit_row.set_subtitle_lines(0)
+            group.add(exit_row)
+        else:
+            group.add(self.endpoint_row)
         self.dns_row = _combo(
             "DNS",
             ["resolver (ad-blocking)", "remote (at the proxy)"],
             int(profile.dns.mode == "remote"),
         )
-        group.add(self.dns_row)
         self._upstreams = sorted(dns.UPSTREAMS)
         self.upstream_row = _combo(
             "DNS upstream",
@@ -484,16 +684,46 @@ class ProfileEditor(Adw.Dialog):
             if profile.dns.upstream in self._upstreams
             else 0,
         )
-        group.add(self.upstream_row)
+        if engine == "torbrowser":
+            group.add(_row("DNS", "at the exit — Tor resolves every name, .onion included"))
+        else:
+            group.add(self.dns_row)
+            group.add(self.upstream_row)
         self.appearance_row = _combo(
             "Appearance",
             [label for _key, label in APPEARANCES],
             [key for key, _label in APPEARANCES].index(profile.appearance),
             "light or dark, for the browser and for what pages are told",
         )
-        group.add(self.appearance_row)
+        if engine != "torbrowser":  # Tor Browser keeps its own look
+            group.add(self.appearance_row)
         page.add(group)
+        if fp is not None:
+            self._build_identity(page, profile, fp)
+        else:
+            page.add(_note_group("Identity", ENGINE_IDENTITY[engine]))
 
+        status = Adw.PreferencesGroup()
+        self.status_label = Gtk.Label(wrap=True, xalign=0, visible=False)
+        self.status_label.add_css_class("dim-label")
+        status.add(self.status_label)
+        page.add(status)
+
+        header = Adw.HeaderBar(show_end_title_buttons=False, show_start_title_buttons=False)
+        cancel = Gtk.Button(label="Cancel")
+        cancel.connect("clicked", lambda *_: self.close())
+        header.pack_start(cancel)
+        self.save_button = Gtk.Button(label="Save")
+        self.save_button.add_css_class("suggested-action")
+        self.save_button.connect("clicked", self._on_save)
+        header.pack_end(self.save_button)
+        view = Adw.ToolbarView()
+        view.add_top_bar(header)
+        view.set_content(page)
+        self.set_child(view)
+
+    def _build_identity(self, page: Adw.PreferencesPage, profile, fp) -> None:
+        """The Windows machine a Camoufox profile claims to be."""
         # ------------------------------------------------------------ machine
         group = Adw.PreferencesGroup(title="Machine")
         self.form_row = _combo("Kind", FORMS, FORMS.index(fp.form_factor))
@@ -597,25 +827,6 @@ class ProfileEditor(Adw.Dialog):
         page.add(group)
         self._on_ua()
 
-        status = Adw.PreferencesGroup()
-        self.status_label = Gtk.Label(wrap=True, xalign=0, visible=False)
-        self.status_label.add_css_class("dim-label")
-        status.add(self.status_label)
-        page.add(status)
-
-        header = Adw.HeaderBar(show_end_title_buttons=False, show_start_title_buttons=False)
-        cancel = Gtk.Button(label="Cancel")
-        cancel.connect("clicked", lambda *_: self.close())
-        header.pack_start(cancel)
-        self.save_button = Gtk.Button(label="Save")
-        self.save_button.add_css_class("suggested-action")
-        self.save_button.connect("clicked", self._on_save)
-        header.pack_end(self.save_button)
-        view = Adw.ToolbarView()
-        view.add_top_bar(header)
-        view.set_content(page)
-        self.set_child(view)
-
     # ------------------------------------------------------------- widgets
     def _fill_screens(self, form: str, current: tuple[int, int]) -> None:
         self._screens = edit.screen_choices(form)
@@ -683,36 +894,39 @@ class ProfileEditor(Adw.Dialog):
             return self._say("Give the profile a name.")
         if name != profile.name and store.find_by_name(name):
             return self._say(f"A profile named {name!r} already exists.")
-        if problem := self.graphics.problem():
-            return self._say(f"Graphics: {problem}")
-        try:
-            new = self._fingerprint()
-        except edit.EditError as exc:
-            return self._say(str(exc))
-        if hard := errors(validate(new, engine_version=new.engine_version)):
-            return self._say("Not saved: " + "; ".join(i.message for i in hard))
-
-        updates: dict[str, object] = {"name": name, **self.graphics.value()}
-        updates["appearance"] = APPEARANCES[self.appearance_row.get_selected()][0]
-        updates["language"] = LANGUAGES[self.language_row.get_selected()][0]
-        ua = self.ua_row.get_text().strip()
-        updates["user_agent"] = ua if ua and ua != new.ua else None
-        updates["dns"] = profile.dns.model_copy(
-            update={
-                "mode": "remote" if self.dns_row.get_selected() else "resolver",
-                "upstream": self._upstreams[self.upstream_row.get_selected()],
-            }
-        )
+        updates: dict[str, object] = {"name": name}
+        new = self._fp
+        if self._fp is not None:
+            if problem := self.graphics.problem():
+                return self._say(f"Graphics: {problem}")
+            try:
+                new = self._fingerprint()
+            except edit.EditError as exc:
+                return self._say(str(exc))
+            if hard := errors(validate(new, engine_version=new.engine_version)):
+                return self._say("Not saved: " + "; ".join(i.message for i in hard))
+            updates.update(self.graphics.value())
+            updates["language"] = LANGUAGES[self.language_row.get_selected()][0]
+            ua = self.ua_row.get_text().strip()
+            updates["user_agent"] = ua if ua and ua != new.ua else None
+        if profile.engine != "torbrowser":
+            updates["appearance"] = APPEARANCES[self.appearance_row.get_selected()][0]
+            updates["dns"] = profile.dns.model_copy(
+                update={
+                    "mode": "remote" if self.dns_row.get_selected() else "resolver",
+                    "upstream": self._upstreams[self.upstream_row.get_selected()],
+                }
+            )
         password = None
         spec = self.endpoint_row.get_text().strip()
-        if spec != self._endpoint_before:
+        if not profile.endpoint.module and spec != self._endpoint_before:
             try:
                 updates["endpoint"], password = proxy.parse(spec)
             except proxy.ProxyError as exc:
                 return self._say(str(exc))
 
         saved = profile.model_copy(update=updates)
-        if new != self._fp:
+        if new is not None and new != self._fp:
             store.save_fingerprint(profile.id, new)
         store.save(saved)
         if password:
@@ -729,17 +943,47 @@ class ProfileDetails(Adw.Dialog):
         super().__init__(title=profile.name, content_width=640, content_height=680)
         self._profile = profile
         self._on_changed = on_changed
-        fp = store.load_fingerprint(profile.id)
+        fp = store.fingerprint_of(profile)
         page = Adw.PreferencesPage()
 
+        browser = Adw.PreferencesGroup(title="Browser")
+        browser.add(_row("Engine", f"{TITLES[profile.engine]} {engine_version(profile, fp)}"))
+        if fp is None:
+            browser.add(_row("Fingerprint", ENGINE_IDENTITY[profile.engine]))
+        if profile.engine == "torbrowser":
+            browser.add(
+                _row("Circuits", "one per first-party site; New Identity and New Circuit work")
+            )
+        else:
+            browser.add(_row("Appearance", dict(APPEARANCES)[profile.appearance]))
+        page.add(browser)
+
         net = Adw.PreferencesGroup(title="Network")
-        net.add(_row("Endpoint", profile.endpoint.label))
-        net.add(_row("DNS", f"{profile.dns.mode} via {profile.dns.upstream}"))
+        net.add(_row("Exit", exit_label(profile)))
+        if profile.engine == "torbrowser":
+            net.add(_row("DNS", "at the exit — Tor resolves every name, .onion included"))
+        else:
+            net.add(_row("DNS", f"{profile.dns.mode} via {profile.dns.upstream}"))
         if profile.last_exit:
             e = profile.last_exit
             net.add(_row("Last exit", f"{e.ip}  {e.country or '?'} {e.city or ''}  {e.asn or ''}"))
+        net.add(_row("Gateway", f"{paths.gateway_name(profile.id)} (kiwi-proxy)"))
         page.add(net)
 
+        if fp is not None:
+            self._add_identity(page, profile, fp)
+
+        header = Adw.HeaderBar()
+        edit_button = Gtk.Button(label="Edit…")
+        edit_button.connect("clicked", self._on_edit)
+        header.pack_start(edit_button)
+        view = Adw.ToolbarView()
+        view.add_top_bar(header)
+        view.set_content(page)
+        self.set_child(view)
+
+    def _add_identity(self, page: Adw.PreferencesPage, profile, fp) -> None:
+        """The Windows machine a Camoufox profile claims to be."""
         machine = Adw.PreferencesGroup(
             title="Machine", description="Frozen at creation; regenerating is deliberate."
         )
@@ -766,9 +1010,7 @@ class ProfileDetails(Adw.Dialog):
 
         ident = Adw.PreferencesGroup(title="Identity")
         ident.add(_row("User agent", profile.user_agent or fp.ua))
-        ident.add(_row("Appearance", dict(APPEARANCES)[profile.appearance]))
         ident.add(_row("Locale", f"{fp.locale} / {fp.timezone}"))
-        ident.add(_row("Engine", f"camoufox {fp.engine_version}"))
         ident.add(_row("Seed", fp.seed))
         page.add(ident)
 
@@ -783,15 +1025,6 @@ class ProfileDetails(Adw.Dialog):
         )
         page.add(limits)
 
-        header = Adw.HeaderBar()
-        edit_button = Gtk.Button(label="Edit…")
-        edit_button.connect("clicked", self._on_edit)
-        header.pack_start(edit_button)
-        view = Adw.ToolbarView()
-        view.add_top_bar(header)
-        view.set_content(page)
-        self.set_child(view)
-
     def _on_edit(self, *_args) -> None:
         parent = self.get_root()
 
@@ -803,7 +1036,85 @@ class ProfileDetails(Adw.Dialog):
         ProfileEditor(self._profile, saved).present(parent)
 
 
+class EnginesDialog(Adw.Dialog):
+    """The browsers on this machine, and getting the ones that are not."""
+
+    def __init__(self, on_setup) -> None:
+        super().__init__(title="Browser engines", content_width=600, content_height=440)
+        self._on_setup = on_setup
+        page = Adw.PreferencesPage()
+        group = Adw.PreferencesGroup(
+            description="Each profile runs one of these, mounted read-only. Firefox and Tor "
+            "Browser are checked against their publishers' signing keys before they are "
+            "installed."
+        )
+        self._rows: dict[str, Adw.ActionRow] = {}
+        for engine in ENGINES:
+            row = Adw.ActionRow(title=TITLES[engine], use_markup=False)
+            row.set_subtitle_lines(0)
+            button = Gtk.Button(valign=Gtk.Align.CENTER)
+            button.connect("clicked", self._on_get, engine)
+            row.add_suffix(button)
+            row.button = button  # type: ignore[attr-defined]
+            group.add(row)
+            self._rows[engine] = row
+        page.add(group)
+
+        view = Adw.ToolbarView()
+        view.add_top_bar(Adw.HeaderBar())
+        view.set_content(page)
+        self.set_child(view)
+        self._refresh()
+
+    def _refresh(self) -> None:
+        for engine, row in self._rows.items():
+            have = installed_versions(engine)
+            about = ENGINE_ABOUT[engine]
+            row.set_subtitle(f"{', '.join(have)} installed\n{about}" if have else about)
+            button = row.button  # type: ignore[attr-defined]
+            if engine == "camoufox":
+                # Camoufox arrives with setup, which also adjusts it to behave like Firefox.
+                button.set_label("Set up")
+                button.set_visible(not have)
+            else:
+                button.set_label("Update" if have else "Download")
+            button.set_sensitive(True)
+
+    def _on_get(self, button: Gtk.Button, engine: str) -> None:
+        if engine == "camoufox":
+            self.close()
+            self._on_setup()
+            return
+        from ..core.engines import firefox_fetch, torbrowser_fetch
+
+        fetcher = firefox_fetch if engine == "firefox" else torbrowser_fetch
+        row = self._rows[engine]
+        button.set_sensitive(False)
+        row.set_subtitle("Checking the current release…")
+
+        def progress(done: int, total: int) -> None:
+            if total:
+                GLib.idle_add(row.set_subtitle, f"Downloading {done >> 20} of {total >> 20} MiB…")
+
+        def work():
+            return fetcher.fetch(None, progress=progress)
+
+        def failed(exc: Exception) -> None:
+            self._refresh()
+            row.set_subtitle(f"Could not install {TITLES[engine]}: {exc}")
+
+        worker.run(work, lambda _path: self._refresh(), failed)
+
+
 def _row(title: str, subtitle: str) -> Adw.ActionRow:
     row = Adw.ActionRow(use_markup=False, title=title, subtitle=subtitle)
     row.set_subtitle_selectable(True)
     return row
+
+
+def _note_group(title: str, text: str) -> Adw.PreferencesGroup:
+    group = Adw.PreferencesGroup(title=title)
+    row = _row("", text)
+    row.set_subtitle_lines(0)
+    group.add(row)
+    return group
