@@ -43,6 +43,57 @@ def _endpoint_from_module(module: str, *, lease: str | None, country: str | None
     return endpoint, None
 
 
+# Spoof-only flags, by their CLI name, with the value that means "given". A
+# non-spoofing engine refuses them rather than silently ignoring a request.
+def _spoof_flags_given(a: argparse.Namespace) -> list[str]:
+    pairs = {
+        "--form": a.form,
+        "--gpu-family": a.gpu_family,
+        "--webgl": a.webgl,
+        "--card": a.card,
+        "--series": a.series,
+        "--exact": a.exact or None,
+        "--webgl-vendor": a.webgl_vendor,
+        "--webgl-renderer": a.webgl_renderer,
+        "--extra-fonts": a.extra_fonts or None,
+        "--seed": a.seed,
+    }
+    return [flag for flag, val in pairs.items() if val]
+
+
+def _new_firefox(a: argparse.Namespace, endpoint, password) -> int:
+    from .core.engines import firefox_fetch
+
+    given = _spoof_flags_given(a)
+    if given:
+        return _fail(
+            f"stock Firefox shows this machine's own values, so {', '.join(given)} do not apply"
+        )
+    version = a.engine_version or firefox_fetch.latest_installed()
+    profile = store.create(
+        a.name,
+        endpoint,
+        None,
+        engine="firefox",
+        engine_version=version,
+        password=password,
+        dns=DnsConfig(mode=a.dns_mode, upstream=a.upstream),
+    )
+    profile.appearance = a.appearance
+    store.save(profile)
+    _p(f"created {profile.name}  {profile.id}")
+    if version:
+        _p(f"  engine  : stock Firefox {version}")
+    else:
+        _p(
+            "  engine  : stock Firefox (none installed yet — kiwi-fox engine fetch --engine firefox)"
+        )
+    _p("  identity: none — this machine's own Firefox, nothing spoofed")
+    _p(f"  dns     : {profile.dns.mode}")
+    _p(f"  exit    : {endpoint.label}")
+    return 0
+
+
 def cmd_new(a: argparse.Namespace) -> int:
     if a.endpoint:
         endpoint, password = proxy.parse(a.endpoint)
@@ -56,6 +107,10 @@ def cmd_new(a: argparse.Namespace) -> int:
             return _fail(str(exc))
     else:
         return _fail("give an ENDPOINT, or --module NAME to have a provider produce one")
+
+    if a.engine == "firefox":
+        return _new_firefox(a, endpoint, password)
+
     version = a.engine_version or engine_fetch.preferred()
     if not version:
         return _fail("no engine installed; run `kiwi-fox engine fetch` first")
@@ -153,9 +208,7 @@ def cmd_list(a: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_show(a: argparse.Namespace) -> int:
-    p = store.resolve_ref(a.ref)
-    fp = store.load_fingerprint(p.id)
+def _show_common(p) -> None:
     _p(f"{p.name}  ({p.id})")
     _p(f"  created   {p.created:%Y-%m-%d %H:%M}  last used {p.last_used or 'never'}")
     _p(f"  endpoint  {p.endpoint.label}  auth={'yes' if p.endpoint.username else 'no'}")
@@ -165,6 +218,22 @@ def cmd_show(a: argparse.Namespace) -> int:
         _p(
             f"  last exit {e.ip} {e.country or '?'} {e.city or ''} asn={e.asn or '?'} at {e.seen:%Y-%m-%d %H:%M}"
         )
+
+
+def cmd_show(a: argparse.Namespace) -> int:
+    p = store.resolve_ref(a.ref)
+    if p.engine != "camoufox":
+        from .core.engines import firefox_fetch
+
+        _show_common(p)
+        version = p.engine_version or firefox_fetch.latest_installed() or "none installed"
+        _p(f"  engine    stock Firefox {version}")
+        _p(f"  looks     {p.appearance}")
+        _p("  identity  none — this machine's own values, nothing spoofed")
+        return 0
+
+    fp = store.load_fingerprint(p.id)
+    _show_common(p)
     _p(f"  engine    camoufox {fp.engine_version} (buildID {fp.build_id})")
     _p(f"  ua        {p.user_agent or fp.ua}{'  (custom)' if p.user_agent else ''}")
     _p(f"  looks     {p.appearance}")
@@ -371,14 +440,21 @@ def cmd_engine(a: argparse.Namespace) -> int:
         return 0
 
     if a.engine_cmd == "list":
+        from .core.engines import firefox_fetch
+
+        any_found = False
         for v in engine_fetch.installed():
+            any_found = True
             state = (
                 "search disabled (run `kiwi-fox engine repair`)"
                 if engine_fetch.search_is_disabled(engine_fetch.target_dir(v))
                 else "search ok"
             )
             _p(f"camoufox {v}  {paths.engines_dir() / f'camoufox-{v}'}  [{state}]")
-        if not engine_fetch.installed():
+        for v in firefox_fetch.installed():
+            any_found = True
+            _p(f"firefox  {v}  {firefox_fetch.target_dir(v)}  [signature verified]")
+        if not any_found:
             _p("none installed")
         return 0
 
@@ -386,6 +462,18 @@ def cmd_engine(a: argparse.Namespace) -> int:
         if total:
             pct = done * 100 // total
             print(f"\rdownloading {done >> 20} / {total >> 20} MiB ({pct}%)", end="", flush=True)
+
+    if getattr(a, "engine", "camoufox") == "firefox":
+        from .core.engines import firefox_fetch
+
+        try:
+            path = firefox_fetch.fetch(a.version, force=a.force, progress=progress)
+        except Exception as exc:  # noqa: BLE001
+            print()
+            return _fail(str(exc))
+        print()
+        _p(f"firefox ready at {path}")
+        return 0
 
     try:
         path = engine_fetch.fetch(
@@ -853,9 +941,15 @@ def cmd_doctor(a: argparse.Namespace) -> int:
     _p(
         f"secret-tool   {'yes' if secrets.available() else 'MISSING (credentials cannot be stored)'}"
     )
+    from .core.engines import firefox_fetch
+
     engines = engine_fetch.installed()
-    _p(f"engines       {', '.join(engines) if engines else 'none — run `kiwi-fox engine fetch`'}")
-    ok &= bool(engines)
+    ff = firefox_fetch.installed()
+    line = f"camoufox: {', '.join(engines) or 'none'}"
+    if ff:
+        line += f"; firefox: {', '.join(ff)}"
+    _p(f"engines       {line}" + ("" if (engines or ff) else " — run `kiwi-fox engine fetch`"))
+    ok &= bool(engines or ff)
     import os
 
     wayland = os.environ.get("WAYLAND_DISPLAY")
@@ -920,6 +1014,13 @@ def build_parser() -> argparse.ArgumentParser:
         nargs="?",
         help="socks5://user:pass@host:port | host:port[:user:pass]; "
         "omit and pass --module NAME to have a provider produce the endpoint",
+    )
+    n.add_argument(
+        "--engine",
+        choices=["camoufox", "firefox"],
+        default="camoufox",
+        help="camoufox (default): a spoofed Windows identity; firefox: stock Firefox, "
+        "this machine's own values, no spoofing (fewer identity flags apply)",
     )
     n.add_argument("--country", help="two-letter code; probed from the exit when omitted")
     n.add_argument("--form", choices=["desktop", "laptop"], help="force the machine type")
@@ -1013,6 +1114,12 @@ def build_parser() -> argparse.ArgumentParser:
     esub = e.add_subparsers(dest="engine_cmd", required=True)
     ef = esub.add_parser("fetch")
     ef.add_argument("version", nargs="?", help="e.g. 152.0.4; latest non-prerelease by default")
+    ef.add_argument(
+        "--engine",
+        choices=["camoufox", "firefox"],
+        default="camoufox",
+        help="which engine to fetch (default camoufox)",
+    )
     ef.add_argument("--prerelease", action="store_true", help="consider beta releases too")
     ef.add_argument("--force", action="store_true")
     esub.add_parser("list")

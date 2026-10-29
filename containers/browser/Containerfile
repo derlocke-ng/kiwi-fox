@@ -39,6 +39,8 @@ RUN dnf install -y --setopt=install_weak_deps=False \
       adwaita-icon-theme adwaita-icon-theme-legacy \
       gdk-pixbuf2-modules-extra \
       open-sans-fonts lato-fonts adobe-source-sans-pro-fonts \
+      dejavu-sans-fonts dejavu-serif-fonts dejavu-sans-mono-fonts \
+      google-noto-emoji-color-fonts \
  && dnf clean all && rm -rf /var/cache/dnf
 
 # Fonts a fingerprinter actually probes for, which real Windows machines vary on.
@@ -63,8 +65,30 @@ RUN install -Dm644 /dev/stdin /etc/gtk-3.0/settings.ini <<'INI'
 gtk-icon-theme-name=AdwaitaLegacy
 INI
 
-# No fonts of our own: the engine ships a complete Windows set and a per-profile
-# fontconfig selects from it. Anything else visible here would be a tell.
+# The stock Firefox engine needs real fonts, but Camoufox must not see them (it
+# selects from its own bundled Windows set through its per-profile FONTCONFIG_FILE).
+# So a plain Linux font set is moved into a directory of its own and a dedicated
+# fontconfig, used only by the firefox engine (which sets FONTCONFIG_FILE to it),
+# references just that directory. Camoufox never points at it, so its fingerprint
+# is unchanged.
+RUN mkdir -p /usr/share/kf-firefox-fonts \
+ && cp -r /usr/share/fonts/dejavu*            /usr/share/kf-firefox-fonts/ 2>/dev/null \
+ && cp -r /usr/share/fonts/google-noto-emoji* /usr/share/kf-firefox-fonts/ 2>/dev/null \
+ && test -n "$(find /usr/share/kf-firefox-fonts -name '*.ttf' -o -name '*.otf' | head -1)"
+RUN install -Dm644 /dev/stdin /etc/kf-firefox-fonts.conf <<'XML'
+<?xml version="1.0"?>
+<!DOCTYPE fontconfig SYSTEM "urn:fontconfig:fonts.dtd">
+<!-- kiwi-fox: the plain Linux font set the stock-firefox engine renders with -->
+<fontconfig>
+  <dir>/usr/share/kf-firefox-fonts</dir>
+  <cachedir>/tmp/fontconfig</cachedir>
+  <include ignore_missing="yes">/etc/fonts/conf.d</include>
+</fontconfig>
+XML
+
+# No fonts in the default search path: Camoufox ships a complete Windows set and
+# a per-profile fontconfig selects from it, so anything else visible there would
+# be a tell. The firefox engine does not use this path (it has its own file above).
 RUN rm -rf /usr/share/fonts/* /usr/share/fontconfig/conf.avail/*hinting* 2>/dev/null || true
 
 # See the shim's own comment: glycin's bwrap sandbox cannot run rootless, and

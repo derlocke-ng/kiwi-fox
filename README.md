@@ -52,6 +52,29 @@ On Tor every profile gets its own circuit. See
 [docs/plugin-system.md](docs/plugin-system.md) for how modules work and how to
 write one.
 
+## Browser engine
+
+A profile runs one of two engines, chosen at creation:
+
+- **`camoufox`** (default) — a spoofed, frozen Windows 11 identity. A page sees a
+  coherent, ordinary Windows machine. This is everything above.
+- **`firefox`** — stock Mozilla Firefox, no spoofing: a page sees this machine's
+  own values. Less unique, but nothing is faked and nothing can slip — for when
+  a real, ordinary Firefox through the same isolated exit is what you want.
+
+```
+kiwi-fox engine fetch --engine firefox        # Mozilla's build, signature-verified
+kiwi-fox new plain socks5://host:port --engine firefox
+kiwi-fox run plain
+```
+
+A firefox profile has no fingerprint and ignores the identity flags
+(`--webgl`, `--card`, `--screen`, …); it keeps the endpoint, DNS, appearance and
+the same leak-proof gateway. Its traffic still exits only through the one
+permitted destination, WebRTC cannot leak the host address, and the engine is
+pinned and mounted read-only with updates turned off. A Tor Browser engine that
+uses the tor provider the Whonix way is in progress.
+
 ## What a new profile is
 
 The commonest machine there is, because rare values are what detectors flag: a

@@ -8,9 +8,10 @@ use them as they are. Everything here is engine-neutral: no fingerprint, no
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
-from .. import desktop, gpu
-from ..models import Profile
+from .. import desktop, gpu, paths
+from ..models import ContainerSpec, Profile
 
 # The browser's profile directory, bind-mounted into every engine's container.
 PROFILE_MOUNT = "/profile"
@@ -79,3 +80,46 @@ def user_js(prefs: dict[str, object]) -> str:
         # booleans, bare numbers, and properly escaped quoted strings.
         lines.append(f"user_pref({json.dumps(key)}, {json.dumps(prefs[key])});")
     return "\n".join(lines) + "\n"
+
+
+def base_spec(
+    profile: Profile,
+    *,
+    image: str,
+    gateway: str,
+    engine_dir: Path,
+    engine_mount: str,
+    env: dict[str, str],
+    extra_volumes: list[tuple[str, str, str]] | None = None,
+) -> ContainerSpec:
+    """The container every Gecko engine runs in: the gateway's netns, zero
+    capabilities but ``SYS_CHROOT`` for the content sandbox, and the engine and
+    profile mounts. Camoufox builds its own (it adds a per-profile fontconfig and
+    CAMOU_CONFIG); the non-spoofing engines use this as-is."""
+    pdir = paths.profile_dir(profile.id)
+    plan = gpu.plan() if accelerated(profile) else None
+    if plan:
+        env = {**env, **plan.env}
+    volumes = [
+        # ",z" is shared relabelling: one engine copy serves every profile.
+        (str(engine_dir), engine_mount, "ro,z"),
+        (str(pdir / "browser-data"), PROFILE_MOUNT, "rw,z"),
+        (str(pdir / "downloads"), "/downloads", "rw,z"),
+        *(extra_volumes or []),
+    ]
+    return ContainerSpec(
+        name=paths.browser_name(profile.id),
+        image=image,
+        network=f"container:{gateway}",
+        env=env,
+        volumes=volumes,
+        devices=list(plan.devices) if plan else [],
+        cap_drop=["all"],
+        # Firefox's content sandbox chroots each content process; without the
+        # capability its Chroot Helper segfaults and every tab dies. The real
+        # boundary is the netns with no route — see docs/decisions.md.
+        cap_add=["SYS_CHROOT"],
+        security_opt=["no-new-privileges", "label=disable"],
+        userns="keep-id",
+        labels={"app": "kiwi-fox", "kiwi-fox.profile": profile.id},
+    )

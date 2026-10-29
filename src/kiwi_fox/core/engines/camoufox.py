@@ -74,6 +74,11 @@ def engine_keys(engine_dir: Path) -> set[str] | None:
 
 class Camoufox:
     name = "camoufox"
+    binary = "camoufox"
+
+    def engine_dir(self, profile: Profile, fp: Fingerprint | None) -> Path:
+        assert fp is not None, "camoufox always has a fingerprint"
+        return paths.engines_dir() / f"camoufox-{fp.engine_version}"
 
     # ---------------------------------------------------------------- prefs
     def prefs(self, fp: Fingerprint, profile: Profile) -> dict[str, object]:

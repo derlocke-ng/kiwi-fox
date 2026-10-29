@@ -407,45 +407,65 @@ def start_gateway(profile: Profile) -> tuple[str, ExitInfo | None]:
 def launch(profile: Profile, *, strict: bool = False, start_url: str | None = None) -> LaunchResult:
     if not podman.available():
         raise LaunchError("podman not found")
-    fp = store.load_fingerprint(profile.id)
+    engine = get_engine(profile.engine)
+    # Only camoufox carries a fingerprint; the non-spoofing engines pass None
+    # through every step below.
+    fp = store.fingerprint_of(profile)
 
     plan = preflight(profile)
     info, notes = plan.info, list(plan.notes)
 
-    issues = validate(
-        fp,
-        engine_version=fp.engine_version,
-        exit_country=info.country if info else None,
-        prefs=get_engine(profile.engine).prefs(fp, profile),  # type: ignore[attr-defined]
-        allow_prefs={"webgl.disabled"} if profile.webgl == "off" else set(),
-    )
     from . import gpu
-    from .fingerprint.validator import check_webgl_mode, check_window_fits
+    from .fingerprint.validator import check_network_prefs
 
-    engine_dir = paths.engines_dir() / f"camoufox-{fp.engine_version}"
-    if profile.gpu_accel and gpu.measurement() is None and (engine_dir / "camoufox").exists():
-        # Once per host: the prefs below depend on whether a GPU is really
+    prefs = engine.prefs(fp, profile)  # type: ignore[attr-defined]
+    engine_dir = engine.engine_dir(profile, fp)  # type: ignore[attr-defined]
+    binary = engine.binary  # type: ignore[attr-defined]
+
+    if profile.gpu_accel and gpu.measurement() is None and (engine_dir / binary).exists():
+        # Once per host: the rendering prefs depend on whether a GPU is really
         # reachable, and guessing wrong either way costs — forced hardware with no
-        # GPU crash-loops, software with one reads as a virtual machine.
+        # GPU crash-loops, software with one reads as a virtual machine. The probe
+        # helper ships in the engine dir (camoufox's, or Firefox's own tarball).
         with contextlib.suppress(Exception):  # a failed measurement must not block a launch
             gpu.measure(engine_dir)
-    issues += check_window_fits(fp)
-    if profile.user_agent:
-        from .fingerprint import edit
 
-        issues += [
-            Issue("warn", "ua.custom", f"custom user agent: {note}")
-            for note in edit.check_user_agent(profile.user_agent, fp.engine_version)
+    issues: list[Issue] = []
+    if profile.engine == "camoufox":
+        assert fp is not None
+        from .fingerprint.validator import check_webgl_mode, check_window_fits
+
+        issues += validate(
+            fp,
+            engine_version=fp.engine_version,
+            exit_country=info.country if info else None,
+            prefs=prefs,
+            allow_prefs={"webgl.disabled"} if profile.webgl == "off" else set(),
+        )
+        issues += check_window_fits(fp)
+        if profile.user_agent:
+            from .fingerprint import edit
+
+            issues += [
+                Issue("warn", "ua.custom", f"custom user agent: {note}")
+                for note in edit.check_user_agent(profile.user_agent, fp.engine_version)
+            ]
+        issues += check_webgl_mode(
+            profile.webgl, profile.webgl_vendor, profile.webgl_renderer, profile.webgl_series
+        )
+        others = [
+            fpo
+            for p in store.list_profiles()
+            if p.id != profile.id
+            and p.engine == "camoufox"
+            and (fpo := store.fingerprint_of(p)) is not None
         ]
-    issues += check_webgl_mode(
-        profile.webgl, profile.webgl_vendor, profile.webgl_renderer, profile.webgl_series
-    )
-    others = [
-        store.load_fingerprint(p.id)
-        for p in store.list_profiles()
-        if p.id != profile.id and (paths.profile_dir(p.id) / "fingerprint.json").exists()
-    ]
-    issues += validate_against(fp, others)
+        issues += validate_against(fp, others)
+    else:
+        # Non-spoofing engine: no fingerprint to check, but the leak prefs that
+        # make the forwarder the only way out still have to be right.
+        issues += check_network_prefs(prefs)
+
     hard = errors(issues)
     if hard:
         raise LaunchError(
@@ -457,20 +477,21 @@ def launch(profile: Profile, *, strict: bool = False, start_url: str | None = No
             "warnings present and --strict given:\n  " + "\n  ".join(str(i) for i in warnings)
         )
 
-    if not (engine_dir / "camoufox").exists():
-        raise LaunchError(
-            f"engine missing at {engine_dir}; run `kiwi-fox engine fetch {fp.engine_version}`"
-        )
+    if not (engine_dir / binary).exists():
+        hint = fp.engine_version if (profile.engine == "camoufox" and fp) else profile.engine
+        raise LaunchError(f"engine missing at {engine_dir}; run `kiwi-fox engine fetch {hint}`")
 
     write_credentials(profile)
-    write_fontconfig(profile, fp)
     write_resolver_config(profile)
     write_user_js(profile, fp)
-    write_user_chrome(profile, fp)
-    if note := install_langpack(profile, fp):
-        notes.append(note)
-    reset_toolbar_layout(profile)
-    geometry.prepare(profile, fp)
+    if profile.engine == "camoufox":
+        assert fp is not None
+        write_fontconfig(profile, fp)
+        write_user_chrome(profile, fp)
+        if note := install_langpack(profile, fp):
+            notes.append(note)
+        reset_toolbar_layout(profile)
+        geometry.prepare(profile, fp)
 
     gw = _start_gateway(profile, plan)
 

@@ -101,10 +101,13 @@ def test_get_engine_camoufox():
     assert get_engine("camoufox").name == "camoufox"
 
 
+def test_get_engine_firefox():
+    assert get_engine("firefox").name == "firefox"
+
+
 def test_get_engine_future_engines_fail_loudly():
-    for name in ("firefox", "torbrowser"):
-        with pytest.raises(ValueError, match="not available"):
-            get_engine(name)
+    with pytest.raises(ValueError, match="not available"):
+        get_engine("torbrowser")
 
 
 def test_get_engine_unknown():
