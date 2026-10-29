@@ -1255,6 +1255,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    argv = sys.argv[1:] if argv is None else list(argv)
+    if argv[:1] == ["module"]:
+        # All of it is kiwi-proxy's, --help included, which kiwi-fox's own
+        # parser would take for one of its options.
+        return cmd_module(argparse.Namespace(args=argv[1:]))
     paths.ensure_tree()
     args = build_parser().parse_args(argv)
     try:

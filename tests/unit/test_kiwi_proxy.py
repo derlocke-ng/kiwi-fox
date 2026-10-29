@@ -205,3 +205,12 @@ def test_kiwi_fox_module_is_kiwi_proxy_module(capsys):
 
     assert cli.main(["module", "list", "--json"]) == 0
     assert capsys.readouterr().out.strip() == "[]"
+
+
+def test_kiwi_fox_module_help_is_kiwi_proxy_s(capsys):
+    from kiwi_fox import cli
+
+    with pytest.raises(SystemExit) as stop:
+        cli.main(["module", "--help"])
+    assert stop.value.code == 0
+    assert "usage: kiwi-proxy module" in capsys.readouterr().out
