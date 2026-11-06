@@ -40,7 +40,7 @@ RUN dnf install -y --setopt=install_weak_deps=False \
       gdk-pixbuf2-modules-extra \
       open-sans-fonts lato-fonts adobe-source-sans-pro-fonts \
       dejavu-sans-fonts dejavu-serif-fonts dejavu-sans-mono-fonts \
-      google-noto-emoji-color-fonts \
+      google-noto-color-emoji-fonts \
  && dnf clean all && rm -rf /var/cache/dnf
 
 # Fonts a fingerprinter actually probes for, which real Windows machines vary on.
@@ -71,10 +71,15 @@ INI
 # fontconfig, used only by the firefox engine (which sets FONTCONFIG_FILE to it),
 # references just that directory. Camoufox never points at it, so its fingerprint
 # is unchanged.
+# The files come from the packages' own lists, not from globs over /usr/share/fonts:
+# the directories there are named after the packages and Fedora renames those (on
+# 43 the emoji font is google-noto-color-emoji-fonts, so a `google-noto-emoji*`
+# glob matched nothing and the build failed, with the reason hidden by 2>/dev/null).
 RUN mkdir -p /usr/share/kf-firefox-fonts \
- && cp -r /usr/share/fonts/dejavu*            /usr/share/kf-firefox-fonts/ 2>/dev/null \
- && cp -r /usr/share/fonts/google-noto-emoji* /usr/share/kf-firefox-fonts/ 2>/dev/null \
- && test -n "$(find /usr/share/kf-firefox-fonts -name '*.ttf' -o -name '*.otf' | head -1)"
+ && rpm -ql dejavu-sans-fonts dejavu-serif-fonts dejavu-sans-mono-fonts google-noto-color-emoji-fonts \
+    | grep -E '\.(ttf|otf)$' | xargs -r cp -t /usr/share/kf-firefox-fonts/ \
+ && test -n "$(find /usr/share/kf-firefox-fonts -name '*.ttf' -o -name '*.otf' | head -1)" \
+ && ls /usr/share/kf-firefox-fonts | head -3
 RUN install -Dm644 /dev/stdin /etc/kf-firefox-fonts.conf <<'XML'
 <?xml version="1.0"?>
 <!DOCTYPE fontconfig SYSTEM "urn:fontconfig:fonts.dtd">

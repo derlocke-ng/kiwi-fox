@@ -1,7 +1,7 @@
 # kiwi.manifest — app metadata for kiwi-updater
 NAME=kiwi-fox
 DESCRIPTION=Isolated browser identities in rootless Podman: Camoufox (a spoofed Windows 11), Firefox or Tor Browser
-VERSION=0.3.1
+VERSION=0.3.2
 AUTHOR=derlocke-ng
 HOMEPAGE=https://github.com/derlocke-ng/kiwi-fox
 LICENSE=GPL-3.0-or-later

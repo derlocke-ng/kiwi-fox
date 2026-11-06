@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.3.2
+
+The browser image builds again.
+
+- **`kiwi-fox setup` failed on Fedora 43** at the step that gives the Firefox
+  engine its fonts. It globbed `/usr/share/fonts/google-noto-emoji*`, but the
+  package is `google-noto-color-emoji-fonts` and its directory is named after it,
+  so the copy failed and `2>/dev/null` hid why. The font files now come from the
+  packages' own file lists, whatever the directories are called. Built and
+  checked on a desktop; nothing in CI builds this image.
+- Needs kiwi-proxy 0.2.1: before it no gateway could start, so no profile could
+  launch even with the image built. `kiwi update` brings both.
+
 ## 0.3.1
 
 The GUI and the texts catch up with 0.3.0.
