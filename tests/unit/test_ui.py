@@ -547,3 +547,20 @@ def test_engines_dialog_offers_each_engine():
     assert list(dialog._rows) == ENGINES
     labels = {e: row.button.get_label() for e, row in dialog._rows.items()}
     assert labels == {"camoufox": "Set up", "firefox": "Download", "torbrowser": "Download"}
+
+
+def test_the_window_opens_large_and_remembers_its_size():
+    import json
+
+    from kiwi_fox.core import paths
+    from kiwi_fox.ui.window import DEFAULT_SIZE, Window
+
+    win = Window()
+    assert win.get_default_size() == DEFAULT_SIZE  # room for the profile editor (660×780)
+    win.set_default_size(900, 700)
+    win._on_close_request()
+    saved = json.loads((paths.config_dir() / "window.json").read_text())
+    assert (saved["width"], saved["height"], saved["maximized"]) == (900, 700, False)
+    assert Window().get_default_size() == (900, 700)
+    (paths.config_dir() / "window.json").write_text('{"width": 10, "height": 10}')
+    assert Window().get_default_size() == (640, 480)  # never unusably small

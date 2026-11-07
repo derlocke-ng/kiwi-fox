@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import gi
 
 gi.require_version("Gtk", "4.0")
@@ -11,7 +13,7 @@ from gi.repository import Adw, Gio, GLib, Gtk  # noqa: E402
 from kiwi_proxy import exits, podman  # noqa: E402
 from kiwi_proxy import paths as proxy_paths  # noqa: E402
 
-from ..core import launch, modules, secrets, store  # noqa: E402
+from ..core import launch, modules, paths, secrets, store  # noqa: E402
 from ..core.engines import TITLES, installed_versions  # noqa: E402
 from ..core.store import grouped_by_tag  # noqa: E402
 from . import worker  # noqa: E402
@@ -26,9 +28,43 @@ from .dialogs import (  # noqa: E402
 REFRESH_SECONDS = 4
 
 
+# A window large enough for the largest dialog (a profile editor is 660×780) to open
+# at its own size instead of being squeezed; the size it had when last closed wins.
+DEFAULT_SIZE = (1040, 840)
+MIN_SIZE = (640, 480)
+
+
+def saved_geometry() -> tuple[int, int, bool]:
+    """(width, height, maximized) from config/window.json, else the default."""
+    try:
+        d = json.loads((paths.config_dir() / "window.json").read_text())
+        width = max(int(d["width"]), MIN_SIZE[0])
+        height = max(int(d["height"]), MIN_SIZE[1])
+        return width, height, bool(d.get("maximized"))
+    except (OSError, ValueError, KeyError, TypeError):
+        return DEFAULT_SIZE[0], DEFAULT_SIZE[1], False
+
+
+def remember_geometry(window) -> None:
+    """Keep the window's size for the next start. GTK 4 tracks the user's resizing
+    in the default size, and keeps the un-maximized one while maximized."""
+    width, height = window.get_default_size()
+    try:
+        paths.config_dir().mkdir(parents=True, exist_ok=True)
+        (paths.config_dir() / "window.json").write_text(
+            json.dumps({"width": width, "height": height, "maximized": window.is_maximized()})
+        )
+    except OSError:
+        pass
+
+
 class Window(Adw.ApplicationWindow):
     def __init__(self, **kwargs) -> None:
-        super().__init__(default_width=760, default_height=620, title="Kiwi Fox", **kwargs)
+        width, height, maximized = saved_geometry()
+        super().__init__(default_width=width, default_height=height, title="Kiwi Fox", **kwargs)
+        if maximized:
+            self.maximize()
+        self.connect("close-request", self._on_close_request)
         self._rows: dict[str, Adw.ActionRow] = {}
         self._busy: set[str] = set()
 
@@ -99,6 +135,11 @@ class Window(Adw.ApplicationWindow):
         GLib.timeout_add_seconds(REFRESH_SECONDS, self._tick)
 
     # ------------------------------------------------------------------ list
+
+    def _on_close_request(self, *_args) -> bool:
+        remember_geometry(self)
+        return False  # and close
+
     def _tick(self) -> bool:
         self.refresh(rebuild=False)
         if any(launch.running(p) for p in store.list_profiles()):

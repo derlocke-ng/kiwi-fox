@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.7.1
+
+- **A bigger window, and the size you leave it at.** The window opened at
+  760×620, smaller than its own dialogs (a profile editor is 660×780), so those
+  came up squeezed. It now opens at 1040×840, and the size and maximized state
+  it has when closed are kept in `config/window.json` for the next start.
+
 ## 0.7.0
 
 - **Stock Firefox renders like a Linux desktop.** The browser image's Firefox
