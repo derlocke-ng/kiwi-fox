@@ -94,10 +94,12 @@ EOF
     else
         echo "Then create a profile:"
     fi
-    echo "  $APP new work socks5://user:pass@host:port       Camoufox, a Windows 11 identity"
-    echo "  $APP new work --module tor --country de          through a provider module"
+    echo "  $APP new work --exit NAME                        on a proxy kiwi-proxy has (kiwi-proxy list)"
+    echo "  $APP new work socks5://user:pass@host:port       Camoufox, a Windows 11 identity, on a new proxy"
+    echo "  $APP new work --module tor --country de          a new proxy through a provider module"
     echo "  $APP new plain HOST:PORT --engine firefox        stock Firefox"
     echo "  $APP new anon --engine torbrowser --module tor   Tor Browser"
+    echo "  $APP new bare --no-proxy                         this machine's own connection"
     echo
     echo "Firefox / Tor Browser:  $APP engine fetch --engine firefox   (or torbrowser)"
     echo "Provider modules:       kiwi install kiwi-plugin-tor   (or -vpn, -9proxy, -myst)"
@@ -105,8 +107,8 @@ EOF
 
 do_update() { do_install; }
 
-# The network half of every identity: the exits kiwi-fox registered in
-# kiwi-proxy, and their gateways. Only with --purge, with the identities.
+# The proxies kiwi-fox made as shortcuts (owner kiwi-fox) and their gateways;
+# the user's own exits stay. Only with --purge, with the identities.
 purge_exits() {
     [[ -f "$PROXY_LIB/kiwi_proxy/exits.py" ]] || return 0
     PYTHONPATH="$PROXY_LIB" python3 - <<'EOF' || true

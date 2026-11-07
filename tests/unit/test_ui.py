@@ -357,13 +357,21 @@ def test_main_window_constructs():
 
 
 # ------------------------------------------------------------- engines and exits
-def _plain(name, engine, **endpoint):
-    """A non-camoufox profile, stored the way the CLI and the dialog store one."""
-    from kiwi_fox.core import store
+def _exit(name, **endpoint):
+    """A proxy in kiwi-proxy; a tor one passes auth through, as kiwi-proxy makes it."""
+    from kiwi_proxy import exits
+
     from kiwi_fox.core.models import Endpoint
 
     ep = Endpoint(**({"host": "203.0.113.4", "port": 1080} | endpoint))
-    return store.create(name, ep, None, engine=engine)
+    return exits.create(name, ep, socks_auth="passthrough" if ep.module == "tor" else None)
+
+
+def _plain(name, engine, **endpoint):
+    """A non-camoufox profile on a proxy of its own, as the CLI shortcut makes one."""
+    from kiwi_fox.core import store
+
+    return store.create(name, _exit(f"{name}-exit", **endpoint).id, None, engine=engine)
 
 
 @pytest.mark.parametrize("engine", ["firefox", "torbrowser"])
@@ -379,26 +387,40 @@ def test_details_and_editor_open_for_a_profile_without_a_fingerprint(engine):
     assert not hasattr(editor, "graphics"), "no Windows identity to edit"
 
 
-def test_saving_a_firefox_profile_keeps_it_fingerprint_free():
+def test_saving_a_firefox_profile_keeps_it_fingerprint_free_and_moves_its_proxy():
     from kiwi_fox.core import store
     from kiwi_fox.ui.dialogs import ProfileEditor
 
+    other = _exit("kiwi-master-tor", host="10.8.0.1", port=9050)
     p = _plain("ff", "firefox")
     editor = ProfileEditor(p)
+    assert editor.exits.selected_id == p.exit, "opens on the profile's own proxy"
     editor.name_row.set_text("ff-renamed")
-    editor.dns_row.set_selected(1)
+    editor.exits.select(other.id)
     editor._on_save()
     saved = store.find_by_name("ff-renamed")
-    assert saved is not None and saved.dns.mode == "remote"
+    assert saved is not None and saved.exit == other.id
     assert store.fingerprint_of(saved) is None
+    # And off every proxy, which the editor offers to all but Tor Browser.
+    editor = ProfileEditor(saved)
+    editor.exits.select(None)
+    editor._on_save()
+    assert store.find_by_name("ff-renamed").exit is None
 
 
-def test_a_module_exit_is_shown_by_module_not_by_bridge_address():
-    from kiwi_fox.ui.dialogs import exit_label
+def test_a_row_names_the_proxy_and_its_detail_says_the_module_not_the_bridge():
+    from kiwi_fox.core import store
+    from kiwi_fox.ui.dialogs import exit_choice_label, exit_label
 
     p = _plain("t", "torbrowser", host="10.89.231.5", port=9050, module="tor", country="de")
-    assert exit_label(p) == "tor · DE"
-    assert exit_label(_plain("f", "firefox")) == "203.0.113.4:1080"
+    assert exit_label(p) == "t-exit"
+    assert exit_choice_label(store.exit_of(p)).startswith("t-exit · tor · DE")
+    assert exit_label(_plain("f", "firefox")) == "f-exit"
+    assert store.describe_exit(store.exit_of(store.find_by_name("f"))).startswith(
+        "f-exit · 203.0.113.4:1080"
+    )
+    bare = store.create("bare", None, None, engine="firefox")
+    assert exit_label(bare) == "no proxy"
 
 
 def test_new_profile_shows_only_what_the_engine_uses():
@@ -406,44 +428,73 @@ def test_new_profile_shows_only_what_the_engine_uses():
 
     dialog = NewProfileDialog(Adw.ApplicationWindow(), lambda p: None)
     expect = {
-        # engine: (Windows identity + graphics, DNS)
+        # engine: (Windows identity + graphics, may run with no proxy)
         "camoufox": (True, True),
         "firefox": (False, True),
         "torbrowser": (False, False),
     }
-    for engine, (identity, dns) in expect.items():
+    for engine, (identity, no_proxy) in expect.items():
         dialog.select_engine(engine)
         assert dialog.engine == engine
         assert dialog.identity.get_visible() == identity, engine
         assert dialog.graphics_group.get_visible() == identity, engine
-        assert dialog.network.get_visible() == dns, engine
+        assert dialog.exits.allows_none == no_proxy, engine
+    assert not hasattr(dialog, "network"), "DNS is the proxy's, in kiwi-proxy's editor"
 
 
-def test_tor_browser_is_held_to_the_tor_module(monkeypatch):
-    from kiwi_fox.core import modules
+def test_the_picker_lists_kiwi_proxys_exits_and_prefers_one_over_no_proxy():
     from kiwi_fox.ui import dialogs
 
-    tor = modules.Module("tor", "Tor", "exit through the Tor network", False, True)
-    vpn = modules.Module("vpn", "VPN (gluetun)", "a tunnel", True, True)
-    monkeypatch.setattr(modules, "installed", lambda: [vpn, tor])
-    monkeypatch.setattr(modules, "leases", lambda name: [])
+    a = _exit("a")
+    b = _exit("b")
     dialog = dialogs.NewProfileDialog(Adw.ApplicationWindow(), lambda p: None)
-    dialog.select_module("vpn")
-    dialog.select_engine("torbrowser")
-    assert dialog.module is tor
-    assert not dialog.exit_row.get_sensitive()
-    assert dialog.create_button.get_sensitive()
+    assert [e.id for e in dialog.exits._exits] == [a.id, b.id]
+    assert dialog.exits.selected_id == a.id, "a proxy is the point; no-proxy is a choice"
+    dialog.exits.select(None)
+    assert dialog.exits.selected is None
+    dialog.exits.select(b.id)
+    assert dialog.exits.selected_id == b.id
+    assert "used by" not in dialog.exits.row.get_subtitle()
 
 
-def test_tor_browser_without_the_tor_module_says_how_to_get_it(monkeypatch):
-    from kiwi_fox.core import modules
+def test_tor_browser_is_held_to_exits_on_the_tor_module():
     from kiwi_fox.ui import dialogs
 
-    monkeypatch.setattr(modules, "installed", lambda: [])
+    plain = _exit("plain")
+    tor = _exit("tor", host="10.89.231.5", port=9050, module="tor", country="de")
+    dialog = dialogs.NewProfileDialog(Adw.ApplicationWindow(), lambda p: None)
+    dialog.exits.select(plain.id)
+    dialog.select_engine("torbrowser")
+    assert [e.id for e in dialog.exits._exits] == [tor.id]
+    assert dialog.exits.selected_id == tor.id
+    assert not dialog.exits.allows_none
+    assert dialog.create_button.get_sensitive()
+    dialog.select_engine("firefox")
+    assert [e.id for e in dialog.exits._exits] == [plain.id, tor.id]
+
+
+def test_tor_browser_without_a_tor_exit_says_how_to_get_one():
+    from kiwi_fox.ui import dialogs
+
+    _exit("plain")
     dialog = dialogs.NewProfileDialog(Adw.ApplicationWindow(), lambda p: None)
     dialog.select_engine("torbrowser")
     assert not dialog.create_button.get_sensitive()
-    assert "kiwi install kiwi-plugin-tor" in dialog.exit_note.get_subtitle()
+    assert dialog.exits.note.get_visible()
+    assert "kiwi install kiwi-plugin-tor" in dialog.exits.note.get_subtitle()
+
+
+def test_a_profile_with_a_lost_proxy_opens_and_says_so():
+    from kiwi_proxy import exits
+
+    from kiwi_fox.core import store
+    from kiwi_fox.ui.dialogs import ProfileDetails, ProfileEditor
+
+    p = _plain("lost", "firefox")
+    exits.delete(p.exit)  # `kiwi-proxy rm lost-exit`
+    ProfileDetails(store.load(p.id))
+    editor = ProfileEditor(store.load(p.id))
+    assert "gone from kiwi-proxy" in editor.status_label.get_text()
 
 
 def test_engines_dialog_offers_each_engine():

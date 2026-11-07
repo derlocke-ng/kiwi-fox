@@ -158,16 +158,12 @@ def run(progress: Progress | None = None, *, engine_version: str | None = None) 
     except Exception as exc:  # noqa: BLE001 - never fail setup over a measurement
         steps.append(f"rendering: could not be measured ({exc})")
 
-    # Profiles from before kiwi-proxy get their exit now rather than at their
-    # first launch, so `kiwi-proxy list` shows every identity.
-    registered = 0
-    for profile in store.list_profiles():
-        try:
-            store.sync_exit(profile)
-            registered += 1
-        except Exception as exc:  # noqa: BLE001 - one profile must not fail setup
-            steps.append(f"exit for {profile.name}: not registered ({exc})")
-    steps.append(f"exits: {registered} profile(s) registered with kiwi-proxy")
+    # Profiles from before 0.4 get their exit reference now rather than at their
+    # first launch (store.load migrates), so `kiwi-proxy list` shows every proxy
+    # in use.
+    profiles = store.list_profiles()
+    in_use = {p.exit for p in profiles if p.exit}
+    steps.append(f"profiles: {len(profiles)}, on {len(in_use)} kiwi-proxy exit(s)")
 
     # Last, because it ends with its own "Done.".
     try:

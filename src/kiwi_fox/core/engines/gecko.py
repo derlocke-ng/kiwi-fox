@@ -38,15 +38,40 @@ def is_dark(profile: Profile) -> bool | None:
     return profile.appearance == "dark"
 
 
-def network_prefs(profile: Profile, *, force_remote_dns: bool = False) -> dict[str, object]:
-    """Send everything through the gateway forwarder and let nothing leak around it.
+# No speculative traffic outside a user action. Privacy for every profile, proxy
+# or not; with a proxy it is also part of what keeps the forwarder the only way out.
+_QUIET_PREFS: dict[str, object] = {
+    "network.dns.disablePrefetch": True,
+    "network.prefetch-next": False,
+    "network.predictor.enabled": False,
+    "network.http.speculative-parallel-limit": 0,
+    "browser.send_pings": False,
+    "network.captive-portal-service.enabled": False,
+}
 
-    These prefs are what makes the single permitted destination the *only* way
-    out, so they hold for every Gecko engine. ``force_remote_dns`` is for Tor
-    Browser, which must resolve at the exit (``.onion`` has no local answer)
-    whatever the profile's DNS mode says.
+
+def direct_prefs() -> dict[str, object]:
+    """A profile with no proxy: this machine's own connection, the way Firefox
+    would use it. No proxy is configured at all, so nothing half-set sends traffic
+    somewhere unexpected; DoH is left to Firefox's own default."""
+    return {"network.proxy.type": 0, **_QUIET_PREFS}
+
+
+def network_prefs(profile: Profile, *, force_remote_dns: bool = False) -> dict[str, object]:
+    """Send everything through the gateway forwarder and let nothing leak around it
+    — or, for a profile with no proxy, make sure no proxy is configured at all.
+
+    With an exit these prefs are what makes the single permitted destination the
+    *only* way out, so they hold for every Gecko engine. ``force_remote_dns`` is
+    for Tor Browser, which must resolve at the exit (``.onion`` has no local
+    answer) whatever the exit's DNS mode says.
     """
-    remote_dns = True if force_remote_dns else profile.dns.mode == "remote"
+    from .. import store
+
+    ex = store.exit_of(profile)
+    if ex is None:
+        return direct_prefs()
+    remote_dns = True if force_remote_dns else ex.dns.mode == "remote"
     return {
         # Proxy: everything through the gateway's forwarder, never direct.
         "network.proxy.type": 1,
@@ -59,13 +84,7 @@ def network_prefs(profile: Profile, *, force_remote_dns: bool = False) -> dict[s
         "network.proxy.allow_bypass": False,
         # The browser must not run its own DoH and bypass the gateway resolver.
         "network.trr.mode": 5,
-        # No speculative traffic outside a user action.
-        "network.dns.disablePrefetch": True,
-        "network.prefetch-next": False,
-        "network.predictor.enabled": False,
-        "network.http.speculative-parallel-limit": 0,
-        "browser.send_pings": False,
-        "network.captive-portal-service.enabled": False,
+        **_QUIET_PREFS,
     }
 
 
@@ -89,16 +108,17 @@ def base_spec(
     profile: Profile,
     *,
     image: str,
-    gateway: str,
+    gateway: str | None,
     engine_dir: Path,
     engine_mount: str,
     env: dict[str, str],
     extra_volumes: list[tuple[str, str, str]] | None = None,
 ) -> ContainerSpec:
-    """The container every Gecko engine runs in: the gateway's netns, zero
-    capabilities but ``SYS_CHROOT`` for the content sandbox, and the engine and
-    profile mounts. Camoufox builds its own (it adds a per-profile fontconfig and
-    CAMOU_CONFIG); the non-spoofing engines use this as-is."""
+    """The container every Gecko engine runs in: the gateway's netns (or, with no
+    proxy, a network of its own on this machine's connection), zero capabilities
+    but ``SYS_CHROOT`` for the content sandbox, and the engine and profile mounts.
+    Camoufox builds its own (it adds a per-profile fontconfig and CAMOU_CONFIG);
+    the non-spoofing engines use this as-is."""
     pdir = paths.profile_dir(profile.id)
     plan = gpu.plan() if accelerated(profile) else None
     if plan:
@@ -113,7 +133,7 @@ def base_spec(
     return ContainerSpec(
         name=paths.browser_name(profile.id),
         image=image,
-        network=f"container:{gateway}",
+        network=f"container:{gateway}" if gateway else "pasta",
         env=env,
         volumes=volumes,
         devices=list(plan.devices) if plan else [],

@@ -152,8 +152,14 @@ class Profile(Strict):
     # the newest installed (right for Tor Browser — security updates, and the
     # crowd is the current release). camoufox pins its version in the fingerprint.
     engine_version: str | None = None
-    endpoint: Endpoint
-    dns: DnsConfig = Field(default_factory=DnsConfig)
+    # The kiwi-proxy exit this profile's traffic leaves through, by id — a proxy
+    # the user defined there, shared with every other profile and tool on it — or
+    # None: no proxy, the browser on this machine's own connection.
+    exit: str | None = None
+    # Until 0.3 a profile carried its endpoint and DNS itself and owned one exit
+    # under its own id. Read once by store.load, which migrates; never written.
+    endpoint: Endpoint | None = Field(default=None, exclude=True)
+    dns: DnsConfig | None = Field(default=None, exclude=True)
     last_exit: ExitInfo | None = None
     # Hardware GL via the host's render node. On by default: software-rendering
     # performance against a claimed discrete GPU is itself one of the residual

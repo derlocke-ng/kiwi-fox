@@ -110,43 +110,60 @@ secrets, SOCKS5-only providers, the providers bridge, injection versus
 passthrough) and `docs/consumers.md` (what a consumer can rely on). What is left
 here is how kiwi-fox uses it.
 
-**One exit per profile, under the profile's own id.** The gateway is named after
-the exit and the Tor isolation token is derived from it, so with the profile id as
-the exit id both stay what they were before the split: `kf-gw-<id[:12]>` and
-`kf-<id[:16]>` — the same name kiwi-pentesting looks for, the same Tor circuit.
-kiwi-fox also keeps its own labels on the gateway (`app=kiwi-fox`,
-`kiwi-fox.role=gateway`, `kiwi-fox.profile`).
+**A profile references a proxy; the proxy is kiwi-proxy's.** An exit in kiwi-proxy
+is a proxy the user defined once — a SOCKS5 they were given, or a provider module
+— with its DNS mode, blocklists and credentials; `profile.exit` is its id. Several
+profiles may use one, and so may kiwi-pentesting's tools and applications on the
+host: they share its gateway, one namespace with one exit IP and one set of Tor
+circuits. That was chosen (0.4.0) over a gateway per profile: fewer containers,
+one place a proxy is defined, and identities that must not share an exit simply
+take different proxies. kiwi-fox never writes an exit's settings — `kiwi-proxy
+set` and kiwi-proxy's editor do (the GUI opens that editor) — and reads them at
+launch, so an edit on either side meets. The two shortcuts, `kiwi-fox new NAME
+ENDPOINT` and `new NAME --module M`, create the exit named after the profile with
+`owner="kiwi-fox"`, so `kiwi-fox delete` can take it away with its last profile;
+an exit the user made stays.
 
-**The exit holds the endpoint and DNS settings; profile.json keeps a copy.**
-`kiwi-proxy set` can change an exit, so a profile that kept its own settings and
-wrote them over the exit at every launch would silently undo that. `store.save`
-writes to the exit and `store.load` reads from it; the copy in profile.json is
-what a profile from before 0.3.0 starts from, and what loads if the exit is gone.
-Exit names are unique in kiwi-proxy: a clash is refused at `kiwi-fox new`, and for
-an older profile whose name a CLI-made exit took in the meantime the exit keeps a
-`<name>-<id[:8]>` label instead — kiwi-fox finds it by id.
+**Profiles from before 0.4 keep their exit id.** 0.3 registered one exit per
+profile under the profile's own id; `store.load` turns that into the reference
+the first time it sees such a profile (creating the exit if 0.3 never did), so
+the gateway is still `kf-gw-<id[:12]>` and the Tor token `kf-<id[:16]>` — the
+name kiwi-pentesting looks for, the same circuit. The password moves from
+kiwi-fox's keyring into kiwi-proxy's store, where every exit's lives. A gateway
+kiwi-fox brings up carries `app=kiwi-fox` and `kiwi-fox.role=gateway` and no
+profile id: it is the proxy's, not a profile's.
 
-**Closing the window releases the gateway; it does not remove it.** A pentest tool
-or a `kiwi-proxy up` of the same identity may be inside the namespace too, and
-removing the gateway would cut it off. Deleting a profile is the one thing that
-tears the gateway down regardless.
+**No proxy is a choice, said explicitly.** `--no-proxy` (the GUI's first entry)
+runs the browser on this machine's own connection with no proxy configured at all
+(`network.proxy.type=0`, checked like the proxied prefs are), in a network
+namespace of its own, with no gateway and nothing sealed. It is never the CLI's
+default, so a typo cannot unproxy a profile, and the GUI prefers an existing
+proxy. Tor Browser cannot run that way. `selfcheck` needs a proxy too: the probe
+page is served from the gateway.
+
+**Closing the window releases the gateway; nothing kiwi-fox does removes it.**
+Other profiles, a pentest tool or a `kiwi-proxy up` may be inside the namespace,
+and removing the gateway would cut them off; it goes with the last member, or with
+`kiwi-proxy down`. Deleting a profile releases too.
 
 **The fingerprint is checked against the host-side pre-flight only.** For a remote
 exit kiwi-proxy measures it from the host before anything starts, exactly as
-before. A provider exit (Tor) cannot be reached from the host, and measuring it
-through the gateway would add a round trip to every launch and change what
-`--strict` refuses, so the launch does not ask for it.
+before; with no proxy the machine's own connection is measured the same way. A
+provider exit (Tor) cannot be reached from the host, and measuring it through the
+gateway would add a round trip to every launch and change what `--strict`
+refuses, so the launch does not ask for it.
 
-**Tor Browser's exit passes its SOCKS auth through and resolves remotely, always.**
-Tor Browser puts a per-site username/password on every request to key a circuit
-per site and offers no other SOCKS method, so its exit is `socks_auth=passthrough`
-(kiwi-proxy then sends the profile token prefixed to the browser's username), and
-`.onion` only resolves at a Tor exit, so its DNS mode is remote. kiwi-fox writes
-both onto the exit whatever is set there. It also refuses a Tor Browser profile on
-anything but the tor provider with isolation auth, at creation and at launch,
-before any pre-flight is sent: without those, isolation and `.onion` would be lost
-without a visible error. That is a browser rule, so it lives here; kiwi-proxy adds
-its own (passthrough needs a token to put in front).
+**Tor Browser needs a tor proxy that passes SOCKS auth through.** Tor Browser puts
+a per-site username/password on every request to key a circuit per site and
+offers no other SOCKS method. kiwi-proxy 0.3 makes exits on the tor module
+`passthrough` by default — a member without SOCKS credentials still gets the
+exit's token — so a Camoufox profile and a Tor Browser profile can share one.
+kiwi-fox refuses a Tor Browser profile on any other exit, or none, at creation
+and at launch, before any pre-flight is sent, and names the `kiwi-proxy set
+--socks-auth passthrough` that fixes an exit switched back. Its own prefs force
+remote DNS whatever the exit's resolver does, so `.onion` resolves at Tor, and the
+forwarder still refuses the exit's blocklist names. That is a browser rule, so it
+lives here; kiwi-proxy adds its own (passthrough needs a token to put in front).
 
 ## Fingerprint
 

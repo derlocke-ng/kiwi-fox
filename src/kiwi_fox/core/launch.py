@@ -19,7 +19,7 @@ from pathlib import Path
 
 from kiwi_proxy import endpoint, exits, gateway, podman, providers
 
-from . import geometry, paths, secrets, store
+from . import geometry, paths, store
 from .engines import get_engine
 from .engines.camoufox import fontconfig_xml
 from .fingerprint import validate, validate_against
@@ -43,7 +43,7 @@ class LaunchError(RuntimeError):
 @dataclass
 class LaunchResult:
     profile: Profile
-    gateway: str
+    gateway: str | None  # None: no proxy, the browser on this machine's connection
     browser: str
     exit_info: ExitInfo | None = None
     warnings: list[Issue] = field(default_factory=list)
@@ -181,23 +181,28 @@ def reset_toolbar_layout(profile: Profile) -> bool:
 
 
 # -------------------------------------------------------------------- specs
-def gateway_labels(profile: Profile) -> dict[str, str]:
-    """kiwi-fox's own labels on a profile's gateway, beside kiwi-proxy's. Kept as
-    they always were: kiwi-pentesting finds a browser identity's gateway by
-    app=kiwi-fox and kiwi-fox.role=gateway."""
-    return {"app": "kiwi-fox", "kiwi-fox.role": "gateway", "kiwi-fox.profile": profile.id}
+# kiwi-fox's own labels on a gateway it brings up, beside kiwi-proxy's. They say
+# who asked first: the gateway is the exit's, shared by every profile and tool on
+# it, so no profile id is on it. kiwi-pentesting discovers gateways by
+# kiwi-proxy.role=gateway; app=kiwi-fox is its fallback.
+GATEWAY_LABELS = {"app": "kiwi-fox", "kiwi-fox.role": "gateway"}
+
+
+def gateway_labels() -> dict[str, str]:
+    return dict(GATEWAY_LABELS)
 
 
 def browser_spec(
     profile: Profile,
     fp: Fingerprint | None,
-    gateway: str,
+    gateway: str | None,
     exit_ip: str | None,
     resolv_conf: str | None = None,
 ):
-    """`resolv_conf` is the gateway's (Gateway.resolv_conf): the browser has its
-    own mount namespace, so in resolver mode it mounts the file that points at
-    the resolver inside the namespace. None in remote DNS mode."""
+    """`gateway` is the exit's gateway container, or None for a profile with no
+    proxy. `resolv_conf` is the gateway's (Gateway.resolv_conf): the browser has
+    its own mount namespace, so in resolver mode it mounts the file that points at
+    the resolver inside the namespace. None in remote DNS mode, and with no proxy."""
     spec = get_engine(profile.engine).build_spec(profile, fp, gateway=gateway, exit_ip=exit_ip)
     if resolv_conf:
         spec.volumes.append((resolv_conf, "/etc/resolv.conf", "ro,z"))
@@ -231,7 +236,10 @@ def _wayland_mount() -> tuple[str, str] | None:
 # ------------------------------------------------------------------ network
 def _network_error(exc: Exception, profile: Profile) -> LaunchError:
     msg = str(exc)
-    module = profile.endpoint.module
+    module = None
+    with contextlib.suppress(Exception):
+        ex = store.exit_of(profile)
+        module = ex.endpoint.module if ex else None
     old = paths.data_dir() / "modules" / (module or "")
     if isinstance(exc, providers.ProviderError) and module and old.is_dir():
         # Since 0.3.0 provider modules install into kiwi-proxy. One from before
@@ -245,18 +253,17 @@ def _network_error(exc: Exception, profile: Profile) -> LaunchError:
 
 def check_tor_browser_exit(profile: Profile) -> None:
     """Tor Browser exits only through the tor provider: its per-site circuits are
-    the isolation auth the forwarder passes through, and .onion resolves only at
-    a Tor exit. A plain or account endpoint would quietly lose both, so it is
+    the SOCKS credentials the forwarder passes through, and .onion resolves only
+    at a Tor exit. A plain or account endpoint would quietly lose both, so it is
     refused — a browser rule, beside kiwi-proxy's own (passthrough needs a token)."""
-    from .engines.torbrowser import REQUIRED_MODULE
-
-    module = profile.endpoint.module
-    if module != REQUIRED_MODULE:
-        raise LaunchError(
-            "Tor Browser exits only through the tor provider module (create it with --module tor)"
-        )
+    ex = exit_of(profile)
     try:
-        auth = providers.manifest_of(module).auth
+        store.check_tor_exit(ex)
+    except store.StoreError as exc:
+        raise LaunchError(str(exc)) from exc
+    assert ex is not None
+    try:
+        auth = providers.manifest_of(ex.endpoint.module).auth
     except providers.ProviderError as exc:
         raise _network_error(exc, profile) from exc
     if auth != "isolation":
@@ -264,58 +271,83 @@ def check_tor_browser_exit(profile: Profile) -> None:
 
 
 def exit_of(profile: Profile):
-    """The profile's exit in kiwi-proxy (exit id = profile id), in line with it."""
+    """The kiwi-proxy exit the profile uses, or None for no proxy."""
     try:
-        return store.sync_exit(profile)
-    except exits.ExitError as exc:
-        raise LaunchError(f"cannot register the exit for {profile.name!r}: {exc}") from exc
+        return store.exit_of(profile)
+    except store.StoreError as exc:
+        raise LaunchError(str(exc)) from exc
+
+
+def measure_direct(timeout: float = 10) -> ExitInfo:
+    """What the world sees from this machine's own connection — the exit of a
+    profile with no proxy."""
+    import urllib.request
+
+    with urllib.request.urlopen(endpoint.DEFAULT_GEO_URL, timeout=timeout) as resp:  # noqa: S310
+        text = resp.read().decode("utf-8", "replace")
+    return endpoint.parse_geo(text)
 
 
 def plan(profile: Profile) -> gateway.EndpointPlan:
     """Decide the upstream and, for a remote exit, measure it from the host, so
     the region is known before the window opens. A managed provider is brought
-    up here; its exit sits on the providers bridge, out of the host's reach."""
+    up here; its exit sits on the providers bridge, out of the host's reach. With
+    no proxy the machine's own connection is measured instead."""
+    ex = exit_of(profile)
+    if ex is None:
+        notes = ["no proxy: this machine's own connection"]
+        try:
+            info = measure_direct()
+        except Exception as exc:  # noqa: BLE001 - never block a launch on this
+            info = None
+            notes.append(f"could not measure this machine's exit: {exc}")
+        return gateway.EndpointPlan("", 0, "pasta", info, notes)
     try:
-        return gateway.plan(exit_of(profile), secrets.lookup(profile.id))
+        return gateway.plan(ex)
     except _NETWORK_ERRORS as exc:
         raise _network_error(exc, profile) from exc
 
 
 def up(profile: Profile, *, measure: bool = False) -> gateway.Gateway:
-    """Bring the profile's gateway up, or join the one already running for it: a
-    pentest tool or a `kiwi-proxy up` of the same identity shares the namespace.
+    """Bring the exit's gateway up, or join the one already running: another
+    profile on the same exit, a pentest tool, a `kiwi-proxy up` of it all share
+    the namespace. The exit's password is kiwi-proxy's to look up.
 
     `measure` also measures the exit through the gateway. Off by default: the
     pre-flight already measured a remote exit, and for a provider exit (Tor) the
     round trip would delay every window."""
     ex = exit_of(profile)
+    if ex is None:
+        raise LaunchError(f"{profile.name} has no proxy; there is no gateway to bring up")
     try:
-        return gateway.up(
-            ex,
-            password=secrets.lookup(profile.id),
-            labels=gateway_labels(profile),
-            measure=measure,
-        )
+        return gateway.up(ex, labels=gateway_labels(), measure=measure)
     except _NETWORK_ERRORS as exc:
         raise _network_error(exc, profile) from exc
 
 
 def release(profile: Profile, *, ignore: tuple[str, ...] = ()) -> bool:
-    """Done with the identity's gateway: it goes unless something else is still
-    inside it (other than `ignore`) or `kiwi-proxy up` holds it."""
-    return gateway.release(profile.id, ignore=ignore)
+    """Done with the exit's gateway: it goes unless something else is still inside
+    it (other than `ignore`) — another profile's browser, a tool — or `kiwi-proxy
+    up` holds it. Nothing to do for a profile with no proxy."""
+    if not profile.exit:
+        return False
+    return gateway.release(profile.exit, ignore=ignore)
 
 
 def resolv_conf(profile: Profile) -> str | None:
     """What a container joining the profile's gateway mounts at /etc/resolv.conf
-    (None in remote DNS mode), for a gateway this process did not bring up."""
-    path = gateway.write_resolv_conf(exit_of(profile))
+    (None in remote DNS mode, and with no proxy), for a gateway this process did
+    not bring up."""
+    ex = exit_of(profile)
+    if ex is None:
+        return None
+    path = gateway.write_resolv_conf(ex)
     return str(path) if path else None
 
 
 def start_gateway(profile: Profile) -> tuple[str, ExitInfo | None]:
     """Bring up a profile's network namespace with no browser in it, for the
-    probe. A gateway already up for the profile is joined, not replaced."""
+    probe. A gateway already up for the exit is joined, not replaced."""
     if not podman.available():
         raise LaunchError("podman not found")
     gw = up(profile)
@@ -365,6 +397,7 @@ def launch(profile: Profile, *, strict: bool = False, start_url: str | None = No
             exit_country=info.country if info else None,
             prefs=prefs,
             allow_prefs={"webgl.disabled"} if profile.webgl == "off" else set(),
+            direct=profile.exit is None,
         )
         issues += check_window_fits(fp)
         if profile.user_agent:
@@ -387,8 +420,9 @@ def launch(profile: Profile, *, strict: bool = False, start_url: str | None = No
         issues += validate_against(fp, others)
     else:
         # Non-spoofing engine: no fingerprint to check, but the leak prefs that
-        # make the forwarder the only way out still have to be right.
-        issues += check_network_prefs(prefs)
+        # make the forwarder the only way out still have to be right (or, with
+        # no proxy, no proxy configured at all).
+        issues += check_network_prefs(prefs, direct=profile.exit is None)
 
     hard = errors(issues)
     if hard:
@@ -419,11 +453,14 @@ def launch(profile: Profile, *, strict: bool = False, start_url: str | None = No
         reset_toolbar_layout(profile)
         geometry.prepare(profile, fp)
 
-    gw = up(profile)
-    notes += [n for n in gw.notes if n not in notes]
+    gateway_name = resolv = None
+    if profile.exit:
+        gw = up(profile)
+        gateway_name, resolv = gw.name, gw.resolv_conf
+        notes += [n for n in gw.notes if n not in notes]
 
     clear_stale_lock(profile)
-    br = browser_spec(profile, fp, gw.name, info.ip if info else None, gw.resolv_conf)
+    br = browser_spec(profile, fp, gateway_name, info.ip if info else None, resolv)
     if start_url:
         br.args = [start_url]
     if "WAYLAND_DISPLAY" not in br.env:
@@ -437,12 +474,13 @@ def launch(profile: Profile, *, strict: bool = False, start_url: str | None = No
     if info:
         profile.last_exit = info
     store.touch(profile)
-    return LaunchResult(profile, gw.name, br.name, info, warnings, notes)
+    return LaunchResult(profile, gateway_name, br.name, info, warnings, notes)
 
 
 def stop(profile: Profile) -> None:
-    """The window is closed: the browser goes, and its gateway with it unless
-    another user of the identity — a pentest tool, `kiwi-proxy up` — remains."""
+    """The window is closed: the browser goes, and the exit's gateway with it
+    unless another user of the exit — another profile's browser, a pentest tool,
+    `kiwi-proxy up` — remains."""
     if not podman.available():
         return
     browser = paths.browser_name(profile.id)
@@ -451,10 +489,10 @@ def stop(profile: Profile) -> None:
 
 
 def down(profile: Profile) -> None:
-    """Tear the identity's gateway down, whoever is inside (deleting a profile)."""
-    if podman.available():
-        podman.rm(paths.browser_name(profile.id))
-    gateway.down(profile.id)
+    """Deleting a profile: its browser goes. The exit is shared, so its gateway is
+    only released, never pulled from under whoever else is inside; `kiwi-proxy
+    down NAME` is the unconditional one."""
+    stop(profile)
 
 
 def running(profile: Profile) -> bool:
@@ -478,13 +516,18 @@ def reap() -> list[str]:
     if not podman.available():
         return []
     cleaned = []
-    names = {}
     for p in store.list_profiles():
-        gw, br = paths.gateway_name(p.id), paths.browser_name(p.id)
-        names[gw] = p.name
-        if podman.is_running(gw) and not podman.is_running(br):
+        br = paths.browser_name(p.id)
+        if podman.is_running(br):
+            continue
+        if not p.exit:
+            podman.rm(br)  # a dead browser with no gateway to release
+            continue
+        if podman.is_running(paths.gateway_name(p.exit)):
             podman.rm(br)
             if release(p, ignore=(br,)):
                 cleaned.append(p.name)
+    # Whatever kiwi-proxy finds unused, named after its exit where there is one.
+    names = {paths.gateway_name(ex.id): ex.name for ex in exits.list_exits()}
     cleaned += [names.get(name, name) for name in gateway.reap()]
     return cleaned

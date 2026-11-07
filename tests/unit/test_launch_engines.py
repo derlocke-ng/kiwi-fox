@@ -6,10 +6,15 @@ credentials and the browser the same way.
 from __future__ import annotations
 
 import pytest
+from kiwi_proxy import exits
 
 from kiwi_fox.core import launch, store
 from kiwi_fox.core.engines import firefox_fetch
 from kiwi_fox.core.models import Endpoint
+
+
+def _exit(name="plain-exit") -> str:
+    return exits.create(name, Endpoint(host="10.64.0.1", port=1080)).id
 
 
 @pytest.fixture
@@ -49,7 +54,7 @@ def test_firefox_launch_skips_camoufox_prep(podman_stub, monkeypatch, tmp_path):
 
     p = store.create(
         "plain",
-        Endpoint(host="10.64.0.1", port=1080),
+        _exit(),
         None,
         engine="firefox",
         engine_version="159.0",
@@ -67,7 +72,7 @@ def test_firefox_launch_skips_camoufox_prep(podman_stub, monkeypatch, tmp_path):
 
 def test_firefox_missing_engine_is_a_launch_error(podman_stub, monkeypatch):
     monkeypatch.setattr(firefox_fetch, "latest_installed", lambda: None)
-    p = store.create("plain", Endpoint(host="10.64.0.1", port=1080), None, engine="firefox")
+    p = store.create("plain", _exit(), None, engine="firefox")
     with pytest.raises((launch.LaunchError, RuntimeError)):
         launch.launch(p)
 
@@ -80,7 +85,7 @@ def test_firefox_browser_data_mount_is_present(podman_stub, monkeypatch, tmp_pat
     (eng / "firefox").chmod(0o755)
     p = store.create(
         "plain",
-        Endpoint(host="10.64.0.1", port=1080),
+        _exit(),
         None,
         engine="firefox",
         engine_version="159.0",

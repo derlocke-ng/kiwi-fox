@@ -16,6 +16,11 @@ def _hermetic(tmp_path, monkeypatch):
     drawn here must be the same one drawn anywhere."""
     for var in ("XDG_DATA_HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME"):
         monkeypatch.setenv(var, str(tmp_path / var.lower()))
+    # kiwi-proxy's exits and their passwords land in the same temporary tree, and
+    # kiwi-fox's own (0.3) keyring is never asked: no test touches the real one.
+    monkeypatch.setenv("KIWI_PROXY_SECRETS", "file")
+    monkeypatch.setattr("kiwi_fox.core.secrets.lookup", lambda profile_id: None)
+    monkeypatch.setattr("kiwi_fox.core.secrets.clear", lambda profile_id: None)
     from kiwi_fox.core import gpu
 
     monkeypatch.setattr(
@@ -84,11 +89,20 @@ def fp():
     return generate(engine_version=ENGINE, country="DE", seed="a" * 32)
 
 
+PROFILE_ID = "11111111-2222-3333-4444-555555555555"
+
+
 @pytest.fixture
 def profile():
+    """A profile on a plain exit whose id is the profile's own — what a profile
+    migrated from 0.3 has, so its gateway is still kf-gw-<profile id[:12]>."""
+    from kiwi_proxy import exits
+
+    if not exits.exists(PROFILE_ID):
+        exits.create("work", Endpoint(host="10.64.0.1", port=1080), exit_id=PROFILE_ID)
     return Profile(
-        id="11111111-2222-3333-4444-555555555555",
+        id=PROFILE_ID,
         name="work",
         created=dt.datetime(2026, 1, 1, tzinfo=dt.UTC),
-        endpoint=Endpoint(host="10.64.0.1", port=1080),
+        exit=PROFILE_ID,
     )

@@ -2,19 +2,22 @@
 
 Isolated browser identities in rootless Podman.
 
-Each profile is one persistent identity: its own storage, its own proxy exit and
-its own ad-blocking DNS resolver, in one of three browsers. In **Camoufox** (the
-default) it also has a frozen fingerprint: a website sees a coherent, ordinary
-Windows 11 machine with its own region. **Firefox** is stock Firefox, spoofing
-nothing; **Tor Browser** is Tor Browser, through Tor.
+Each profile is one persistent identity: its own storage and, usually, a proxy —
+a kiwi-proxy exit with a sealed gateway and an ad-blocking resolver of its own —
+in one of three browsers. In **Camoufox** (the default) it also has a frozen
+fingerprint: a website sees a coherent, ordinary Windows 11 machine with its own
+region. **Firefox** is stock Firefox, spoofing nothing; **Tor Browser** is Tor
+Browser, through Tor.
 
 For people who manage several accounts they own or are authorised to run and do
 not want those accounts cross-linked by browser fingerprint or IP.
 
-The network half — the sealed gateway, the exits, the provider modules — is
+The network half — the proxies (kiwi-proxy calls them exits), their sealed
+gateways, the provider modules — is
 [kiwi-proxy](https://github.com/derlocke-ng/kiwi-proxy), which kiwi-fox installs
-and drives: every profile is one kiwi-proxy exit. The same exits serve
-kiwi-pentesting's tools and applications on the host.
+and drives. A proxy is defined once, in kiwi-proxy, and shared: several profiles
+can use it, and so can kiwi-pentesting's tools and applications on the host. A
+profile can also run with no proxy at all, on this machine's own connection.
 
 ## Install
 
@@ -31,7 +34,10 @@ list, module images), so it is still one command.
 ## Use
 
 ```
-kiwi-fox new work socks5://user:pass@host:port   # probes the exit, draws a matching identity
+kiwi-proxy add kiwi-master-tor socks5://10.8.0.1:9050 --dns remote   # a proxy, defined once
+kiwi-fox new work --exit kiwi-master-tor         # a profile on it: probes it, draws a matching identity
+kiwi-fox new other socks5://user:pass@host:port  # the shortcut: makes the proxy "other" in kiwi-proxy
+kiwi-fox new bare --no-proxy                     # this machine's own connection, nothing sealed
 kiwi-fox list
 kiwi-fox run work                                # or use the GUI
 kiwi-fox stop work
@@ -40,29 +46,39 @@ kiwi-fox selfcheck work                          # measure what pages see, then 
 kiwi-fox-gui                                     # "Kiwi-Fox" in your app grid
 ```
 
-The GUI does all of it: **New profile** picks the browser and the exit (an endpoint
-or a provider module), **Browser engines** in the menu downloads Firefox and Tor
-Browser, and **Set up environment** is `kiwi-fox setup`.
+The GUI does all of it: **New profile** picks the browser and the proxy — one
+kiwi-proxy has, a new one through kiwi-proxy's own editor, or none — **Browser
+engines** in the menu downloads Firefox and Tor Browser, and **Set up environment**
+is `kiwi-fox setup`.
 
 Endpoint formats: `socks5://user:pass@host:port`, `http://…`, `https://…`, and the
 vendor paste format `host:port:user:pass`.
 
-## Exits from provider modules
+## Proxies, and provider modules
 
-Instead of an endpoint you were given, a profile can exit through a provider
-module that kiwi-proxy runs for you: Tor, a VPN tunnel (gluetun), 9proxy or
-Mysterium. Each module is its own kiwi app and exposes plain SOCKS5; the gateway
-reaches it over a private bridge and still permits exactly one destination.
+A proxy is a kiwi-proxy exit: a SOCKS5 you were given, or one a provider module
+runs for you — Tor, a VPN tunnel (gluetun), 9proxy or Mysterium. It carries its
+own DNS mode and ad-blocking lists, so blocking ads on your Tor SOCKS is a setting
+on that proxy, and every profile on it gets it. `kiwi-proxy list` shows them,
+`kiwi-proxy set NAME …` changes one, and the Kiwi-Proxy app does the same.
+
+Profiles on one proxy share its gateway: one namespace, one exit IP, one set of
+Tor circuits. Identities that must not share an exit take different proxies.
+
+Each module is its own kiwi app and exposes plain SOCKS5; the gateway reaches it
+over a private bridge and still permits exactly one destination.
 
 ```
 kiwi install kiwi-plugin-tor                  # or -vpn, -9proxy, -myst
 kiwi-fox setup                                # builds the module's image
+kiwi-proxy add tor-de --module tor --country de
+kiwi-fox new work --exit tor-de
+kiwi-fox new other --module tor --country de  # the shortcut: a proxy "other" through the module
 kiwi-fox module list                          # = `kiwi-proxy module list`; `module leases tor`
-kiwi-fox new work --module tor --country de   # the module produces the endpoint
 ```
 
-On Tor every profile gets its own circuit. How modules work and how to write one:
-kiwi-proxy's [docs/plugin-system.md](https://github.com/derlocke-ng/kiwi-proxy/blob/main/docs/plugin-system.md).
+How modules work and how to write one: kiwi-proxy's
+[docs/plugin-system.md](https://github.com/derlocke-ng/kiwi-proxy/blob/main/docs/plugin-system.md).
 
 ## Browser engine
 
@@ -84,8 +100,8 @@ kiwi-fox run plain
 ```
 
 A firefox profile has no fingerprint and ignores the identity flags
-(`--webgl`, `--card`, `--screen`, …); it keeps the endpoint, DNS, appearance and
-the same leak-proof gateway. Its traffic still exits only through the one
+(`--webgl`, `--card`, `--screen`, …); it keeps its proxy, appearance and the same
+leak-proof gateway. Its traffic still exits only through the one
 permitted destination, WebRTC cannot leak the host address, and the engine is
 pinned and mounted read-only with updates turned off.
 
@@ -99,10 +115,10 @@ kiwi-fox run anon
 Like Whonix, Tor Browser runs without its own tor: `TOR_PROVIDER=none` points it
 at the gateway, whose only route is the tor provider. Tor Browser keys a circuit
 per first-party site with its SOCKS credentials, and the gateway passes those
-through behind the profile's own token, so sites stay on separate circuits and
-profiles stay apart; New Identity and New Circuit work without a control port.
-DNS resolves at the exit, so `.onion` works. It refuses any exit but the tor
-module. The download is checked against the Tor Browser Developers' signing key,
+through behind the proxy's own token, so sites stay on separate circuits and
+proxies stay apart; New Identity and New Circuit work without a control port.
+DNS resolves at the exit, so `.onion` works. It needs a proxy on the tor module,
+which kiwi-proxy makes passthrough by default, and cannot run without one. The download is checked against the Tor Browser Developers' signing key,
 pinned by fingerprint, and the bundle is mounted read-only and never patched.
 
 ## What a new profile is
@@ -128,15 +144,17 @@ kiwi-fox set work --country SE --timezone Europe/Stockholm
 kiwi-fox set work --font-add "Yu Gothic" --font-add "MS Gothic"  # see: kiwi-fox fonts work
 kiwi-fox set work --appearance dark                            # or light, or host
 kiwi-fox set work --user-agent "Mozilla/5.0 …"                 # --default-user-agent undoes it
-kiwi-fox set work --endpoint socks5://user:pass@host:port
+kiwi-fox set work --exit other-proxy                            # or --no-proxy
 ```
 
 Edits are checked together and nothing is saved unless the result is coherent. One
 thing is not there because it does not exist: the Windows version. Firefox sends
 the same user agent on Windows 10 and 11.
 
-A Firefox or Tor Browser profile spoofs nothing, so only its name, endpoint, DNS
-and (Firefox) appearance change: `kiwi-fox set plain --name other --dns-mode remote`.
+A Firefox or Tor Browser profile spoofs nothing, so only its name, proxy and
+(Firefox) appearance change: `kiwi-fox set plain --name other --exit tor-de`. The
+proxy's own settings — endpoint, DNS, blocklists — are kiwi-proxy's:
+`kiwi-proxy set tor-de --dns remote`.
 
 ## Graphics
 
@@ -193,7 +211,8 @@ kiwi-fox set work --language local      # back to the region's own
 ## How a profile is isolated
 
 ```
-gateway container   kiwi-proxy's, for the profile's exit; owns the network namespace
+gateway container   kiwi-proxy's, for the profile's proxy; owns the network namespace,
+                    shared by every profile (and tool) on that proxy
                     nftables: default drop, one permitted destination
                     forwarder: adds proxy credentials, the browser never sees them
                     dnscrypt-proxy: ad-blocking, upstream through the same exit
@@ -203,9 +222,11 @@ browser container   joins that namespace — no routing table of its own
 The kill switch is the absence of a route, not software that has to notice. If the
 gateway dies the profile simply loses connectivity.
 
-Each profile's exit carries the profile's name in `kiwi-proxy list`. A pentest
-tool or `kiwi-proxy up` can join the same namespace; closing the browser then
-leaves the gateway to them, and deleting the profile takes it down.
+`kiwi-proxy list` shows the proxies; one made by the shortcut is named after its
+profile. Another profile, a pentest tool or `kiwi-proxy up` can be in the same
+namespace; closing the browser leaves the gateway to them, and it goes with the
+last one. With no proxy there is no gateway: the browser container has a network
+of its own on this machine's connection, and nothing is sealed.
 
 ## What it does not do
 

@@ -216,7 +216,12 @@ def probe(profile: Profile, *, timeout: int = 70, raw: bool = False, skip: str =
     `skip` is a comma-separated list of collectors to leave out, for bisecting a
     native crash that no JavaScript handler can survive.
     """
-    gateway = paths.gateway_name(profile.id)
+    if not profile.exit:
+        raise RuntimeError(
+            f"{profile.name} has no proxy, and the probe page is served from the exit's "
+            f"gateway; give it one to measure it (kiwi-fox set {profile.name} --exit NAME)"
+        )
+    gateway = paths.gateway_name(profile.exit)
     started_gateway = False
     if not podman.is_running(gateway):
         launch.start_gateway(profile)

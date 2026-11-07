@@ -60,10 +60,11 @@ def ensure_tree() -> None:
         d.mkdir(parents=True, exist_ok=True)
 
 
-def gateway_name(profile_id: str) -> str:
-    """The profile's gateway. kiwi-proxy names it after the exit, and a profile's
-    exit id is the profile id, so it is the kf-gw-<id[:12]> it always was."""
-    return kiwi_paths.gateway_name(profile_id)
+def gateway_name(exit_id: str) -> str:
+    """The gateway of an exit (`profile.exit`), as kiwi-proxy names it. A profile
+    migrated from before 0.4 has its own id as its exit id, so its gateway is the
+    kf-gw-<id[:12]> it always was."""
+    return kiwi_paths.gateway_name(exit_id)
 
 
 def browser_name(profile_id: str) -> str:

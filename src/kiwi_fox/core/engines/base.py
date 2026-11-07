@@ -27,7 +27,7 @@ class Engine(Protocol):
     ) -> dict[str, object]: ...
 
     def build_spec(
-        self, profile: Profile, fp: Fingerprint | None, *, gateway: str, exit_ip: str | None
+        self, profile: Profile, fp: Fingerprint | None, *, gateway: str | None, exit_ip: str | None
     ) -> ContainerSpec: ...
 
 

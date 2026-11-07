@@ -1,5 +1,38 @@
 # Changelog
 
+## 0.4.0
+
+A proxy is defined once, in kiwi-proxy, and shared.
+
+- **A profile references a kiwi-proxy exit** instead of owning one. Define the
+  proxy in kiwi-proxy — `kiwi-proxy add kiwi-master-tor socks5://10.8.0.1:9050
+  --dns remote`, or the Kiwi-Proxy app — and put profiles on it: `kiwi-fox new
+  work --exit kiwi-master-tor`, or the GUI's Proxy picker, which lists
+  kiwi-proxy's exits and opens kiwi-proxy's own editor for a new one. Profiles on
+  one proxy share its gateway. Ad-blocking, DNS mode and credentials are the
+  proxy's; a change there reaches every profile on it at the next launch.
+- **No proxy at all** is a choice: `--no-proxy`, or the picker's first entry. The
+  browser then runs on this machine's own connection with no proxy configured,
+  in a network namespace of its own, nothing sealed. Not for Tor Browser, and
+  not for `selfcheck`.
+- **The shortcuts stay.** `kiwi-fox new NAME ENDPOINT` and `new NAME --module
+  tor` make the proxy in kiwi-proxy, named after the profile. It goes with its
+  last profile when kiwi-fox made it, and stays when you did.
+- **Profiles from 0.3 migrate on first sight.** Each keeps the exit that was
+  registered under its own id, so gateway names and Tor circuits are unchanged;
+  its password moves into kiwi-proxy's secret store. Several profiles on the
+  same upstream can be merged by hand: `kiwi-fox set NAME --exit OTHER`, then
+  `kiwi-proxy rm` the spare.
+- `kiwi-fox set` takes `--exit` and `--no-proxy`; its `--endpoint`, `--dns-mode`
+  and `--upstream` are gone (they are `kiwi-proxy set`'s). On `new`, `--dns-mode`
+  and `--upstream` describe a proxy made there. `list` and the GUI name the
+  proxy; `show` says what is behind it.
+- Tor Browser is held to an exit on the tor module that passes SOCKS auth
+  through, which kiwi-proxy 0.3 makes the default; a Camoufox profile can share
+  that exit.
+- Needs kiwi-proxy 0.3.0 (ad-blocking in remote DNS mode, the passthrough
+  default); `kiwi update` brings both.
+
 ## 0.3.2
 
 The browser image builds again.

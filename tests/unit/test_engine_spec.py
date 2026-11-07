@@ -95,7 +95,11 @@ def test_prefs_pin_the_dangerous_ones(engine, fp, profile):
 
 
 def test_remote_dns_mode_flips_the_pref(engine, fp, profile):
-    profile.dns.mode = "remote"
+    from kiwi_proxy import exits
+
+    ex = exits.load(profile.exit)
+    ex.dns.mode = "remote"
+    exits.save(ex)  # `kiwi-proxy set work --dns remote`
     assert engine.prefs(fp, profile)["network.proxy.socks_remote_dns"] is True
 
 

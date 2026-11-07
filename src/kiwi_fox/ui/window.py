@@ -8,8 +8,8 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 
 from gi.repository import Adw, Gio, GLib, Gtk  # noqa: E402
+from kiwi_proxy import exits, podman  # noqa: E402
 from kiwi_proxy import paths as proxy_paths  # noqa: E402
-from kiwi_proxy import podman  # noqa: E402
 
 from ..core import launch, modules, secrets, store  # noqa: E402
 from ..core.engines import TITLES, installed_versions  # noqa: E402
@@ -61,8 +61,9 @@ class Window(Adw.ApplicationWindow):
         self.empty = Adw.StatusPage(
             icon_name="avatar-default-symbolic",
             title="No profiles yet",
-            description="A profile is one identity: its own storage and its own exit, in "
-            "Camoufox with a frozen Windows fingerprint, in stock Firefox, or in Tor Browser.",
+            description="A profile is one identity: its own storage, on a kiwi-proxy exit or "
+            "this machine's own connection, in Camoufox with a frozen Windows fingerprint, "
+            "in stock Firefox, or in Tor Browser.",
         )
         create = Gtk.Button(label="Create a profile", halign=Gtk.Align.CENTER)
         create.add_css_class("suggested-action")
@@ -196,11 +197,7 @@ class Window(Adw.ApplicationWindow):
         dialog = NewProfileDialog(self, self._after_create)
         dialog.name_row.set_text(f"{profile.name}-2")
         dialog.select_engine(profile.engine)
-        if profile.endpoint.module:
-            dialog.select_module(profile.endpoint.module)
-            dialog.exit_country_row.set_text((profile.endpoint.country or "").upper())
-        else:
-            dialog.endpoint_row.set_text(f"{profile.endpoint.host}:{profile.endpoint.port}")
+        dialog.exits.select(profile.exit)
         dialog.present(self)
 
     def _act_delete(self, _action, param) -> None:
@@ -214,8 +211,8 @@ class Window(Adw.ApplicationWindow):
             )
         else:
             body = (
-                "Its browser data and its exit are removed. Logins tied to this profile "
-                "will be lost."
+                "Its browser data are removed. Logins tied to this profile will be lost. "
+                "A proxy kiwi-fox made for it alone goes too; one made in kiwi-proxy stays."
             )
         dialog = Adw.AlertDialog(heading=f"Delete {profile.name}?", body=body)
         dialog.add_response("cancel", "Cancel")
@@ -300,7 +297,13 @@ class Window(Adw.ApplicationWindow):
                     if not podman.image_exists(image):
                         missing.append(image.split("/")[-1].split(":")[0] + " image")
             present = {m.name for m in modules.installed()}
-            for name in sorted({p.endpoint.module for p in profiles if p.endpoint.module}):
+            by_id = {e.id: e for e in exits.list_exits()}
+            needed = {
+                by_id[p.exit].endpoint.module
+                for p in profiles
+                if p.exit in by_id and by_id[p.exit].endpoint.module
+            }
+            for name in sorted(needed):
                 if name not in present:
                     missing.append(f"the {name} module ({modules.install_hint(name)})")
             if not (proxy_paths.blocklists_dir() / "blocked-names.txt").exists():

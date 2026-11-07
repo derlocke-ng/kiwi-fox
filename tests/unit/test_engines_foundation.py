@@ -11,16 +11,27 @@ import datetime as dt
 import json
 
 import pytest
+from kiwi_proxy import exits
 from pydantic import ValidationError
 
 from kiwi_fox.core import store
 from kiwi_fox.core.engines import gecko, get_engine
 from kiwi_fox.core.fingerprint import validator
-from kiwi_fox.core.models import Endpoint, Fingerprint, Profile
+from kiwi_fox.core.models import Fingerprint, Profile
 
 
-def _endpoint(**kw):
-    return Endpoint(host="10.64.0.1", port=1080, **kw)
+def _exit() -> str:
+    """A proxy in kiwi-proxy, as `kiwi-fox new NAME ENDPOINT` would make it."""
+    from kiwi_proxy.models import Endpoint
+
+    return exits.create("work", Endpoint(host="10.64.0.1", port=1080)).id
+
+
+def _set_dns(profile, mode: str) -> None:
+    """What `kiwi-proxy set NAME --dns MODE` does to the profile's exit."""
+    ex = exits.load(profile.exit)
+    ex.dns.mode = mode
+    exits.save(ex)
 
 
 # ----------------------------------------------------------- model compatibility
@@ -54,23 +65,22 @@ def test_unknown_profile_engine_rejected():
             name="n",
             created=dt.datetime(2026, 1, 1, tzinfo=dt.UTC),
             engine="chrome",  # type: ignore[arg-type]
-            endpoint=_endpoint(),
         )
 
 
 # ---------------------------------------------------------------- store.create
 def test_create_camoufox_needs_fingerprint():
     with pytest.raises(store.StoreError, match="needs a fingerprint"):
-        store.create("c", _endpoint(), None, engine="camoufox")
+        store.create("c", _exit(), None, engine="camoufox")
 
 
 def test_create_firefox_rejects_a_fingerprint(fp):
     with pytest.raises(store.StoreError, match="no fingerprint"):
-        store.create("f", _endpoint(), fp, engine="firefox")
+        store.create("f", _exit(), fp, engine="firefox")
 
 
 def test_create_firefox_writes_no_fingerprint():
-    p = store.create("f", _endpoint(), None, engine="firefox", engine_version="159.0")
+    p = store.create("f", _exit(), None, engine="firefox", engine_version="159.0")
     assert p.engine == "firefox"
     assert p.engine_version == "159.0"
     from kiwi_fox.core import paths
@@ -82,7 +92,7 @@ def test_create_firefox_writes_no_fingerprint():
 
 
 def test_create_camoufox_still_works(fp):
-    p = store.create("c", _endpoint(), fp, engine="camoufox")
+    p = store.create("c", _exit(), fp, engine="camoufox")
     assert p.engine == "camoufox"
     assert store.fingerprint_of(p) is not None
     from kiwi_fox.core import paths
@@ -91,8 +101,8 @@ def test_create_camoufox_still_works(fp):
 
 
 def test_create_positional_fingerprint_defaults_camoufox(fp):
-    # The old call shape — create(name, endpoint, fp) — must keep working.
-    p = store.create("c", _endpoint(), fp)
+    # The call shape — create(name, exit, fp) — with the fingerprint positional.
+    p = store.create("c", _exit(), fp)
     assert p.engine == "camoufox"
 
 
@@ -115,14 +125,24 @@ def test_get_engine_unknown():
 
 
 # ------------------------------------------------------------------ gecko prefs
-def test_network_prefs_follow_dns_mode(profile):
+def test_network_prefs_follow_the_exits_dns_mode(profile):
     assert gecko.network_prefs(profile)["network.proxy.socks_remote_dns"] is False
-    profile.dns.mode = "remote"
+    _set_dns(profile, "remote")
     assert gecko.network_prefs(profile)["network.proxy.socks_remote_dns"] is True
 
 
+def test_network_prefs_with_no_proxy_configure_none(profile):
+    profile.exit = None
+    prefs = gecko.network_prefs(profile)
+    assert prefs["network.proxy.type"] == 0
+    assert "network.proxy.socks" not in prefs
+    assert prefs["network.dns.disablePrefetch"] is True  # the quiet prefs still hold
+    assert validator.check_network_prefs(prefs, direct=True) == []
+    assert validator.check_network_prefs(prefs) != [], "proxied check must not pass it"
+
+
 def test_network_prefs_force_remote_dns_overrides_resolver(profile):
-    assert profile.dns.mode == "resolver"
+    assert exits.load(profile.exit).dns.mode == "resolver"
     prefs = gecko.network_prefs(profile, force_remote_dns=True)
     assert prefs["network.proxy.socks_remote_dns"] is True
 

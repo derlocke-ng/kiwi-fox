@@ -37,7 +37,8 @@ FRAME = 10  # what the window's frame adds around its content
 
 def stage() -> None:
     """The world the screenshots show."""
-    from kiwi_proxy import podman
+    from kiwi_proxy import exits, podman
+    from kiwi_proxy.models import DnsConfig
 
     from kiwi_fox.core import gpu, modules, paths, store
     from kiwi_fox.core.engines import fetch
@@ -58,31 +59,42 @@ def stage() -> None:
         modules.Module("9proxy", "9proxy", "a residential proxy", True, True),
         modules.Module("mysterium", "Mysterium", "the Mysterium dVPN", True, True),
     ]
-    modules.leases = lambda name: []
     window.Window._check_environment = lambda self, announce=False: None
     podman.available = lambda: True
 
     paths.ensure_tree()
-    seen = dt.datetime(2026, 10, 29, tzinfo=dt.UTC)
-    for name, port, country, city in (
-        ("work", 1080, "CH", "Zurich"),
-        ("shop", 1081, "SE", "Malmö"),
+    seen = dt.datetime(2026, 11, 7, tzinfo=dt.UTC)
+    # The proxies, as kiwi-proxy holds them: two Mullvad SOCKS, a Tor on another
+    # machine, and the tor module. Profiles pick one; "work" and "shop" share.
+    proxies = {
+        "mullvad-ch": (Endpoint(host="10.64.0.1", port=1080), DnsConfig(), "185.65.10.7", "CH", "Zurich"),
+        "mullvad-se": (Endpoint(host="10.124.0.2", port=1080), DnsConfig(), "185.65.81.7", "SE", "Malmö"),
+        "kiwi-master-tor": (Endpoint(host="10.8.0.1", port=9050), DnsConfig(mode="remote"), "185.220.101.4", "DE", "Frankfurt"),
+    }  # fmt: skip
+    exit_ids = {}
+    for name, (ep, dns_cfg, ip, country, city) in proxies.items():
+        ex = exits.create(name, ep, dns=dns_cfg)
+        exits.record_exit(ex, ExitInfo(ip=ip, country=country, city=city, seen=seen))
+        exit_ids[name] = ex.id
+    tor = exits.create(
+        "tor",
+        Endpoint(host="10.89.231.5", port=9050, module="tor"),
+        dns=DnsConfig(mode="remote"),
+        socks_auth="passthrough",
+    )
+    for name, proxy, country, city in (
+        ("work", "mullvad-ch", "CH", "Zurich"),
+        ("shop", "mullvad-ch", "CH", "Zurich"),
+        ("market", "mullvad-se", "SE", "Malmö"),
     ):
         fp = generate(engine_version="152.0.4", country=country, seed=name * 8)
-        p = store.create(name, Endpoint(host="10.64.0.1", port=port), fp)
-        p.last_exit = ExitInfo(ip=f"185.65.{port % 100}.7", country=country, city=city, seen=seen)
+        p = store.create(name, exit_ids[proxy], fp)
+        p.last_exit = ExitInfo(ip=proxies[proxy][2], country=country, city=city, seen=seen)
         store.save(p)
-    research = store.create(
-        "research", Endpoint(host="10.64.0.1", port=1082), None, engine="firefox"
-    )
-    research.last_exit = ExitInfo(ip="185.65.82.7", country="DE", city="Frankfurt", seen=seen)
+    research = store.create("research", exit_ids["kiwi-master-tor"], None, engine="firefox")
+    research.last_exit = ExitInfo(ip="185.220.101.4", country="DE", city="Frankfurt", seen=seen)
     store.save(research)
-    store.create(
-        "anon",
-        Endpoint(host="10.89.231.5", port=9050, module="tor"),
-        None,
-        engine="torbrowser",
-    )
+    store.create("anon", tor.id, None, engine="torbrowser")
     running = {paths.browser_name(store.find_by_name("work").id)}
     podman.is_running = lambda name: name in running
 

@@ -99,7 +99,7 @@ class Firefox:
 
     # ---------------------------------------------------------------- spec
     def build_spec(
-        self, profile: Profile, fp: Fingerprint | None, *, gateway: str, exit_ip: str | None
+        self, profile: Profile, fp: Fingerprint | None, *, gateway: str | None, exit_ip: str | None
     ) -> ContainerSpec:
         return base_spec(
             profile,

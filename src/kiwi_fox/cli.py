@@ -9,6 +9,7 @@ import sys
 from kiwi_proxy import dns, exits, gateway, podman, providers
 from kiwi_proxy import endpoint as proxy
 from kiwi_proxy import paths as proxy_paths
+from kiwi_proxy import secrets as proxy_secrets
 
 from . import __version__
 from .core import geometry, gpu, launch, paths, secrets, store
@@ -32,11 +33,80 @@ def _fail(msg: str) -> int:
 
 
 # ------------------------------------------------------------------ commands
-def _endpoint_from_module(module: str, *, lease: str | None, country: str | None):
-    """Let a provider module produce the endpoint by bringing itself up."""
-    from .core import modules
+class _NewError(Exception):
+    pass
 
-    return modules.endpoint_from(module, lease=lease, country=country), None
+
+def _exit_for_new(a: argparse.Namespace):
+    """Where a new profile exits, said one way: a proxy kiwi-proxy has (--exit), a
+    new one made here and named after the profile (an ENDPOINT, or --module), or
+    none at all (--no-proxy). Returns (Exit or None, made_here)."""
+    ways = {
+        "--exit": bool(a.exit),
+        "--no-proxy": bool(a.no_proxy),
+        "an ENDPOINT or --module": bool(a.endpoint or a.module),
+    }
+    if sum(ways.values()) != 1:
+        raise _NewError(
+            "say where the profile exits, one way: an ENDPOINT or --module NAME (a new "
+            "proxy in kiwi-proxy, named after the profile), --exit NAME (a proxy kiwi-proxy "
+            "has — `kiwi-proxy list`), or --no-proxy (this machine's own connection)"
+        )
+    if (a.dns_mode or a.upstream) and not ways["an ENDPOINT or --module"]:
+        raise _NewError(
+            "--dns-mode and --upstream describe a proxy made here; an existing one keeps "
+            "its own (`kiwi-proxy set`), and no proxy has none"
+        )
+    if a.exit:
+        try:
+            return exits.resolve_ref(a.exit), False
+        except exits.ExitError as exc:
+            raise _NewError(f"{exc} (kiwi-proxy list shows them)") from exc
+    if a.no_proxy:
+        return None, False
+    if exits.find_by_name(a.name):
+        raise _NewError(
+            f"kiwi-proxy already has an exit named {a.name!r}: put the profile on it with "
+            f"--exit {a.name}, or pick another profile name"
+        )
+    dns_cfg = DnsConfig(mode=a.dns_mode or "resolver", upstream=a.upstream or dns.DEFAULT_UPSTREAM)
+    password = None
+    try:
+        if a.endpoint:
+            endpoint, password = proxy.parse(a.endpoint)
+            endpoint.module, endpoint.lease, endpoint.country = a.module, a.lease, a.country
+        else:
+            endpoint = exits.module_endpoint(a.module, lease=a.lease, country=a.country)
+        return store.create_exit(a.name, endpoint, password=password, dns=dns_cfg), True
+    except (proxy.ProxyError, providers.ProviderError, store.StoreError) as exc:
+        raise _NewError(str(exc)) from exc
+
+
+def _probe_for_region(a: argparse.Namespace, ex) -> tuple[str | None, str | None]:
+    """The country and timezone a Camoufox profile's region follows: --country, or
+    what the exit reports. A plain exit is asked from the host; a provider exit
+    sits on a bridge the host cannot reach, so its last measurement is used; no
+    proxy means this machine's own connection."""
+    if a.country or a.no_probe:
+        return a.country, None
+    try:
+        if ex is None:
+            info = launch.measure_direct()
+        elif providers.manages(ex.endpoint.module):
+            info = ex.last_exit
+            if info is None:
+                _p(
+                    f"note: {ex.name} has not been up yet, so its region is unknown; pass "
+                    "--country, or accept the default region"
+                )
+                return None, None
+        else:
+            info = proxy.preflight(ex.endpoint, proxy_secrets.lookup(ex.id, kind="endpoint"))
+    except Exception as exc:  # noqa: BLE001
+        _p(f"warning: could not probe the exit ({exc}); falling back to --country")
+        return None, None
+    _p(f"exit: {info.ip} {info.country or '?'} {info.city or ''} ({info.timezone or '?'})")
+    return info.country, info.timezone
 
 
 # Spoof-only flags, by their CLI name, with the value that means "given". A
@@ -57,7 +127,7 @@ def _spoof_flags_given(a: argparse.Namespace) -> list[str]:
     return [flag for flag, val in pairs.items() if val]
 
 
-def _new_firefox(a: argparse.Namespace, endpoint, password) -> int:
+def _new_firefox(a: argparse.Namespace, ex) -> int:
     from .core.engines import firefox_fetch
 
     given = _spoof_flags_given(a)
@@ -67,13 +137,7 @@ def _new_firefox(a: argparse.Namespace, endpoint, password) -> int:
         )
     version = a.engine_version or firefox_fetch.latest_installed()
     profile = store.create(
-        a.name,
-        endpoint,
-        None,
-        engine="firefox",
-        engine_version=version,
-        password=password,
-        dns=DnsConfig(mode=a.dns_mode, upstream=a.upstream),
+        a.name, ex.id if ex else None, None, engine="firefox", engine_version=version
     )
     profile.appearance = a.appearance
     store.save(profile)
@@ -85,12 +149,11 @@ def _new_firefox(a: argparse.Namespace, endpoint, password) -> int:
             "  engine  : stock Firefox (none installed yet — kiwi-fox engine fetch --engine firefox)"
         )
     _p("  identity: none — this machine's own Firefox, nothing spoofed")
-    _p(f"  dns     : {profile.dns.mode}")
-    _p(f"  exit    : {endpoint.label}")
+    _p(f"  exit    : {store.describe_exit(ex)}")
     return 0
 
 
-def _new_torbrowser(a: argparse.Namespace, endpoint, password) -> int:
+def _new_torbrowser(a: argparse.Namespace, ex) -> int:
     from .core.engines import torbrowser_fetch
 
     given = _spoof_flags_given(a)
@@ -98,20 +161,13 @@ def _new_torbrowser(a: argparse.Namespace, endpoint, password) -> int:
         return _fail(
             f"Tor Browser keeps its own uniform fingerprint, so {', '.join(given)} do not apply"
         )
-    if endpoint.module != "tor":
-        return _fail("Tor Browser exits only through the tor provider: create it with --module tor")
-    if a.dns_mode == "resolver":
-        _p("note: Tor Browser resolves at the exit; DNS mode is remote regardless")
     version = a.engine_version or torbrowser_fetch.latest_installed()
-    profile = store.create(
-        a.name,
-        endpoint,
-        None,
-        engine="torbrowser",
-        engine_version=version,
-        password=password,
-        dns=DnsConfig(mode="remote", upstream=a.upstream),
-    )
+    try:
+        profile = store.create(
+            a.name, ex.id if ex else None, None, engine="torbrowser", engine_version=version
+        )
+    except store.StoreError as exc:
+        return _fail(str(exc))
     _p(f"created {profile.name}  {profile.id}")
     if version:
         _p(f"  engine  : Tor Browser {version}")
@@ -119,32 +175,33 @@ def _new_torbrowser(a: argparse.Namespace, endpoint, password) -> int:
         _p("  engine  : Tor Browser (none installed — kiwi-fox engine fetch --engine torbrowser)")
     _p("  identity: Tor Browser's own uniform fingerprint, untouched")
     _p("  circuits: one per first-party site (New Identity / New Circuit work)")
-    if endpoint.country or endpoint.lease:
+    if ex.endpoint.country or ex.endpoint.lease:
         _p("  note    : pinning a Tor exit shrinks your anonymity set")
-    _p(f"  exit    : {endpoint.label}")
+    _p(f"  exit    : {store.describe_exit(ex)}")
     return 0
 
 
 def cmd_new(a: argparse.Namespace) -> int:
-    # Tor Browser produces no endpoint from a plain address — it needs the tor
-    # module — so allow `new NAME --engine torbrowser --module tor` with no ENDPOINT.
-    if a.endpoint:
-        endpoint, password = proxy.parse(a.endpoint)
-        endpoint.module = a.module
-        endpoint.lease = a.lease
-        endpoint.country = a.country
-    elif a.module:
-        try:
-            endpoint, password = _endpoint_from_module(a.module, lease=a.lease, country=a.country)
-        except providers.ProviderError as exc:
-            return _fail(str(exc))
-    else:
-        return _fail("give an ENDPOINT, or --module NAME to have a provider produce one")
+    try:
+        ex, made_here = _exit_for_new(a)
+    except _NewError as exc:
+        return _fail(str(exc))
+    try:
+        code = _new_profile(a, ex)
+    except BaseException:
+        if made_here:
+            exits.delete(ex.id)  # no profile, no shortcut exit left behind
+        raise
+    if code != 0 and made_here:
+        exits.delete(ex.id)
+    return code
 
+
+def _new_profile(a: argparse.Namespace, ex) -> int:
     if a.engine == "firefox":
-        return _new_firefox(a, endpoint, password)
+        return _new_firefox(a, ex)
     if a.engine == "torbrowser":
-        return _new_torbrowser(a, endpoint, password)
+        return _new_torbrowser(a, ex)
 
     version = a.engine_version or engine_fetch.preferred()
     if not version:
@@ -162,19 +219,7 @@ def cmd_new(a: argparse.Namespace) -> int:
     if hard := errors(validate_webgl(mode, a.webgl_vendor, a.webgl_renderer, series)):
         return _fail("; ".join(i.message for i in hard))
 
-    country = a.country
-    exit_timezone = None
-    # A managed local provider lives on a rootless bridge the host cannot reach, so
-    # the host-side probe would only time out; its exit is measured later through
-    # the gateway. Pass --country for such a profile's region.
-    if not country and not a.no_probe and not providers.manages(endpoint.module):
-        try:
-            info = proxy.preflight(endpoint, password)
-            country = info.country
-            exit_timezone = info.timezone
-            _p(f"exit: {info.ip} {info.country or '?'} {info.city or ''} ({info.timezone or '?'})")
-        except Exception as exc:  # noqa: BLE001
-            _p(f"warning: could not probe the exit ({exc}); falling back to --country")
+    country, exit_timezone = _probe_for_region(a, ex)
 
     fp = generate(
         series=series,
@@ -200,13 +245,7 @@ def cmd_new(a: argparse.Namespace) -> int:
     for i in issues:
         _p(f"  {i}")
 
-    profile = store.create(
-        a.name,
-        endpoint,
-        fp,
-        password=password,
-        dns=DnsConfig(mode=a.dns_mode, upstream=a.upstream),
-    )
+    profile = store.create(a.name, ex.id if ex else None, fp)
     profile.webgl = mode  # type: ignore[assignment]
     profile.webgl_series = series
     profile.webgl_card = card
@@ -229,23 +268,32 @@ def cmd_new(a: argparse.Namespace) -> int:
     )
     _p(f"  region  : {fp.locale} / {fp.timezone}")
     _p(f"  fonts   : {len(fp.fonts)} families")
-    _p(f"  exit    : {endpoint.label}")
+    _p(f"  exit    : {store.describe_exit(ex)}")
     return 0
+
+
+def _exit_column(p, names: dict[str, str]) -> str:
+    if not p.exit:
+        return "no proxy"
+    return names.get(p.exit) or f"MISSING ({p.exit[:8]})"
 
 
 def cmd_list(a: argparse.Namespace) -> int:
     profiles = store.list_profiles()
     if not profiles:
-        _p("no profiles yet — `kiwi-fox new NAME socks5://host:port`, or `--module tor` for Tor")
+        _p(
+            "no profiles yet — `kiwi-fox new NAME --exit PROXY` (a proxy from `kiwi-proxy list`), "
+            "`new NAME socks5://host:port`, `--module tor`, or `--no-proxy`"
+        )
         return 0
-    from .core import modules
     from .core.engines import TITLES
 
+    names = {ex.id: ex.name for ex in exits.list_exits()}
     _p(f"{'NAME':16} {'BROWSER':12} {'EXIT':24} {'COUNTRY':8} {'STATE':9} ID")
     for p in profiles:
         state = "running" if launch.running(p) else "stopped"
         country = (p.last_exit.country if p.last_exit else None) or "-"
-        where = modules.exit_label(p.endpoint)
+        where = _exit_column(p, names)
         _p(f"{p.name:16} {TITLES[p.engine]:12} {where:24} {country:8} {state:9} {p.id[:8]}")
     return 0
 
@@ -253,8 +301,14 @@ def cmd_list(a: argparse.Namespace) -> int:
 def _show_common(p) -> None:
     _p(f"{p.name}  ({p.id})")
     _p(f"  created   {p.created:%Y-%m-%d %H:%M}  last used {p.last_used or 'never'}")
-    _p(f"  endpoint  {p.endpoint.label}  auth={'yes' if p.endpoint.username else 'no'}")
-    _p(f"  dns       {p.dns.mode} upstream={p.dns.upstream} lists={','.join(p.dns.blocklists)}")
+    try:
+        ex = store.exit_of(p)
+    except store.StoreError:
+        _p(f"  exit      MISSING ({p.exit[:8]}) — kiwi-fox set {p.name} --exit NAME, or --no-proxy")
+    else:
+        _p(f"  exit      {store.describe_exit(ex)}" + ("  (kiwi-proxy)" if ex else ""))
+        if ex and ex.endpoint.username:
+            _p(f"  auth      user {ex.endpoint.username}")
     if p.last_exit:
         e = p.last_exit
         _p(
@@ -360,7 +414,7 @@ def cmd_run(a: argparse.Namespace) -> int:
     if res.exit_info:
         e = res.exit_info
         _p(f"exit: {e.ip} {e.country or '?'} {e.city or ''}")
-    _p(f"gateway {res.gateway}")
+    _p(f"gateway {res.gateway or 'none (no proxy)'}")
     _p(f"browser {res.browser}")
     if a.wait:
         _p("waiting for the browser to exit (ctrl-c detaches without tearing down)")
@@ -864,8 +918,9 @@ def _edited(fp: Fingerprint, a: argparse.Namespace) -> Fingerprint:
 def cmd_set(a: argparse.Namespace) -> int:
     """Change what a profile reports. Nothing is saved unless all of it is coherent.
 
-    A Firefox or Tor Browser profile spoofs nothing, so only its name, exit, DNS
-    and appearance can change."""
+    A Firefox or Tor Browser profile spoofs nothing, so only its name, exit and
+    appearance can change. The exit's own settings — endpoint, DNS, blocklists —
+    are kiwi-proxy's: `kiwi-proxy set NAME …`."""
     profile = store.resolve_ref(a.ref)
     fp = store.fingerprint_of(profile)
     if fp is None:
@@ -890,16 +945,24 @@ def cmd_set(a: argparse.Namespace) -> int:
         updates["user_agent"] = a.user_agent
     if a.default_user_agent:
         updates["user_agent"] = None
-    password = None
-    if a.endpoint:
-        endpoint, password = proxy.parse(a.endpoint)
-        updates["endpoint"] = endpoint
-    if a.dns_mode or a.upstream:
-        if profile.engine == "torbrowser" and a.dns_mode == "resolver":
-            _p("note: Tor Browser resolves at the exit; its DNS mode stays remote")
-        updates["dns"] = profile.dns.model_copy(
-            update={k: v for k, v in (("mode", a.dns_mode), ("upstream", a.upstream)) if v}
-        )
+    if a.exit and a.no_proxy:
+        return _fail("--exit and --no-proxy exclude each other")
+    if a.exit:
+        try:
+            ex = exits.resolve_ref(a.exit)
+            if profile.engine == "torbrowser":
+                store.check_tor_exit(ex)
+        except (exits.ExitError, store.StoreError) as exc:
+            return _fail(str(exc))
+        if ex.id != profile.exit:
+            updates["exit"] = ex.id
+    if a.no_proxy:
+        if profile.engine == "torbrowser":
+            return _fail(
+                "Tor Browser needs an exit on the tor module; it cannot run without a proxy"
+            )
+        if profile.exit:
+            updates["exit"] = None
 
     changed = new != fp or bool(updates)
     if changed:
@@ -913,8 +976,6 @@ def cmd_set(a: argparse.Namespace) -> int:
         if new is not None and new != fp:
             store.save_fingerprint(profile.id, new)
         store.save(candidate)
-        if password:
-            secrets.store(profile.id, password, label=f"kiwi-fox {candidate.name}")
         profile, fp = candidate, new
     cmd_show(argparse.Namespace(ref=profile.id))
     if fp is not None:
@@ -923,7 +984,7 @@ def cmd_set(a: argparse.Namespace) -> int:
     if not changed:
         _p("")
         if fp is None:
-            _p("nothing changed — pass what to change: --name, --endpoint, --dns-mode, …")
+            _p("nothing changed — pass what to change: --name, --exit, --no-proxy, --appearance")
         else:
             _p(
                 "nothing changed — pass what to change, e.g. --screen 2560x1440; "
@@ -1078,13 +1139,29 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--version", action="version", version=f"kiwi-fox {__version__}")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
-    n = sub.add_parser("new", help="create a profile")
+    n = sub.add_parser(
+        "new",
+        help="create a profile",
+        description="Create a profile. Where it exits is said one way: --exit PROXY, a "
+        "proxy kiwi-proxy has (shared with whatever else is on it); an ENDPOINT or "
+        "--module NAME, which makes a new proxy in kiwi-proxy named after the profile; "
+        "or --no-proxy, this machine's own connection.",
+    )
     n.add_argument("name")
     n.add_argument(
         "endpoint",
         nargs="?",
-        help="socks5://user:pass@host:port | host:port[:user:pass]; "
-        "omit and pass --module NAME to have a provider produce the endpoint",
+        help="a new proxy for this profile: socks5://user:pass@host:port | host:port[:user:pass]",
+    )
+    n.add_argument(
+        "--exit",
+        metavar="PROXY",
+        help="a proxy kiwi-proxy has, by name or id prefix (`kiwi-proxy list`)",
+    )
+    n.add_argument(
+        "--no-proxy",
+        action="store_true",
+        help="no proxy: the browser on this machine's own connection (not for Tor Browser)",
     )
     n.add_argument(
         "--engine",
@@ -1145,16 +1222,24 @@ def build_parser() -> argparse.ArgumentParser:
     n.add_argument("--engine-version")
     n.add_argument(
         "--module",
-        help="exit through a provider module (tor, vpn, 9proxy, mysterium); without an "
-        "ENDPOINT the module brings itself up and produces one",
+        help="a new proxy through a provider module (tor, vpn, 9proxy, mysterium); without "
+        "an ENDPOINT the module produces one",
     )
     n.add_argument(
         "--lease",
         help="which of the module's exits (see `kiwi-fox module leases NAME`): a 9proxy "
         "port, a Mysterium provider id",
     )
-    n.add_argument("--dns-mode", choices=["resolver", "remote"], default="resolver")
-    n.add_argument("--upstream", choices=sorted(dns.UPSTREAMS), default=dns.DEFAULT_UPSTREAM)
+    n.add_argument(
+        "--dns-mode",
+        choices=["resolver", "remote"],
+        help="for a proxy made here (default resolver); an existing one keeps its own",
+    )
+    n.add_argument(
+        "--upstream",
+        choices=sorted(dns.UPSTREAMS),
+        help=f"DoH upstream for a proxy made here (default {dns.DEFAULT_UPSTREAM})",
+    )
     n.add_argument("--no-probe", action="store_true", help="skip the exit probe")
     n.set_defaults(func=cmd_new)
 
@@ -1270,9 +1355,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     se.add_argument("--user-agent", help="replace the user agent (warned about when it lies)")
     se.add_argument("--default-user-agent", action="store_true", help="back to the engine's own")
-    se.add_argument("--endpoint", help="a different SOCKS5 exit")
-    se.add_argument("--dns-mode", choices=["resolver", "remote"])
-    se.add_argument("--upstream", choices=sorted(dns.UPSTREAMS))
+    se.add_argument(
+        "--exit", metavar="PROXY", help="put the profile on this kiwi-proxy exit (name or id)"
+    )
+    se.add_argument(
+        "--no-proxy", action="store_true", help="take the profile off its proxy entirely"
+    )
     se.set_defaults(func=cmd_set)
 
     fo = sub.add_parser("fonts", help="the font families a profile may or may not have")

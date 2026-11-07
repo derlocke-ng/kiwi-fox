@@ -156,15 +156,10 @@ def test_languages_reach_the_engine_as_a_list(fp=None):
     import datetime as dt
 
     from kiwi_fox.core.engines.camoufox import Camoufox
-    from kiwi_fox.core.models import Endpoint, Profile
+    from kiwi_fox.core.models import Profile
 
     fp = generate(engine_version=ENGINE, country="DE", seed="lang")
-    profile = Profile(
-        id="x",
-        name="x",
-        created=dt.datetime.now(dt.UTC),
-        endpoint=Endpoint(host="10.0.0.1", port=1080),
-    )
+    profile = Profile(id="x", name="x", created=dt.datetime.now(dt.UTC))
     cfg = Camoufox().config(fp, profile, None)
     assert cfg["locale:all"] == ",".join(fp.languages)
     assert len(fp.languages) > 1, "a single-entry language list is unusual"

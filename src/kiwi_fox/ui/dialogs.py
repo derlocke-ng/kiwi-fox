@@ -8,10 +8,11 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 
 from gi.repository import Adw, GLib, Gtk  # noqa: E402
-from kiwi_proxy import dns, exits  # noqa: E402
 from kiwi_proxy import endpoint as proxy  # noqa: E402
+from kiwi_proxy import exits, providers  # noqa: E402
+from kiwi_proxy import secrets as proxy_secrets  # noqa: E402
 
-from ..core import geometry, launch, modules, paths, secrets, store  # noqa: E402
+from ..core import geometry, launch, modules, paths, store  # noqa: E402
 from ..core.engines import TITLES, installed_versions  # noqa: E402
 from ..core.engines import fetch as engine_fetch  # noqa: E402
 from ..core.engines.camoufox import webgl_report  # noqa: E402
@@ -24,7 +25,6 @@ from ..core.fingerprint import (  # noqa: E402
 )
 from ..core.fingerprint import windows11 as w11  # noqa: E402
 from ..core.fingerprint.validator import check_webgl_mode, check_window_fits, errors  # noqa: E402
-from ..core.models import DnsConfig  # noqa: E402
 from . import worker  # noqa: E402
 
 COUNTRIES = ["(from the exit)", "DE", "AT", "CH", "NL", "SE", "FR", "FI", "NO", "DK", "GB", "US"]
@@ -46,7 +46,153 @@ ENGINE_IDENTITY = {
 
 
 def exit_label(profile) -> str:
-    return modules.exit_label(profile.endpoint)
+    """The proxy a profile is on, by name — or that it has none, or lost it."""
+    try:
+        return store.exit_label(store.exit_of(profile))
+    except store.StoreError:
+        return "proxy missing"
+
+
+def exit_choice_label(ex) -> str:
+    """One kiwi-proxy exit as the picker lists it: its name, what is behind it, and
+    where it last came out."""
+    bits = [ex.name, modules.exit_label(ex.endpoint)]
+    if ex.last_exit and ex.last_exit.country:
+        bits.append(ex.last_exit.country)
+    return " · ".join(bits)
+
+
+NO_PROXY = "No proxy — this machine's own connection"
+
+
+class ExitPicker:
+    """Which kiwi-proxy exit a profile is on, or none. The exits are kiwi-proxy's:
+    the list is what `kiwi-proxy list` shows, and "Add" and "Edit" open kiwi-proxy's
+    own editor, so a proxy is defined in one place and shared by every profile on
+    it. Tor Browser is held to exits on the tor module and cannot run without one."""
+
+    def __init__(self, group: Adw.PreferencesGroup, host: Adw.Dialog, *, on_change=None) -> None:
+        self._host = host
+        self._on_change = on_change
+        self._engine = "camoufox"
+        self._exits: list = []
+        self.row = Adw.ComboRow(title="Proxy")
+        self.row.set_subtitle_lines(0)
+        self.edit_button = Gtk.Button(label="Edit…", valign=Gtk.Align.CENTER)
+        self.edit_button.connect("clicked", self._on_edit)
+        self.row.add_suffix(self.edit_button)
+        group.add(self.row)
+        self.add_row = Adw.ActionRow(
+            title="New proxy",
+            subtitle="A SOCKS5 you were given, or a provider module — Tor, a VPN, 9proxy, "
+            "Mysterium. kiwi-proxy keeps it, and any profile can use it.",
+        )
+        self.add_row.set_subtitle_lines(0)
+        add = Gtk.Button(label="Add…", valign=Gtk.Align.CENTER)
+        add.connect("clicked", self._on_add)
+        self.add_row.add_suffix(add)
+        group.add(self.add_row)
+        self.note = Adw.ActionRow(use_markup=False, visible=False)
+        self.note.set_subtitle_lines(0)
+        group.add(self.note)
+        self.row.connect("notify::selected", self._changed)
+        self.reload()
+
+    # ------------------------------------------------------------- the list
+    @property
+    def allows_none(self) -> bool:
+        return self._engine != "torbrowser"
+
+    def _candidates(self) -> list:
+        found = sorted(exits.list_exits(), key=lambda e: e.name)
+        if self._engine == "torbrowser":
+            return [e for e in found if e.endpoint.module == store.TOR_MODULE]
+        return found
+
+    def reload(self, select: str | None = "keep") -> None:
+        """Read kiwi-proxy's exits again and select `select`; "keep" keeps the
+        current choice. With nothing chosen yet the first exit is taken — a proxy
+        is the point — and no proxy only when there is none to take, or when it is
+        asked for (`select(None)`)."""
+        had_choice = bool(self._exits) or not self.allows_none
+        wanted = self.selected_id if select == "keep" else select
+        self._exits = self._candidates()
+        labels = [exit_choice_label(e) for e in self._exits]
+        if self.allows_none:
+            labels.insert(0, NO_PROXY)
+        self.row.set_model(Gtk.StringList.new(labels or ["(no exit yet)"]))
+        self.row.set_sensitive(bool(labels))
+        if select == "keep" and wanted is None and not had_choice and self._exits:
+            wanted = self._exits[0].id
+        self.select(wanted)
+        self._changed()
+
+    def set_engine(self, engine: str) -> None:
+        if engine != self._engine:
+            self._engine = engine
+            self.reload()
+
+    # ------------------------------------------------------------ selection
+    @property
+    def selected(self):
+        """The chosen exit, or None for no proxy."""
+        if not self._exits:
+            return None
+        index = self.row.get_selected() - (1 if self.allows_none else 0)
+        return self._exits[index] if 0 <= index < len(self._exits) else None
+
+    @property
+    def selected_id(self) -> str | None:
+        ex = self.selected
+        return ex.id if ex else None
+
+    def select(self, exit_id: str | None) -> None:
+        offset = 1 if self.allows_none else 0
+        for i, ex in enumerate(self._exits):
+            if ex.id == exit_id:
+                self.row.set_selected(i + offset)
+                return
+        self.row.set_selected(0)
+
+    def _changed(self, *_args) -> None:
+        ex = self.selected
+        self.edit_button.set_visible(ex is not None)
+        if self._engine == "torbrowser" and not self._exits:
+            self.note.set_title("Tor Browser needs an exit on the tor module")
+            self.note.set_subtitle(
+                "Add one above with the tor module as its source. The module itself: "
+                f"{modules.install_hint('tor')}"
+            )
+            self.note.set_visible(True)
+            self.row.set_subtitle("")
+        else:
+            self.note.set_visible(False)
+            if ex is None:
+                self.row.set_subtitle("")
+            else:
+                used = len(store.profiles_on(ex.id))
+                detail = store.describe_exit(ex)
+                if used:
+                    detail += f" · used by {used} profile{'s' if used != 1 else ''}"
+                self.row.set_subtitle(detail)
+        if self._on_change:
+            self._on_change()
+
+    # ------------------------------------------------- kiwi-proxy's own editor
+    def _editor(self, ex) -> None:
+        from kiwi_proxy.ui.dialogs import ExitEditor
+
+        def saved(new_ex) -> None:
+            self.reload(select=new_ex.id)
+
+        ExitEditor(ex, saved).present(self._host)
+
+    def _on_add(self, *_args) -> None:
+        self._editor(None)
+
+    def _on_edit(self, *_args) -> None:
+        if (ex := self.selected) is not None:
+            self._editor(ex)
 
 
 def engine_version(profile, fp=None) -> str:
@@ -292,9 +438,6 @@ class NewProfileDialog(Adw.Dialog):
         super().__init__(title="New profile", content_width=640, content_height=780)
         self._parent = parent
         self._on_created = on_created
-        # Only modules that produce an endpoint of their own can be an exit here.
-        self._modules = [m for m in modules.installed() if m.produces_endpoint]
-        self._leases: list = []
 
         page = Adw.PreferencesPage()
         profile = Adw.PreferencesGroup(title="Profile")
@@ -308,26 +451,15 @@ class NewProfileDialog(Adw.Dialog):
         profile.add(self.engine_state)
         page.add(profile)
 
-        # -------------------------------------------------------------- exit
-        exit_group = Adw.PreferencesGroup(
-            title="Exit", description="Where this profile's traffic leaves — the only route it has."
+        # ------------------------------------------------------------- proxy
+        self.exit_group = Adw.PreferencesGroup(
+            title="Proxy",
+            description="Where this profile's traffic leaves. A kiwi-proxy exit is the only "
+            "route the browser has, and every profile on it shares it; with no proxy the "
+            "browser uses this machine's own connection.",
         )
-        self.exit_row = Adw.ComboRow(title="Exit through")
-        self.exit_row.set_model(
-            Gtk.StringList.new(["A SOCKS5 endpoint", *[m.title for m in self._modules]])
-        )
-        exit_group.add(self.exit_row)
-        self.endpoint_row = Adw.EntryRow(title="SOCKS5 endpoint")
-        self.endpoint_row.set_text("10.64.0.1:1080")
-        exit_group.add(self.endpoint_row)
-        self.exit_country_row = Adw.EntryRow(title="Exit country (two letters, optional)")
-        exit_group.add(self.exit_country_row)
-        self.lease_row = Adw.ComboRow(title="Which exit")
-        exit_group.add(self.lease_row)
-        self.exit_note = Adw.ActionRow(use_markup=False)
-        self.exit_note.set_subtitle_lines(0)
-        exit_group.add(self.exit_note)
-        page.add(exit_group)
+        self.exits = ExitPicker(self.exit_group, self, on_change=self._on_exit)
+        page.add(self.exit_group)
 
         # ---------------------------------------------- the Windows identity
         self.identity = Adw.PreferencesGroup(title="Identity")
@@ -357,22 +489,6 @@ class NewProfileDialog(Adw.Dialog):
         self.graphics = GraphicsChooser(self.graphics_group)
         page.add(self.graphics_group)
 
-        self.network = Adw.PreferencesGroup(
-            title="DNS",
-            description="The resolver runs in the profile's own namespace and its "
-            "upstream leaves through the same exit as the traffic.",
-        )
-        self.dns_row = Adw.ComboRow(title="Mode")
-        self.dns_row.set_model(
-            Gtk.StringList.new(["resolver (ad-blocking)", "remote (at the proxy)"])
-        )
-        self.network.add(self.dns_row)
-        self.upstream_row = Adw.ComboRow(title="Upstream")
-        self.upstream_row.set_model(Gtk.StringList.new(sorted(dns.UPSTREAMS)))
-        self.upstream_row.set_selected(sorted(dns.UPSTREAMS).index(dns.DEFAULT_UPSTREAM))
-        self.network.add(self.upstream_row)
-        page.add(self.network)
-
         self.status = Adw.PreferencesGroup()
         self.status_label = Gtk.Label(wrap=True, xalign=0, visible=False)
         self.status_label.add_css_class("dim-label")
@@ -394,7 +510,6 @@ class NewProfileDialog(Adw.Dialog):
         self.set_child(view)
 
         self.engine_row.connect("notify::selected", self._on_engine)
-        self.exit_row.connect("notify::selected", self._on_exit)
         self._on_engine()
 
     # ------------------------------------------------------------- choices
@@ -404,16 +519,6 @@ class NewProfileDialog(Adw.Dialog):
 
     def select_engine(self, engine: str) -> None:
         self.engine_row.set_selected(ENGINES.index(engine))
-
-    @property
-    def module(self):
-        """The chosen provider module, or None for a SOCKS5 endpoint."""
-        index = self.exit_row.get_selected()
-        return self._modules[index - 1] if index > 0 else None
-
-    def select_module(self, name: str | None) -> None:
-        names = [m.name for m in self._modules]
-        self.exit_row.set_selected(names.index(name) + 1 if name in names else 0)
 
     def _on_engine(self, *_args) -> None:
         engine = self.engine
@@ -431,60 +536,18 @@ class NewProfileDialog(Adw.Dialog):
         camoufox = engine == "camoufox"
         self.identity.set_visible(camoufox)
         self.graphics_group.set_visible(camoufox)
-        # Tor Browser resolves every name at the exit (.onion has no local answer).
-        self.network.set_visible(engine != "torbrowser")
-        if engine == "torbrowser":
-            # Tor Browser exits only through the tor module, whose circuits it keys.
-            self.select_module("tor")
-        self.exit_row.set_sensitive(engine != "torbrowser")
+        # Tor Browser is held to exits on the tor module (the picker filters).
+        self.exits.set_engine(engine)
         self._on_exit()
 
     def _on_exit(self, *_args) -> None:
-        module = self.module
-        self.endpoint_row.set_visible(module is None)
-        self.exit_country_row.set_visible(module is not None)
-        self.lease_row.set_visible(False)
-        blocked = False
-        if self.engine == "torbrowser" and (module is None or module.name != "tor"):
-            note = (
-                "Tor Browser exits only through the tor module, which is not installed: "
-                f"{modules.install_hint('tor')}"
-            )
-            blocked = True
-        elif module is None:
-            note = "host:port, socks5://user:pass@host:port, or host:port:user:pass"
-            if not self._modules:
-                note += (
-                    ". Provider modules give a profile Tor, a VPN, 9proxy or Mysterium "
-                    "as its exit instead: kiwi install kiwi-plugin-tor (or -vpn, -9proxy, -myst)"
-                )
-        else:
-            note = module.description or module.title
-            if module.needs_account:
-                note += " · needs an account with the provider"
-            if self.engine == "torbrowser":
-                note += " · pinning a country shrinks your anonymity set"
-            self._load_leases(module.name)
-        self.exit_note.set_title("Endpoint" if module is None else module.title)
-        self.exit_note.set_subtitle(note)
-        self.create_button.set_sensitive(not blocked)
-
-    def _load_leases(self, name: str) -> None:
-        def work():
-            return modules.leases(name)
-
-        def done(leases) -> None:
-            if self.module is None or self.module.name != name:
-                return  # another choice was made meanwhile
-            self._leases = list(leases)
-            labels = ["the module's default"] + [
-                " ".join(x for x in (lease.label or lease.id, lease.country, lease.city) if x)
-                for lease in self._leases
-            ]
-            self.lease_row.set_model(Gtk.StringList.new(labels))
-            self.lease_row.set_visible(bool(self._leases))
-
-        worker.run(work, done, lambda _exc: None)  # no leases to offer is not an error
+        # Tor Browser cannot run without a tor exit; everything else can run on
+        # this machine's own connection.
+        button = getattr(self, "create_button", None)
+        if button is None:
+            return  # the picker reports its first state before the header exists
+        blocked = self.engine == "torbrowser" and self.exits.selected is None
+        button.set_sensitive(not blocked)
 
     def _say(self, text: str) -> None:
         self.status_label.set_text(text)
@@ -499,26 +562,14 @@ class NewProfileDialog(Adw.Dialog):
         if store.find_by_name(name):
             self._say(f"A profile named {name!r} already exists.")
             return
-        if exits.find_by_name(name):
-            self._say(f"kiwi-proxy already has an exit named {name!r}; pick another name.")
-            return
-        engine, module = self.engine, self.module
-        endpoint = password = None
-        exit_country = lease = None
-        if module is None:
+        engine = self.engine
+        ex = self.exits.selected
+        if engine == "torbrowser":
             try:
-                endpoint, password = proxy.parse(self.endpoint_row.get_text().strip())
-            except proxy.ProxyError as exc:
+                store.check_tor_exit(ex)
+            except store.StoreError as exc:
                 self._say(str(exc))
                 return
-        else:
-            exit_country = self.exit_country_row.get_text().strip().lower() or None
-            if exit_country and not (len(exit_country) == 2 and exit_country.isalpha()):
-                self._say("The exit country is a two-letter code, like DE or SE.")
-                return
-            index = self.lease_row.get_selected()
-            if self.lease_row.get_visible() and index > 0:
-                lease = self._leases[index - 1].id
 
         version = None
         if engine == "camoufox":
@@ -539,41 +590,39 @@ class NewProfileDialog(Adw.Dialog):
         form = None if form.startswith("(") else form
         graphics = self.graphics.value()
         language = LANGUAGES[self.language_row.get_selected()][0]
-        mode = "resolver" if self.dns_row.get_selected() == 0 else "remote"
-        upstream = sorted(dns.UPSTREAMS)[self.upstream_row.get_selected()]
 
         self.create_button.set_sensitive(False)
-        if module is not None:
-            self._say(f"Bringing {module.title} up…")
-        else:
-            self._say("Probing the exit…" if engine == "camoufox" else "Creating the profile…")
+        self._say("Probing the exit…" if engine == "camoufox" else "Creating the profile…")
 
         def say(text: str) -> None:
             GLib.idle_add(self._say, text)
 
         def work():
-            ep, exit_info = endpoint, None
-            if module is not None:
-                ep = modules.endpoint_from(module.name, lease=lease, country=exit_country)
-            dns_cfg = DnsConfig(mode=mode, upstream=upstream)
+            exit_id = ex.id if ex else None
             if engine != "camoufox":
                 return store.create(
                     name,
-                    ep,
+                    exit_id,
                     None,
                     engine=engine,  # type: ignore[arg-type]
                     engine_version=version,
-                    password=password,
-                    dns=dns_cfg,
                 ), None
-            probed = country or (exit_country.upper() if exit_country else None)
-            if probed is None and module is None:
-                # A provider sits on a bridge the host cannot reach; only a plain
-                # exit can be probed from here.
+            exit_info, probed = None, country
+            if probed is None:
+                # The region follows the exit: a plain one is asked from here, a
+                # provider sits on a bridge the host cannot reach (its last
+                # measurement serves), no proxy is this machine's own connection.
                 say("Probing the exit…")
                 try:
-                    exit_info = proxy.preflight(ep, password)
-                    probed = exit_info.country
+                    if ex is None:
+                        exit_info = launch.measure_direct()
+                    elif providers.manages(ex.endpoint.module):
+                        exit_info = ex.last_exit
+                    else:
+                        exit_info = proxy.preflight(
+                            ex.endpoint, proxy_secrets.lookup(ex.id, kind="endpoint")
+                        )
+                    probed = exit_info.country if exit_info else None
                 except Exception:  # noqa: BLE001 - fall back to a default region
                     probed = None
             say("Drawing the identity…")
@@ -593,7 +642,7 @@ class NewProfileDialog(Adw.Dialog):
             issues += validate_against(fp, others)
             if hard := errors(issues):
                 raise RuntimeError("; ".join(str(i) for i in hard))
-            profile = store.create(name, ep, fp, password=password, dns=dns_cfg)
+            profile = store.create(name, exit_id, fp)
             for field, value in graphics.items():
                 setattr(profile, field, value)
             profile.language = language  # type: ignore[assignment]
@@ -638,7 +687,8 @@ class ProfileEditor(Adw.Dialog):
     Nothing is saved unless the whole result is coherent: the same check a launch
     runs. What is not here is not settable — the Windows version, because Firefox
     sends the same user agent for 10 and 11. Firefox and Tor Browser profiles
-    spoof nothing, so only their name, exit and DNS are here.
+    spoof nothing, so only their name and proxy are here. The proxy's own settings
+    are kiwi-proxy's, edited in its editor ("Edit…").
     """
 
     def __init__(self, profile, on_saved=None) -> None:
@@ -658,37 +708,13 @@ class ProfileEditor(Adw.Dialog):
         self.name_row.set_text(profile.name)
         group.add(self.name_row)
         group.add(_row("Browser", f"{TITLES[engine]} {engine_version(profile, fp)}"))
-        self._endpoint_before = f"{profile.endpoint.host}:{profile.endpoint.port}"
-        self.endpoint_row = Adw.EntryRow(title="SOCKS5 endpoint")
-        self.endpoint_row.set_text(self._endpoint_before)
-        if profile.endpoint.module:
-            # A module made this endpoint (an address on its bridge), so it is not
-            # typed in; a different module or country is a new identity.
-            exit_row = _row(
-                "Exit", f"{exit_label(profile)} — set by the {profile.endpoint.module} module"
-            )
-            exit_row.set_subtitle_lines(0)
-            group.add(exit_row)
+        self.exits = ExitPicker(group, self)
+        self.exits.set_engine(engine)
+        self.exits.select(profile.exit)
+        if profile.exit and not exits.exists(profile.exit):
+            self._lost_exit = True
         else:
-            group.add(self.endpoint_row)
-        self.dns_row = _combo(
-            "DNS",
-            ["resolver (ad-blocking)", "remote (at the proxy)"],
-            int(profile.dns.mode == "remote"),
-        )
-        self._upstreams = sorted(dns.UPSTREAMS)
-        self.upstream_row = _combo(
-            "DNS upstream",
-            self._upstreams,
-            self._upstreams.index(profile.dns.upstream)
-            if profile.dns.upstream in self._upstreams
-            else 0,
-        )
-        if engine == "torbrowser":
-            group.add(_row("DNS", "at the exit — Tor resolves every name, .onion included"))
-        else:
-            group.add(self.dns_row)
-            group.add(self.upstream_row)
+            self._lost_exit = False
         self.appearance_row = _combo(
             "Appearance",
             [label for _key, label in APPEARANCES],
@@ -708,6 +734,8 @@ class ProfileEditor(Adw.Dialog):
         self.status_label.add_css_class("dim-label")
         status.add(self.status_label)
         page.add(status)
+        if self._lost_exit:
+            self._say("Its proxy is gone from kiwi-proxy; pick another, or none.")
 
         header = Adw.HeaderBar(show_end_title_buttons=False, show_start_title_buttons=False)
         cancel = Gtk.Button(label="Cancel")
@@ -911,26 +939,18 @@ class ProfileEditor(Adw.Dialog):
             updates["user_agent"] = ua if ua and ua != new.ua else None
         if profile.engine != "torbrowser":
             updates["appearance"] = APPEARANCES[self.appearance_row.get_selected()][0]
-            updates["dns"] = profile.dns.model_copy(
-                update={
-                    "mode": "remote" if self.dns_row.get_selected() else "resolver",
-                    "upstream": self._upstreams[self.upstream_row.get_selected()],
-                }
-            )
-        password = None
-        spec = self.endpoint_row.get_text().strip()
-        if not profile.endpoint.module and spec != self._endpoint_before:
+        picked = self.exits.selected
+        if profile.engine == "torbrowser":
             try:
-                updates["endpoint"], password = proxy.parse(spec)
-            except proxy.ProxyError as exc:
+                store.check_tor_exit(picked)
+            except store.StoreError as exc:
                 return self._say(str(exc))
+        updates["exit"] = picked.id if picked else None
 
         saved = profile.model_copy(update=updates)
         if new is not None and new != self._fp:
             store.save_fingerprint(profile.id, new)
         store.save(saved)
-        if password:
-            secrets.store(profile.id, password, label=f"kiwi-fox {saved.name}")
         self.close()
         if self._on_saved:
             self._on_saved(saved)
@@ -959,15 +979,27 @@ class ProfileDetails(Adw.Dialog):
         page.add(browser)
 
         net = Adw.PreferencesGroup(title="Network")
-        net.add(_row("Exit", exit_label(profile)))
+        try:
+            ex = store.exit_of(profile)
+        except store.StoreError:
+            ex = None
+            net.add(_row("Proxy", "missing — its exit is gone from kiwi-proxy; pick another"))
+        else:
+            net.add(_row("Proxy", store.describe_exit(ex)))
         if profile.engine == "torbrowser":
             net.add(_row("DNS", "at the exit — Tor resolves every name, .onion included"))
+        elif ex is not None:
+            blocking = ", ad-blocking" if ex.dns.blocklists else ""
+            net.add(_row("DNS", f"{ex.dns.mode} via {ex.dns.upstream}{blocking}"))
         else:
-            net.add(_row("DNS", f"{profile.dns.mode} via {profile.dns.upstream}"))
+            net.add(_row("DNS", "this machine's own"))
         if profile.last_exit:
             e = profile.last_exit
             net.add(_row("Last exit", f"{e.ip}  {e.country or '?'} {e.city or ''}  {e.asn or ''}"))
-        net.add(_row("Gateway", f"{paths.gateway_name(profile.id)} (kiwi-proxy)"))
+        if profile.exit:
+            net.add(_row("Gateway", f"{paths.gateway_name(profile.exit)} (kiwi-proxy, shared)"))
+        else:
+            net.add(_row("Gateway", "none — no proxy"))
         page.add(net)
 
         if fp is not None:

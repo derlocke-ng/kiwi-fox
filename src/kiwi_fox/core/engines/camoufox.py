@@ -296,7 +296,7 @@ class Camoufox:
 
     # ---------------------------------------------------------------- spec
     def build_spec(
-        self, profile: Profile, fp: Fingerprint, *, gateway: str, exit_ip: str | None
+        self, profile: Profile, fp: Fingerprint, *, gateway: str | None, exit_ip: str | None
     ) -> ContainerSpec:
         pdir = paths.profile_dir(profile.id)
         engine = paths.engines_dir() / f"camoufox-{fp.engine_version}"
@@ -307,7 +307,9 @@ class Camoufox:
         return ContainerSpec(
             name=paths.browser_name(profile.id),
             image="kiwi-fox/browser:latest",
-            network=f"container:{gateway}",
+            # The exit's gateway, or — with no proxy — a network of its own on
+            # this machine's connection.
+            network=f"container:{gateway}" if gateway else "pasta",
             env=env,
             volumes=[
                 # ",z" is shared relabelling: one engine copy serves every

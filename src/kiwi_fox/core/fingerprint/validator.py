@@ -25,6 +25,11 @@ NETWORK_PREFS: dict[str, object] = {
     "network.trr.mode": 5,
 }
 
+# A profile with no proxy — the browser on this machine's own connection. The
+# forwarder prefs do not apply; what must hold is that no proxy is configured at
+# all, so nothing half-set sends traffic somewhere unexpected.
+DIRECT_PREFS: dict[str, object] = {"network.proxy.type": 0}
+
 # Camoufox-only: these keep the spoofed Windows claim coherent. Tor Browser needs
 # the OPPOSITE (resistFingerprinting on), so they must never be checked against it.
 COHERENCE_PREFS: dict[str, object] = {
@@ -47,14 +52,15 @@ FORBIDDEN_PREFS = (
 )
 
 
-def check_network_prefs(prefs: dict[str, object]) -> list[Issue]:
+def check_network_prefs(prefs: dict[str, object], *, direct: bool = False) -> list[Issue]:
     """The engine-neutral leak check: run for every engine's prefs.
 
     Tor Browser additionally needs socks_remote_dns True (it resolves at the
-    exit); that is asserted by the Tor Browser engine, not here.
+    exit); that is asserted by the Tor Browser engine, not here. `direct` is a
+    profile with no proxy: then the check is that none is configured.
     """
     out: list[Issue] = []
-    for key, want in NETWORK_PREFS.items():
+    for key, want in (DIRECT_PREFS if direct else NETWORK_PREFS).items():
         if prefs.get(key) != want:
             out.append(_err("prefs.network", f"{key} must be {want!r}, got {prefs.get(key)!r}"))
     return out
@@ -164,6 +170,7 @@ def validate(
     exit_country: str | None = None,
     prefs: dict[str, object] | None = None,
     allow_prefs: set[str] | None = None,
+    direct: bool = False,
 ) -> list[Issue]:
     out: list[Issue] = []
     out += _check_os(fp, engine_version)
@@ -173,7 +180,7 @@ def validate(
     out += _check_locale(fp, exit_country)
     out += _check_seeds(fp)
     if prefs is not None:
-        out += _check_prefs(prefs, allow_prefs or set())
+        out += _check_prefs(prefs, allow_prefs or set(), direct=direct)
     return out
 
 
@@ -389,9 +396,12 @@ def _check_seeds(fp: Fingerprint) -> list[Issue]:
     return out
 
 
-def _check_prefs(prefs: dict[str, object], allowed: set[str]) -> list[Issue]:
+def _check_prefs(
+    prefs: dict[str, object], allowed: set[str], *, direct: bool = False
+) -> list[Issue]:
     out: list[Issue] = []
-    for key, want in REQUIRED_PREFS.items():
+    required = {**COHERENCE_PREFS, **(DIRECT_PREFS if direct else NETWORK_PREFS)}
+    for key, want in required.items():
         if prefs.get(key) != want:
             out.append(_err("prefs.required", f"{key} must be {want!r}, got {prefs.get(key)!r}"))
     for key in FORBIDDEN_PREFS:

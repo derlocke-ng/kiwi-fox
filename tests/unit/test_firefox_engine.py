@@ -13,22 +13,25 @@ import tempfile
 from pathlib import Path
 
 import pytest
-from kiwi_proxy import podman
+from kiwi_proxy import exits, podman
 
 from kiwi_fox.core.engines import firefox_fetch, get_engine
 from kiwi_fox.core.engines.firefox import Firefox
 from kiwi_fox.core.models import Endpoint, Profile
 
+FF_ID = "ffffffff-2222-3333-4444-555555555555"
+
 
 @pytest.fixture
 def ff_profile():
+    exits.create("plain", Endpoint(host="10.64.0.1", port=1080), exit_id=FF_ID)
     return Profile(
-        id="ffffffff-2222-3333-4444-555555555555",
+        id=FF_ID,
         name="plain",
         created=dt.datetime(2026, 1, 1, tzinfo=dt.UTC),
         engine="firefox",
         engine_version="159.0",
-        endpoint=Endpoint(host="10.64.0.1", port=1080),
+        exit=FF_ID,
     )
 
 
@@ -74,9 +77,11 @@ def test_config_is_empty(ff_profile):
     assert Firefox().config(None, ff_profile, exit_ip="203.0.113.9") == {}
 
 
-def test_remote_dns_follows_the_profile(ff_profile):
+def test_remote_dns_follows_the_exit(ff_profile):
     assert Firefox().prefs(None, ff_profile)["network.proxy.socks_remote_dns"] is False
-    ff_profile.dns.mode = "remote"
+    ex = exits.load(ff_profile.exit)
+    ex.dns.mode = "remote"
+    exits.save(ex)  # `kiwi-proxy set plain --dns remote`
     assert Firefox().prefs(None, ff_profile)["network.proxy.socks_remote_dns"] is True
 
 

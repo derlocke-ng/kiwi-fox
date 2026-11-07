@@ -1,5 +1,5 @@
 """The Tor Browser engine: no spoofing, proxy-only (TOR_PROVIDER=none), DNS
-forced remote, the tor module required, and its exit in passthrough mode."""
+forced remote, and an exit on the tor module that passes SOCKS auth through."""
 
 from __future__ import annotations
 
@@ -17,17 +17,34 @@ from kiwi_proxy import exits, gateway, podman, providers
 from kiwi_fox.core import launch, store
 from kiwi_fox.core.engines import get_engine, torbrowser_fetch
 from kiwi_fox.core.engines.torbrowser import TorBrowser
-from kiwi_fox.core.models import Endpoint, Profile
+from kiwi_fox.core.models import DnsConfig, Endpoint, Profile
+
+TB_ID = "aaaaaaaa-2222-3333-4444-555555555555"
+
+
+def _tor_exit(name="tor-exit", exit_id=None, **kw):
+    """An exit on the tor module as kiwi-proxy 0.3 creates it: passthrough, and
+    remote DNS as a user would set for Tor."""
+    return exits.create(
+        name,
+        Endpoint(host="10.89.231.5", port=9050, module="tor"),
+        dns=DnsConfig(mode="remote"),
+        socks_auth="passthrough",
+        exit_id=exit_id,
+        **kw,
+    )
 
 
 def _tb_profile(**kw):
+    if not exits.exists(TB_ID):
+        _tor_exit("tor", exit_id=TB_ID)
     return Profile(
-        id="aaaaaaaa-2222-3333-4444-555555555555",
+        id=TB_ID,
         name="tor",
         created=dt.datetime(2026, 1, 1, tzinfo=dt.UTC),
         engine="torbrowser",
         engine_version="15.0.26",
-        endpoint=Endpoint(host="10.89.231.5", port=9050, module="tor"),
+        exit=TB_ID,
         **kw,
     )
 
@@ -63,9 +80,11 @@ def test_prefs_are_leak_only_and_remote_dns():
         assert leak not in prefs
 
 
-def test_prefs_force_remote_even_for_a_resolver_profile():
+def test_prefs_force_remote_even_on_a_resolver_exit():
     p = _tb_profile()
-    p.dns.mode = "resolver"
+    ex = exits.load(p.exit)
+    ex.dns.mode = "resolver"
+    exits.save(ex)
     assert TorBrowser().prefs(None, p)["network.proxy.socks_remote_dns"] is True
 
 
@@ -103,27 +122,28 @@ def test_discover_refuses_below_the_floor(monkeypatch):
 
 
 # -------------------------------------------------------------------- store rule
-def test_create_torbrowser_requires_the_tor_module():
-    with pytest.raises(store.StoreError, match="tor provider"):
-        store.create(
-            "bad",
-            Endpoint(host="h", port=1080),
-            None,
-            engine="torbrowser",
-            engine_version="15.0.26",
-        )
+def test_create_torbrowser_requires_an_exit_on_the_tor_module():
+    plain = exits.create("plain", Endpoint(host="h", port=1080))
+    with pytest.raises(store.StoreError, match="tor module"):
+        store.create("bad", plain.id, None, engine="torbrowser", engine_version="15.0.26")
+    with pytest.raises(store.StoreError, match="tor module"):
+        store.create("bad", None, None, engine="torbrowser", engine_version="15.0.26")
 
 
-def test_create_torbrowser_with_tor_module_works():
-    p = store.create(
-        "ok",
-        Endpoint(host="10.89.231.5", port=9050, module="tor"),
-        None,
-        engine="torbrowser",
-        engine_version="15.0.26",
-    )
+def test_create_torbrowser_on_a_tor_exit_works():
+    p = store.create("ok", _tor_exit().id, None, engine="torbrowser", engine_version="15.0.26")
     assert p.engine == "torbrowser"
     assert store.fingerprint_of(p) is None
+
+
+def test_a_tor_exit_without_passthrough_is_refused_with_the_fix():
+    # kiwi-proxy 0.3 makes tor exits passthrough; one switched back (or from
+    # before) would silently give Tor Browser one circuit for every site.
+    ex = exits.create("old-tor", Endpoint(host="10.89.231.5", port=9050, module="tor"))
+    ex.socks_auth = "inject"
+    exits.save(ex)
+    with pytest.raises(store.StoreError, match="kiwi-proxy set old-tor --socks-auth passthrough"):
+        store.create("tb", ex.id, None, engine="torbrowser", engine_version="15.0.26")
 
 
 # ------------------------------------------------------------------- the exit
@@ -140,43 +160,33 @@ def tor_module(monkeypatch):
 
 def _create_tb(name="tor"):
     return store.create(
-        name,
-        Endpoint(host="10.89.231.5", port=9050, module="tor"),
-        None,
-        engine="torbrowser",
-        engine_version="15.0.26",
+        name, _tor_exit(f"{name}-exit").id, None, engine="torbrowser", engine_version="15.0.26"
     )
 
 
-def test_its_exit_passes_auth_through_and_resolves_remotely():
+def test_kiwi_fox_leaves_the_exits_settings_alone():
+    # The exit is the user's (shared, maybe, with a Camoufox profile): kiwi-fox
+    # reads it and never writes it back. Tor Browser still resolves remotely, in
+    # its own prefs, whatever the exit's resolver does.
     p = _create_tb()
-    ex = exits.load(p.id)
-    assert ex.socks_auth == "passthrough"
-    assert ex.dns.mode == "remote"
-    assert p.dns.mode == "remote"
-
-
-def test_a_resolver_set_on_its_exit_does_not_stick():
-    p = _create_tb()
-    ex = exits.load(p.id)
+    ex = exits.load(p.exit)
     ex.dns.mode = "resolver"
-    ex.socks_auth = "inject"
-    exits.save(ex)  # `kiwi-proxy set tor --dns resolver --socks-auth inject`
+    exits.save(ex)  # `kiwi-proxy set tor-exit --dns resolver`
     store.save(store.load(p.id))
-    ex = exits.load(p.id)
-    assert (ex.dns.mode, ex.socks_auth) == ("remote", "passthrough")
+    assert exits.load(p.exit).dns.mode == "resolver"
+    assert TorBrowser().prefs(None, store.load(p.id))["network.proxy.socks_remote_dns"] is True
 
 
 def test_kiwi_proxy_builds_the_passthrough_gateway_from_it(tor_module):
-    # The real gateway spec, from kiwi-proxy, for the exit kiwi-fox registered.
+    # The real gateway spec, from kiwi-proxy, for the exit the profile is on.
     p = _create_tb()
-    ex = exits.load(p.id)
+    ex = exits.load(p.exit)
     spec = gateway.gateway_spec(ex, "10.89.231.5", endpoint_port=9050, network="kf-providers")
     assert spec.env["KF_SOCKS_AUTH"] == "passthrough"
     assert spec.env["KF_DNS_MODE"] == "remote"
     assert not any(dst == "/run/kf/dnscrypt-proxy.toml" for _s, dst, _o in spec.volumes)
-    # The isolation token is the one kiwi-fox always minted: same circuit as before.
-    assert gateway.credentials(ex, None) == (f"kf-{p.id[:16]}", p.id)
+    # The isolation token is the exit's: every profile on it shares the circuit set.
+    assert gateway.credentials(ex, None) == (f"kf-{ex.id[:16]}", ex.id)
 
 
 # ------------------------------------------------------------------- launch wiring
@@ -195,7 +205,7 @@ def test_launch_brings_up_the_passthrough_exit(tb_installed):
     p = _create_tb()
     launch.launch(p)
     (up,) = tb_installed.ups
-    assert up.exit.id == p.id
+    assert up.exit.id == p.exit
     assert (up.exit.socks_auth, up.exit.dns.mode) == ("passthrough", "remote")
     (br,) = tb_installed.started
     # No resolver in the namespace, so nothing to point the browser at.
@@ -203,12 +213,12 @@ def test_launch_brings_up_the_passthrough_exit(tb_installed):
     assert br.env["TOR_PROVIDER"] == "none"
 
 
-def test_launch_refuses_a_non_tor_endpoint(tb_installed):
+def test_launch_refuses_a_non_tor_exit(tb_installed):
     # Force an invalid profile past the create guard to prove launch also refuses.
     p = _create_tb()
-    p.endpoint.module = None
+    p.exit = exits.create("plain", Endpoint(host="h", port=1080)).id
     store.save(p)
-    with pytest.raises(launch.LaunchError, match="tor provider"):
+    with pytest.raises(launch.LaunchError, match="tor module"):
         launch.launch(store.load(p.id))
     assert tb_installed.plans == [], "refused before anything was sent"
 
