@@ -18,7 +18,7 @@ from .core.fingerprint import edit, generate, validate, validate_against, webgl
 from .core.fingerprint import windows11 as w11
 from .core.fingerprint.validator import check_webgl_mode as validate_webgl
 from .core.fingerprint.validator import check_window_fits, errors
-from .core.models import DnsConfig, Fingerprint, Profile
+from .core.models import Fingerprint, Profile
 
 WEBGL_MODES = ("host", "preset", "custom", "off", "raw")
 
@@ -38,48 +38,26 @@ class _NewError(Exception):
 
 
 def _exit_for_new(a: argparse.Namespace):
-    """Where a new profile exits, said one way: a proxy kiwi-proxy has (--exit), a
-    new one made here and named after the profile (an ENDPOINT, or --module), or
-    none at all (--no-proxy). Returns (Exit or None, made_here)."""
-    ways = {
-        "--exit": bool(a.exit),
-        "--no-proxy": bool(a.no_proxy),
-        "an ENDPOINT or --module": bool(a.endpoint or a.module),
-    }
-    if sum(ways.values()) != 1:
+    """Where a new profile exits: a proxy kiwi-proxy has (--exit), or none
+    (--no-proxy). kiwi-fox makes no proxies — that is kiwi-proxy's, by hand or in
+    its app — so an endpoint given here is sent there."""
+    if a.endpoint:
         raise _NewError(
-            "say where the profile exits, one way: an ENDPOINT or --module NAME (a new "
-            "proxy in kiwi-proxy, named after the profile), --exit NAME (a proxy kiwi-proxy "
-            "has — `kiwi-proxy list`), or --no-proxy (this machine's own connection)"
+            "kiwi-fox does not make proxies. Define it in kiwi-proxy first — "
+            f"`kiwi-proxy add NAME {a.endpoint}`, or the Kiwi Proxy app — then "
+            f"`kiwi-fox new {a.name} --exit NAME`"
         )
-    if (a.dns_mode or a.upstream) and not ways["an ENDPOINT or --module"]:
+    if bool(a.exit) == bool(a.no_proxy):
         raise _NewError(
-            "--dns-mode and --upstream describe a proxy made here; an existing one keeps "
-            "its own (`kiwi-proxy set`), and no proxy has none"
+            "say where the profile exits: --exit PROXY (one kiwi-proxy has — `kiwi-proxy "
+            "list`; `kiwi-proxy add` makes one), or --no-proxy (this machine's own connection)"
         )
-    if a.exit:
-        try:
-            return exits.resolve_ref(a.exit), False
-        except exits.ExitError as exc:
-            raise _NewError(f"{exc} (kiwi-proxy list shows them)") from exc
     if a.no_proxy:
-        return None, False
-    if exits.find_by_name(a.name):
-        raise _NewError(
-            f"kiwi-proxy already has an exit named {a.name!r}: put the profile on it with "
-            f"--exit {a.name}, or pick another profile name"
-        )
-    dns_cfg = DnsConfig(mode=a.dns_mode or "resolver", upstream=a.upstream or dns.DEFAULT_UPSTREAM)
-    password = None
+        return None
     try:
-        if a.endpoint:
-            endpoint, password = proxy.parse(a.endpoint)
-            endpoint.module, endpoint.lease, endpoint.country = a.module, a.lease, a.country
-        else:
-            endpoint = exits.module_endpoint(a.module, lease=a.lease, country=a.country)
-        return store.create_exit(a.name, endpoint, password=password, dns=dns_cfg), True
-    except (proxy.ProxyError, providers.ProviderError, store.StoreError) as exc:
-        raise _NewError(str(exc)) from exc
+        return exits.resolve_ref(a.exit)
+    except exits.ExitError as exc:
+        raise _NewError(f"{exc} (kiwi-proxy list shows them; kiwi-proxy add makes one)") from exc
 
 
 def _probe_for_region(a: argparse.Namespace, ex) -> tuple[str | None, str | None]:
@@ -141,6 +119,7 @@ def _new_firefox(a: argparse.Namespace, ex) -> int:
     )
     profile.appearance = a.appearance
     profile.desktop_entry = bool(a.desktop_entry)
+    profile.tags = store.normalize_tags(a.tag or [])
     store.save(profile)
     _p(f"created {profile.name}  {profile.id}")
     if version:
@@ -171,8 +150,9 @@ def _new_torbrowser(a: argparse.Namespace, ex) -> int:
         )
     except store.StoreError as exc:
         return _fail(str(exc))
-    if a.desktop_entry:
-        profile.desktop_entry = True
+    if a.desktop_entry or a.tag:
+        profile.desktop_entry = bool(a.desktop_entry)
+        profile.tags = store.normalize_tags(a.tag or [])
         store.save(profile)
     _p(f"created {profile.name}  {profile.id}")
     if version:
@@ -191,18 +171,10 @@ def _new_torbrowser(a: argparse.Namespace, ex) -> int:
 
 def cmd_new(a: argparse.Namespace) -> int:
     try:
-        ex, made_here = _exit_for_new(a)
+        ex = _exit_for_new(a)
     except _NewError as exc:
         return _fail(str(exc))
-    try:
-        code = _new_profile(a, ex)
-    except BaseException:
-        if made_here:
-            exits.delete(ex.id)  # no profile, no shortcut exit left behind
-        raise
-    if code != 0 and made_here:
-        exits.delete(ex.id)
-    return code
+    return _new_profile(a, ex)
 
 
 def _new_profile(a: argparse.Namespace, ex) -> int:
@@ -263,6 +235,7 @@ def _new_profile(a: argparse.Namespace, ex) -> int:
     profile.appearance = a.appearance
     profile.language = a.language
     profile.desktop_entry = bool(a.desktop_entry)
+    profile.tags = store.normalize_tags(a.tag or [])
     store.save(profile)
     for issue in validate_webgl(mode, profile.webgl_vendor, profile.webgl_renderer, series):
         _p(f"  {issue}")
@@ -299,13 +272,26 @@ def cmd_list(a: argparse.Namespace) -> int:
         return 0
     from .core.engines import TITLES
 
+    if a.tag:
+        wanted = a.tag.lower()
+        profiles = [p for p in profiles if wanted in (t.lower() for t in p.tags)]
+        if not profiles:
+            _p(f"no profile is tagged {a.tag!r}")
+            return 0
+    if a.by_tag:
+        # Tagged first, by their first tag, then the untagged; names within.
+        profiles.sort(key=lambda p: ((p.tags[0].lower() if p.tags else "~"), p.name))
     names = {ex.id: ex.name for ex in exits.list_exits()}
-    _p(f"{'NAME':16} {'BROWSER':12} {'EXIT':24} {'COUNTRY':8} {'STATE':9} ID")
+    _p(f"{'NAME':16} {'BROWSER':12} {'EXIT':24} {'COUNTRY':8} {'STATE':9} {'TAGS':16} ID")
     for p in profiles:
         state = "running" if launch.running(p) else "stopped"
         country = (p.last_exit.country if p.last_exit else None) or "-"
         where = _exit_column(p, names)
-        _p(f"{p.name:16} {TITLES[p.engine]:12} {where:24} {country:8} {state:9} {p.id[:8]}")
+        tags = ",".join(p.tags) or "-"
+        _p(
+            f"{p.name:16} {TITLES[p.engine]:12} {where:24} {country:8} {state:9} "
+            f"{tags:16} {p.id[:8]}"
+        )
     return 0
 
 
@@ -322,6 +308,8 @@ def _show_common(p) -> None:
             _p(f"  auth      user {ex.endpoint.username}")
     if p.desktop_entry:
         _p(f"  app grid  yes — {desktop.entry_path(p.id)}")
+    if p.tags:
+        _p(f"  tags      {', '.join(p.tags)}")
     if p.last_exit:
         e = p.last_exit
         _p(
@@ -976,6 +964,13 @@ def cmd_set(a: argparse.Namespace) -> int:
             )
         if profile.exit:
             updates["exit"] = None
+    if a.tag or a.untag or a.no_tags:
+        tags = [] if a.no_tags else list(profile.tags)
+        tags = store.normalize_tags([*tags, *(a.tag or [])])
+        drop = {t.lower() for t in store.normalize_tags(a.untag or [])}
+        tags = [t for t in tags if t.lower() not in drop]
+        if tags != profile.tags:
+            updates["tags"] = tags
     if a.desktop_entry and a.no_desktop_entry:
         return _fail("--desktop-entry and --no-desktop-entry exclude each other")
     if a.desktop_entry and not profile.desktop_entry:
@@ -1005,7 +1000,7 @@ def cmd_set(a: argparse.Namespace) -> int:
         if fp is None:
             _p(
                 "nothing changed — pass what to change: --name, --exit, --no-proxy, "
-                "--appearance, --desktop-entry"
+                "--appearance, --desktop-entry, --tag"
             )
         else:
             _p(
@@ -1180,17 +1175,13 @@ def build_parser() -> argparse.ArgumentParser:
     n = sub.add_parser(
         "new",
         help="create a profile",
-        description="Create a profile. Where it exits is said one way: --exit PROXY, a "
-        "proxy kiwi-proxy has (shared with whatever else is on it); an ENDPOINT or "
-        "--module NAME, which makes a new proxy in kiwi-proxy named after the profile; "
-        "or --no-proxy, this machine's own connection.",
+        description="Create a profile. It exits through a proxy kiwi-proxy has (--exit "
+        "PROXY, shared with whatever else is on it) or through none (--no-proxy, this "
+        "machine's own connection). Proxies are made in kiwi-proxy: `kiwi-proxy add`, or "
+        "the Kiwi Proxy app.",
     )
     n.add_argument("name")
-    n.add_argument(
-        "endpoint",
-        nargs="?",
-        help="a new proxy for this profile: socks5://user:pass@host:port | host:port[:user:pass]",
-    )
+    n.add_argument("endpoint", nargs="?", help=argparse.SUPPRESS)  # says where it belongs
     n.add_argument(
         "--exit",
         metavar="PROXY",
@@ -1207,6 +1198,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="also put the profile in the app grid: a desktop entry of its own that launches it",
     )
     n.add_argument(
+        "--tag",
+        action="append",
+        metavar="TAG",
+        help="a tag, for grouping and finding profiles (repeatable, or comma-separated)",
+    )
+    n.add_argument(
         "--engine",
         choices=["camoufox", "firefox", "torbrowser"],
         default="camoufox",
@@ -1216,8 +1213,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     n.add_argument(
         "--country",
-        help="two-letter code: the identity's region and, with --module, the exit country; "
-        "probed from a plain exit when omitted",
+        help="two-letter code: the identity's region; probed from the exit when omitted",
     )
     n.add_argument("--form", choices=["desktop", "laptop"], help="force the machine type")
     n.add_argument(
@@ -1263,30 +1259,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     n.add_argument("--seed", help="reproduce a previous identity")
     n.add_argument("--engine-version")
-    n.add_argument(
-        "--module",
-        help="a new proxy through a provider module (tor, vpn, 9proxy, mysterium); without "
-        "an ENDPOINT the module produces one",
-    )
-    n.add_argument(
-        "--lease",
-        help="which of the module's exits (see `kiwi-fox module leases NAME`): a 9proxy "
-        "port, a Mysterium provider id",
-    )
-    n.add_argument(
-        "--dns-mode",
-        choices=["resolver", "remote"],
-        help="for a proxy made here (default resolver); an existing one keeps its own",
-    )
-    n.add_argument(
-        "--upstream",
-        choices=sorted(dns.UPSTREAMS),
-        help=f"DoH upstream for a proxy made here (default {dns.DEFAULT_UPSTREAM})",
-    )
     n.add_argument("--no-probe", action="store_true", help="skip the exit probe")
     n.set_defaults(func=cmd_new)
 
-    sub.add_parser("list", help="list profiles").set_defaults(func=cmd_list)
+    ls = sub.add_parser("list", help="list profiles")
+    ls.add_argument("--tag", metavar="TAG", help="only profiles with this tag")
+    ls.add_argument(
+        "--by-tag", action="store_true", help="tagged first, grouped by their first tag"
+    )
+    ls.set_defaults(func=cmd_list)
 
     s = sub.add_parser("show", help="everything about one profile")
     s.add_argument("ref")
@@ -1406,6 +1387,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     se.add_argument("--desktop-entry", action="store_true", help="put the profile in the app grid")
     se.add_argument("--no-desktop-entry", action="store_true", help="take its desktop entry away")
+    se.add_argument("--tag", action="append", metavar="TAG", help="add a tag (repeatable)")
+    se.add_argument("--untag", action="append", metavar="TAG", help="remove a tag")
+    se.add_argument("--no-tags", action="store_true", help="remove every tag")
     se.set_defaults(func=cmd_set)
 
     ds = sub.add_parser("desktop", help="the profiles' entries in the app grid")

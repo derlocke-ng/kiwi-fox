@@ -47,6 +47,22 @@ def entry_path(profile_id: str) -> Path:
     return paths.applications_dir() / f"{ENTRY_PREFIX}{profile_id[:8]}.desktop"
 
 
+def window_app_id(profile: Profile) -> str:
+    """What the profile's browser window announces as its app id (Firefox's
+    ``--name`` sets it on Wayland, ``--class`` the X11 WM_CLASS), so GNOME can match
+    the window to an entry: the profile's own when it has one, else Kiwi Fox's.
+    Without this the window says "camoufox" and the shell shows a blank icon."""
+    if profile.desktop_entry:
+        return f"{ENTRY_PREFIX}{profile.id[:8]}"
+    return APP_ID
+
+
+def window_args(profile: Profile) -> list[str]:
+    """The arguments that give the browser that app id, ahead of anything else."""
+    app_id = window_app_id(profile)
+    return ["--name", app_id, "--class", app_id]
+
+
 def launcher() -> str:
     """The kiwi-fox command an entry runs: the installed launcher by absolute
     path, because the app grid need not have ~/.local/bin on its PATH."""
@@ -66,7 +82,8 @@ def render_entry(profile: Profile, describe: str) -> str:
     Stop action. `describe` is the browser and the proxy, for the comment."""
     cmd = _exec_arg(launcher())
     name = profile.name.replace("\n", " ")
-    keyword = name.replace(";", " ")
+    keywords = [name, *profile.tags]
+    keyword = ";".join(k.replace(";", " ") for k in keywords)
     lines = [
         "[Desktop Entry]",
         "Type=Application",
@@ -79,6 +96,8 @@ def render_entry(profile: Profile, describe: str) -> str:
         "Categories=Network;WebBrowser;",
         f"Keywords=kiwi;browser;profile;{keyword};",
         "StartupNotify=false",
+        # The window announces this id (window_app_id), so the shell links it here.
+        f"StartupWMClass={ENTRY_PREFIX}{profile.id[:8]}",
         f"X-KiwiFox-Profile={profile.id}",
         "Actions=stop;",
         "",

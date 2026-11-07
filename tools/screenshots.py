@@ -82,14 +82,15 @@ def stage() -> None:
         dns=DnsConfig(mode="remote"),
         socks_auth="passthrough",
     )
-    for name, proxy, country, city in (
-        ("work", "mullvad-ch", "CH", "Zurich"),
-        ("shop", "mullvad-ch", "CH", "Zurich"),
-        ("market", "mullvad-se", "SE", "Malmö"),
+    for name, proxy, country, city, tags in (
+        ("work", "mullvad-ch", "CH", "Zurich", ["work"]),
+        ("shop", "mullvad-ch", "CH", "Zurich", ["shops", "eu"]),
+        ("market", "mullvad-se", "SE", "Malmö", ["shops"]),
     ):
         fp = generate(engine_version="152.0.4", country=country, seed=name * 8)
         p = store.create(name, exit_ids[proxy], fp)
         p.last_exit = ExitInfo(ip=proxies[proxy][2], country=country, city=city, seen=seen)
+        p.tags = tags
         store.save(p)
     research = store.create("research", exit_ids["kiwi-master-tor"], None, engine="firefox")
     research.last_exit = ExitInfo(ip="185.220.101.4", country="DE", city="Frankfurt", seen=seen)

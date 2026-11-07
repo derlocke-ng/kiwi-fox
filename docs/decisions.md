@@ -119,10 +119,12 @@ circuits. That was chosen (0.4.0) over a gateway per profile: fewer containers,
 one place a proxy is defined, and identities that must not share an exit simply
 take different proxies. kiwi-fox never writes an exit's settings — `kiwi-proxy
 set` and kiwi-proxy's editor do (the GUI opens that editor) — and reads them at
-launch, so an edit on either side meets. The two shortcuts, `kiwi-fox new NAME
-ENDPOINT` and `new NAME --module M`, create the exit named after the profile with
-`owner="kiwi-fox"`, so `kiwi-fox delete` can take it away with its last profile;
-an exit the user made stays.
+launch, so an edit on either side meets. kiwi-fox makes no exits at all (0.6.0;
+0.4 and 0.5 had shortcuts that did): the proxy side will grow, and it grows in
+kiwi-proxy. An endpoint given to `kiwi-fox new` is answered with the `kiwi-proxy
+add` to run, and the GUI's picker opens the Kiwi Proxy app. Exits that 0.3
+registered under a profile's id (`owner="kiwi-fox"`) still go with their last
+profile; an exit the user made stays.
 
 **Profiles from before 0.4 keep their exit id.** 0.3 registered one exit per
 profile under the profile's own id; `store.load` turns that into the reference

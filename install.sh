@@ -104,11 +104,10 @@ EOF
     else
         echo "Then create a profile:"
     fi
-    echo "  $APP new work --exit NAME                        on a proxy kiwi-proxy has (kiwi-proxy list)"
-    echo "  $APP new work socks5://user:pass@host:port       Camoufox, a Windows 11 identity, on a new proxy"
-    echo "  $APP new work --module tor --country de          a new proxy through a provider module"
-    echo "  $APP new plain HOST:PORT --engine firefox        stock Firefox"
-    echo "  $APP new anon --engine torbrowser --module tor   Tor Browser"
+    echo "  kiwi-proxy add work socks5://user:pass@host:port   a proxy, in kiwi-proxy (or its app)"
+    echo "  $APP new work --exit work                        Camoufox, a Windows 11 identity, on it"
+    echo "  $APP new plain --exit work --engine firefox      stock Firefox"
+    echo "  $APP new anon --exit tor-de --engine torbrowser  Tor Browser, on a tor-module proxy"
     echo "  $APP new bare --no-proxy                         this machine's own connection"
     echo
     echo "Firefox / Tor Browser:  $APP engine fetch --engine firefox   (or torbrowser)"

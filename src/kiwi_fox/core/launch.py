@@ -19,7 +19,7 @@ from pathlib import Path
 
 from kiwi_proxy import endpoint, exits, gateway, podman, providers
 
-from . import geometry, paths, store
+from . import desktop, geometry, paths, store
 from .engines import get_engine
 from .engines.camoufox import fontconfig_xml
 from .fingerprint import validate, validate_against
@@ -204,6 +204,9 @@ def browser_spec(
     its own mount namespace, so in resolver mode it mounts the file that points at
     the resolver inside the namespace. None in remote DNS mode, and with no proxy."""
     spec = get_engine(profile.engine).build_spec(profile, fp, gateway=gateway, exit_ip=exit_ip)
+    # The window's app id, so the desktop shows the profile's (or Kiwi Fox's)
+    # name and icon instead of "camoufox" and a blank.
+    spec.args = [*desktop.window_args(profile), *spec.args]
     if resolv_conf:
         spec.volumes.append((resolv_conf, "/etc/resolv.conf", "ro,z"))
     wayland = _wayland_mount()
@@ -462,7 +465,7 @@ def launch(profile: Profile, *, strict: bool = False, start_url: str | None = No
     clear_stale_lock(profile)
     br = browser_spec(profile, fp, gateway_name, info.ip if info else None, resolv)
     if start_url:
-        br.args = [start_url]
+        br.args.append(start_url)
     if "WAYLAND_DISPLAY" not in br.env:
         notes.append("no Wayland socket found; the browser window cannot open")
     try:

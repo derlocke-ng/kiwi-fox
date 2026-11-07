@@ -7,7 +7,7 @@ import gi
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 
-from gi.repository import Adw, GLib, Gtk  # noqa: E402
+from gi.repository import Adw, Gio, GLib, Gtk  # noqa: E402
 from kiwi_proxy import endpoint as proxy  # noqa: E402
 from kiwi_proxy import exits, providers  # noqa: E402
 from kiwi_proxy import secrets as proxy_secrets  # noqa: E402
@@ -65,11 +65,15 @@ def exit_choice_label(ex) -> str:
 NO_PROXY = "No proxy — this machine's own connection"
 
 
+PROXY_APP_ID = "eu.kiwinetwork.KiwiProxy"
+
+
 class ExitPicker:
     """Which kiwi-proxy exit a profile is on, or none. The exits are kiwi-proxy's:
-    the list is what `kiwi-proxy list` shows, and "Add" and "Edit" open kiwi-proxy's
-    own editor, so a proxy is defined in one place and shared by every profile on
-    it. Tor Browser is held to exits on the tor module and cannot run without one."""
+    the list is what `kiwi-proxy list` shows, and making or changing one is done
+    there (the Kiwi Proxy app opens from here), never in kiwi-fox — one place a
+    proxy is defined, shared by every profile on it. Tor Browser is held to exits
+    on the tor module and cannot run without one."""
 
     def __init__(self, group: Adw.PreferencesGroup, host: Adw.Dialog, *, on_change=None) -> None:
         self._host = host
@@ -78,20 +82,26 @@ class ExitPicker:
         self._exits: list = []
         self.row = Adw.ComboRow(title="Proxy")
         self.row.set_subtitle_lines(0)
-        self.edit_button = Gtk.Button(label="Edit…", valign=Gtk.Align.CENTER)
-        self.edit_button.connect("clicked", self._on_edit)
-        self.row.add_suffix(self.edit_button)
-        group.add(self.row)
-        self.add_row = Adw.ActionRow(
-            title="New proxy",
-            subtitle="A SOCKS5 you were given, or a provider module — Tor, a VPN, 9proxy, "
-            "Mysterium. kiwi-proxy keeps it, and any profile can use it.",
+        refresh = Gtk.Button(
+            icon_name="view-refresh-symbolic",
+            valign=Gtk.Align.CENTER,
+            tooltip_text="Read kiwi-proxy's exits again",
         )
-        self.add_row.set_subtitle_lines(0)
-        add = Gtk.Button(label="Add…", valign=Gtk.Align.CENTER)
-        add.connect("clicked", self._on_add)
-        self.add_row.add_suffix(add)
-        group.add(self.add_row)
+        refresh.add_css_class("flat")
+        refresh.connect("clicked", lambda *_: self.reload())
+        self.row.add_suffix(refresh)
+        group.add(self.row)
+        self.proxy_row = Adw.ActionRow(
+            title="Proxies are defined in Kiwi Proxy",
+            subtitle="A SOCKS5 you were given, or a provider module — Tor, a VPN, 9proxy, "
+            "Mysterium — with its DNS and ad-blocking. Add or change one there; this "
+            "list follows.",
+        )
+        self.proxy_row.set_subtitle_lines(0)
+        open_button = Gtk.Button(label="Open Kiwi Proxy", valign=Gtk.Align.CENTER)
+        open_button.connect("clicked", self._on_open_kiwi_proxy)
+        self.proxy_row.add_suffix(open_button)
+        group.add(self.proxy_row)
         self.note = Adw.ActionRow(use_markup=False, visible=False)
         self.note.set_subtitle_lines(0)
         group.add(self.note)
@@ -156,12 +166,11 @@ class ExitPicker:
 
     def _changed(self, *_args) -> None:
         ex = self.selected
-        self.edit_button.set_visible(ex is not None)
         if self._engine == "torbrowser" and not self._exits:
             self.note.set_title("Tor Browser needs an exit on the tor module")
             self.note.set_subtitle(
-                "Add one above with the tor module as its source. The module itself: "
-                f"{modules.install_hint('tor')}"
+                "Add one in Kiwi Proxy with the tor module as its source. The module "
+                f"itself: {modules.install_hint('tor')}"
             )
             self.note.set_visible(True)
             self.row.set_subtitle("")
@@ -178,21 +187,22 @@ class ExitPicker:
         if self._on_change:
             self._on_change()
 
-    # ------------------------------------------------- kiwi-proxy's own editor
-    def _editor(self, ex) -> None:
-        from kiwi_proxy.ui.dialogs import ExitEditor
+    # ------------------------------------------------------------- Kiwi Proxy
+    def _on_open_kiwi_proxy(self, *_args) -> None:
+        """The Kiwi Proxy app, by its desktop entry; the bare launcher if the
+        entry is not installed (a checkout)."""
+        info = Gio.DesktopAppInfo.new(f"{PROXY_APP_ID}.desktop")
+        try:
+            if info is not None:
+                info.launch([], None)
+            else:
+                import subprocess
 
-        def saved(new_ex) -> None:
-            self.reload(select=new_ex.id)
-
-        ExitEditor(ex, saved).present(self._host)
-
-    def _on_add(self, *_args) -> None:
-        self._editor(None)
-
-    def _on_edit(self, *_args) -> None:
-        if (ex := self.selected) is not None:
-            self._editor(ex)
+                subprocess.Popen(["kiwi-proxy-gui"])  # noqa: S603, S607
+        except Exception:  # noqa: BLE001 - say so, instead of a silent button
+            self.note.set_title("Kiwi Proxy could not be opened")
+            self.note.set_subtitle("kiwi install kiwi-proxy, or run kiwi-proxy-gui")
+            self.note.set_visible(True)
 
 
 def engine_version(profile, fp=None) -> str:
@@ -454,6 +464,8 @@ class NewProfileDialog(Adw.Dialog):
             subtitle="A desktop entry of its own, so GNOME launches this profile like any app",
         )
         profile.add(self.entry_row)
+        self.tags_row = Adw.EntryRow(title="Tags (comma-separated; the list groups by the first)")
+        profile.add(self.tags_row)
         page.add(profile)
 
         # ------------------------------------------------------------- proxy
@@ -596,6 +608,7 @@ class NewProfileDialog(Adw.Dialog):
         graphics = self.graphics.value()
         language = LANGUAGES[self.language_row.get_selected()][0]
         app_grid = self.entry_row.get_active()
+        tags = store.normalize_tags([self.tags_row.get_text()])
 
         self.create_button.set_sensitive(False)
         self._say("Probing the exit…" if engine == "camoufox" else "Creating the profile…")
@@ -613,8 +626,9 @@ class NewProfileDialog(Adw.Dialog):
                     engine=engine,  # type: ignore[arg-type]
                     engine_version=version,
                 )
-                if app_grid:
-                    profile.desktop_entry = True
+                if app_grid or tags:
+                    profile.desktop_entry = app_grid
+                    profile.tags = tags
                     store.save(profile)
                 return profile, None
             exit_info, probed = None, country
@@ -657,6 +671,7 @@ class NewProfileDialog(Adw.Dialog):
                 setattr(profile, field, value)
             profile.language = language  # type: ignore[assignment]
             profile.desktop_entry = app_grid
+            profile.tags = tags
             store.save(profile)
             return profile, exit_info
 
@@ -740,6 +755,9 @@ class ProfileEditor(Adw.Dialog):
             active=profile.desktop_entry,
         )
         group.add(self.entry_row)
+        self.tags_row = Adw.EntryRow(title="Tags (comma-separated; the list groups by the first)")
+        self.tags_row.set_text(", ".join(profile.tags))
+        group.add(self.tags_row)
         page.add(group)
         if fp is not None:
             self._build_identity(page, profile, fp)
@@ -964,6 +982,7 @@ class ProfileEditor(Adw.Dialog):
                 return self._say(str(exc))
         updates["exit"] = picked.id if picked else None
         updates["desktop_entry"] = self.entry_row.get_active()
+        updates["tags"] = store.normalize_tags([self.tags_row.get_text()])
 
         saved = profile.model_copy(update=updates)
         if new is not None and new != self._fp:
@@ -997,6 +1016,8 @@ class ProfileDetails(Adw.Dialog):
         browser.add(
             _row("App grid", "yes — a desktop entry launches it" if profile.desktop_entry else "no")
         )
+        if profile.tags:
+            browser.add(_row("Tags", ", ".join(profile.tags)))
         page.add(browser)
 
         net = Adw.PreferencesGroup(title="Network")

@@ -34,11 +34,10 @@ list, module images), so it is still one command.
 ## Use
 
 ```
-kiwi-proxy add kiwi-master-tor socks5://10.8.0.1:9050 --dns remote   # a proxy, defined once
+kiwi-proxy add kiwi-master-tor socks5://10.8.0.1:9050 --dns remote   # a proxy, defined once, in kiwi-proxy
 kiwi-fox new work --exit kiwi-master-tor         # a profile on it: probes it, draws a matching identity
-kiwi-fox new other socks5://user:pass@host:port  # the shortcut: makes the proxy "other" in kiwi-proxy
 kiwi-fox new bare --no-proxy                     # this machine's own connection, nothing sealed
-kiwi-fox list
+kiwi-fox list                                    # --tag shop, --by-tag
 kiwi-fox run work                                # or use the GUI
 kiwi-fox stop work
 kiwi-fox check                                   # is every profile still coherent?
@@ -47,12 +46,21 @@ kiwi-fox-gui                                     # "Kiwi Fox" in your app grid
 ```
 
 The GUI does all of it: **New profile** picks the browser and the proxy — one
-kiwi-proxy has, a new one through kiwi-proxy's own editor, or none — **Browser
-engines** in the menu downloads Firefox and Tor Browser, and **Set up environment**
-is `kiwi-fox setup`.
+kiwi-proxy has, or none; **Open Kiwi Proxy** is right there for a new one —
+**Browser engines** in the menu downloads Firefox and Tor Browser, and **Set up
+environment** is `kiwi-fox setup`.
 
-Endpoint formats: `socks5://user:pass@host:port`, `http://…`, `https://…`, and the
-vendor paste format `host:port:user:pass`.
+kiwi-fox makes no proxies itself. An endpoint goes to kiwi-proxy (`kiwi-proxy add
+NAME socks5://user:pass@host:port`, also `http://…`, `https://…`, or the vendor
+paste format `host:port:user:pass`), and the profile is put on it with `--exit`.
+
+## Tags
+
+A profile can carry tags, for grouping and finding: `--tag shop --tag eu` on
+`new`, `kiwi-fox set work --tag shop` and `--untag`, `kiwi-fox list --tag shop` or
+`--by-tag`. The GUI groups the list by each profile's first tag and shows the
+rest on the row, and a profile's desktop entry lists its tags as keywords, so
+the app grid finds it by them.
 
 ## A profile in the app grid
 
@@ -66,7 +74,9 @@ kiwi-fox desktop sync                              # rewrite every entry (after 
 
 In the GUI it is the **Show in the app grid** switch. The entry carries the
 profile's name, the Kiwi Fox icon and a Stop action; a rename updates it and
-deleting the profile removes it.
+deleting the profile removes it. The browser window announces the entry's id, so
+the dock and the overview show the profile's name and icon while it runs — a
+profile without an entry shows as Kiwi Fox.
 
 ## Proxies, and provider modules
 
@@ -87,7 +97,6 @@ kiwi install kiwi-plugin-tor                  # or -vpn, -9proxy, -myst
 kiwi-fox setup                                # builds the module's image
 kiwi-proxy add tor-de --module tor --country de
 kiwi-fox new work --exit tor-de
-kiwi-fox new other --module tor --country de  # the shortcut: a proxy "other" through the module
 kiwi-fox module list                          # = `kiwi-proxy module list`; `module leases tor`
 ```
 
@@ -236,10 +245,9 @@ browser container   joins that namespace — no routing table of its own
 The kill switch is the absence of a route, not software that has to notice. If the
 gateway dies the profile simply loses connectivity.
 
-`kiwi-proxy list` shows the proxies; one made by the shortcut is named after its
-profile. Another profile, a pentest tool or `kiwi-proxy up` can be in the same
-namespace; closing the browser leaves the gateway to them, and it goes with the
-last one. With no proxy there is no gateway: the browser container has a network
+`kiwi-proxy list` shows the proxies. Another profile, a pentest tool or
+`kiwi-proxy up` can be in the same namespace; closing the browser leaves the
+gateway to them, and it goes with the last one. With no proxy there is no gateway: the browser container has a network
 of its own on this machine's connection, and nothing is sealed.
 
 ## What it does not do

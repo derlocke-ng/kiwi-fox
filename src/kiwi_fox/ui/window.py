@@ -25,6 +25,21 @@ from .dialogs import (  # noqa: E402
 REFRESH_SECONDS = 4
 
 
+def grouped_by_tag(profiles) -> list[tuple[str, list]]:
+    """Profiles by their first tag, tags in alphabetical order, the untagged last;
+    one "Profiles" group while nothing is tagged."""
+    tagged: dict[str, list] = {}
+    untagged = []
+    for p in profiles:
+        (tagged.setdefault(p.tags[0], []) if p.tags else untagged).append(p)
+    if not tagged:
+        return [("Profiles", list(profiles))]
+    out = sorted(tagged.items(), key=lambda kv: kv[0].lower())
+    if untagged:
+        out.append(("Untagged", untagged))
+    return out
+
+
 class Window(Adw.ApplicationWindow):
     def __init__(self, **kwargs) -> None:
         super().__init__(default_width=760, default_height=620, title="Kiwi Fox", **kwargs)
@@ -55,8 +70,9 @@ class Window(Adw.ApplicationWindow):
         self.status_banner.connect("button-clicked", lambda *_: self._run_setup())
 
         self.page = Adw.PreferencesPage()
-        self.group = Adw.PreferencesGroup(title="Profiles")
-        self.page.add(self.group)
+        # One group per tag (a profile sits under its first tag), the untagged
+        # last; a single "Profiles" group while nothing is tagged.
+        self._groups: dict[str, Adw.PreferencesGroup] = {}
 
         self.empty = Adw.StatusPage(
             icon_name="avatar-default-symbolic",
@@ -105,13 +121,18 @@ class Window(Adw.ApplicationWindow):
         profiles = store.list_profiles()
         self.stack.set_visible_child_name("list" if profiles else "empty")
         if rebuild:
-            for row in self._rows.values():
-                self.group.remove(row)
+            for group in self._groups.values():
+                self.page.remove(group)
+            self._groups.clear()
             self._rows.clear()
-            for profile in profiles:
-                row = self._build_row(profile)
-                self._rows[profile.id] = row
-                self.group.add(row)
+            for title, members in grouped_by_tag(profiles):
+                group = Adw.PreferencesGroup(title=title)
+                self.page.add(group)
+                self._groups[title] = group
+                for profile in members:
+                    row = self._build_row(profile)
+                    self._rows[profile.id] = row
+                    group.add(row)
         for profile in profiles:
             row = self._rows.get(profile.id)
             if row:
@@ -160,7 +181,10 @@ class Window(Adw.ApplicationWindow):
             if profile.last_exit.city:
                 exit_bits.append(profile.last_exit.city)
         where = " · ".join(exit_bits) or "not probed yet"
-        row.set_subtitle(f"{TITLES[profile.engine]} · {exit_label(profile)} · {where}")
+        subtitle = f"{TITLES[profile.engine]} · {exit_label(profile)} · {where}"
+        if profile.tags:
+            subtitle += " · " + " ".join(f"#{t}" for t in profile.tags)
+        row.set_subtitle(subtitle)
         button = row.run_button  # type: ignore[attr-defined]
         if profile.id in self._busy:
             button.set_label("Working…")

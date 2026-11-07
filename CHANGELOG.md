@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.6.0
+
+The window shows up as the profile, proxies are kiwi-proxy's alone, and tags.
+
+- **The running browser shows the profile's name and icon.** The window used to
+  announce itself as `camoufox`, which no entry matches, so the dock showed a
+  blank. The browser now starts with `--name` (Wayland app id) and `--class`
+  (X11 class) set to the profile's own entry id when it has one, else to Kiwi
+  Fox's, measured on the engine itself. Profile entries carry the matching
+  `StartupWMClass`.
+- **kiwi-fox makes no proxies.** `new` takes `--exit PROXY` or `--no-proxy`,
+  nothing else; an endpoint given to it is answered with the `kiwi-proxy add`
+  to run. `--module`, `--lease`, `--dns-mode` and `--upstream` are gone from
+  `new`. The GUI's picker lost Add and Edit and gained **Open Kiwi Proxy** and
+  a refresh. Exits 0.3 registered under a profile's id still go with their
+  last profile.
+- **Tags.** `--tag` on `new` and `set` (repeatable or comma-separated),
+  `--untag`, `--no-tags`; `list --tag` filters and `--by-tag` groups; `show`
+  prints them. The GUI groups the list by each profile's first tag, with the
+  untagged last, shows the rest on the row, and both dialogs have a Tags row.
+  A profile's desktop entry lists its tags as keywords.
+- **The Firefox engine downloads again.** `engine fetch --engine firefox`
+  failed with "SHA-512 did not match": the checksum was looked up by file name
+  in Mozilla's SHA512SUMS, which lists that name once per locale and
+  architecture, so the en-US x86_64 tarball was checked against an aarch64
+  Acholi build. It is looked up by its full path now.
+
 ## 0.5.0
 
 Kiwi Fox in the app grid, and its profiles too.

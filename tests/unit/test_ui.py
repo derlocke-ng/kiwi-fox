@@ -504,6 +504,29 @@ def test_the_app_grid_switch_round_trips():
     assert not desktop.entry_path(saved.id).exists()
 
 
+def test_the_picker_makes_no_proxies_but_opens_kiwi_proxy():
+    from kiwi_fox.ui import dialogs
+
+    dialog = dialogs.NewProfileDialog(Adw.ApplicationWindow(), lambda p: None)
+    assert not hasattr(dialog.exits, "add_row") and not hasattr(dialog.exits, "edit_button")
+    assert dialog.exits.proxy_row.get_title() == "Proxies are defined in Kiwi Proxy"
+
+
+def test_tags_round_trip_through_the_dialogs():
+    from kiwi_fox.core import store
+    from kiwi_fox.ui.dialogs import ProfileDetails, ProfileEditor
+
+    p = _plain("tagged", "firefox")
+    editor = ProfileEditor(p)
+    assert editor.tags_row.get_text() == ""
+    editor.tags_row.set_text("shop, EU, shop")
+    editor._on_save()
+    saved = store.find_by_name("tagged")
+    assert saved.tags == ["shop", "EU"]
+    ProfileDetails(saved)
+    assert ProfileEditor(saved).tags_row.get_text() == "shop, EU"
+
+
 def test_a_profile_with_a_lost_proxy_opens_and_says_so():
     from kiwi_proxy import exits
 

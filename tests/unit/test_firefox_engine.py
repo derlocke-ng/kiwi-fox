@@ -141,10 +141,21 @@ def test_target_dir_and_installed(monkeypatch, tmp_path):
     assert firefox_fetch.latest_installed() == "159.0"
 
 
-def test_sha512_for_matches_on_basename():
-    sums = "aa  linux-x86_64/en-US/firefox-159.0.tar.xz\nbb  win64/firefox-159.0.exe\n"
-    assert firefox_fetch.sha512_for(sums, "firefox-159.0.tar.xz") == "aa"
-    assert firefox_fetch.sha512_for(sums, "nope.tar.xz") is None
+def test_sha512_for_matches_the_whole_path_not_the_basename():
+    # Mozilla's SHA512SUMS lists the same file name once per locale and
+    # architecture; the first one is not ours. 0.5 matched the basename and so
+    # verified the en-US x86_64 tarball against an aarch64 Acholi build: every
+    # fetch failed with "did not match".
+    sums = (
+        "aa  linux-aarch64/ach/firefox-159.0.tar.xz\n"
+        "bb  linux-x86_64/de/firefox-159.0.tar.xz\n"
+        "cc  linux-x86_64/en-US/firefox-159.0.tar.xz\n"
+        "dd  ./linux-x86_64/en-US/firefox-159.0.tar.xz.asc\n"
+    )
+    assert firefox_fetch.sha512_for(sums, "linux-x86_64/en-US/firefox-159.0.tar.xz") == "cc"
+    assert firefox_fetch.sha512_for(sums, "firefox-159.0.tar.xz") is None
+    assert firefox_fetch.TARBALL_PATH.format(v="159.0") == "linux-x86_64/en-US/firefox-159.0.tar.xz"
+    assert firefox_fetch.TARBALL.endswith("/" + firefox_fetch.TARBALL_PATH)
 
 
 def test_policies_turn_off_updates(tmp_path):

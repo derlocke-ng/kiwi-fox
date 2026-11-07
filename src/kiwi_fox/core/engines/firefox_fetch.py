@@ -26,7 +26,9 @@ from .. import paths
 # Mozilla's version index and the per-release artifact layout.
 VERSIONS_JSON = "https://product-details.mozilla.org/1.0/firefox_versions.json"
 RELEASE_BASE = "https://archive.mozilla.org/pub/firefox/releases/{v}"
-TARBALL = RELEASE_BASE + "/linux-x86_64/en-US/firefox-{v}.tar.xz"
+# The one build this engine is: the path SHA512SUMS lists it under.
+TARBALL_PATH = "linux-x86_64/en-US/firefox-{v}.tar.xz"
+TARBALL = RELEASE_BASE + "/" + TARBALL_PATH
 TARBALL_ASC = TARBALL + ".asc"
 SHA512SUMS = RELEASE_BASE + "/SHA512SUMS"
 SHA512SUMS_ASC = RELEASE_BASE + "/SHA512SUMS.asc"
@@ -91,11 +93,16 @@ def discover(version: str | None = None) -> str:
 
 
 # -------------------------------------------------------------- pure verifiers
-def sha512_for(sums_text: str, filename: str) -> str | None:
-    """The checksum SHA512SUMS lists for a file (matched on the basename)."""
+def sha512_for(sums_text: str, path: str) -> str | None:
+    """The checksum SHA512SUMS lists for `path`, relative to the release directory
+    (``linux-x86_64/en-US/firefox-159.0.tar.xz``). Matched on the whole path: some
+    two hundred lines share that basename — one per locale and architecture — and
+    the first of them is an aarch64 Acholi build, which is what a basename match
+    verified the en-US tarball against, so no download ever passed."""
+    want = path.lstrip("./")
     for line in sums_text.splitlines():
         parts = line.split(None, 1)
-        if len(parts) == 2 and Path(parts[1].strip()).name == filename:
+        if len(parts) == 2 and parts[1].strip().lstrip("./") == want:
             return parts[0].strip().lower()
     return None
 
@@ -251,9 +258,9 @@ def fetch(
         if not gpgv_ok(keyring, sums_asc, sums):
             raise FetchError("SHA512SUMS signature did not verify against the pinned key")
 
-        want = sha512_for(sums.read_text(), f"firefox-{ver}.tar.xz")
+        want = sha512_for(sums.read_text(), TARBALL_PATH.format(v=ver))
         if not want:
-            raise FetchError(f"SHA512SUMS has no line for firefox-{ver}.tar.xz")
+            raise FetchError(f"SHA512SUMS has no line for {TARBALL_PATH.format(v=ver)}")
 
         if not tar_path.exists() or force or sha512_of(tar_path) != want:
             tmp = tar_path.with_suffix(".part")

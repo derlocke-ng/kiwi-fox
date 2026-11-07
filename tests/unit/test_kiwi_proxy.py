@@ -59,25 +59,6 @@ def test_a_profile_references_an_exit_the_user_made():
     assert paths.gateway_name(p.exit) == proxy_paths.gateway_name(ex.id)
 
 
-def test_the_shortcut_makes_an_exit_named_after_the_profile():
-    ex = store.create_exit("plain", _endpoint(), password="pw", dns=DnsConfig(mode="remote"))
-    p = _firefox(exit_id=ex.id)
-    assert (ex.name, ex.owner, ex.socks_auth, ex.dns.mode) == (
-        "plain",
-        "kiwi-fox",
-        "inject",
-        "remote",
-    )
-    assert proxy_secrets.lookup(ex.id, kind="endpoint") == "pw", "the password is kiwi-proxy's"
-    assert store.describe_exit(store.exit_of(p)).startswith("plain · 10.64.0.1:1080 · dns remote")
-
-
-def test_the_shortcut_refuses_a_name_kiwi_proxy_has():
-    _exit("work")
-    with pytest.raises(store.StoreError, match="already exists"):
-        store.create_exit("work", _endpoint())
-
-
 def test_a_profile_needs_an_exit_that_exists():
     with pytest.raises(store.StoreError, match="no exit"):
         _firefox(exit_id="00000000-0000-0000-0000-000000000000")
@@ -176,8 +157,8 @@ def test_migration_happens_once(monkeypatch):
 
 
 # ------------------------------------------------------------------ deleting
-def test_delete_takes_a_shortcut_exit_with_its_last_profile():
-    ex = store.create_exit("plain", _endpoint())
+def test_delete_takes_an_exit_0_3_registered_with_its_last_profile():
+    ex = _exit("plain", owner="kiwi-fox")  # as 0.3 made them, under the profile's id
     a, b = _firefox("a", ex.id), _firefox("b", ex.id)
     store.delete(a.id, purge=True)
     assert exits.exists(ex.id), "b is still on it"
@@ -311,8 +292,8 @@ def test_a_direct_measurement_that_fails_is_a_note_not_an_error(monkeypatch):
 
 # ------------------------------------------------------------------ reaping
 def test_reap_releases_a_gateway_whose_browser_is_gone(fake_proxy, monkeypatch):
-    a = _firefox("a", store.create_exit("a", _endpoint()).id)
-    b = _firefox("b", store.create_exit("b", _endpoint()).id)
+    a = _firefox("a", _exit("a").id)
+    b = _firefox("b", _exit("b").id)
     fake_proxy.running = {paths.gateway_name(a.exit)}
     monkeypatch.setattr(gateway, "reap", lambda: [paths.gateway_name(b.exit), "kf-gw-elsewhere"])
     cleaned = launch.reap()
@@ -322,6 +303,39 @@ def test_reap_releases_a_gateway_whose_browser_is_gone(fake_proxy, monkeypatch):
 
 
 # ------------------------------------------------------------------ the CLI
+def test_kiwi_fox_makes_no_exits():
+    # The proxy side grows in kiwi-proxy; kiwi-fox only references.
+    assert not hasattr(store, "create_exit")
+    ex = _exit("plain", dns=DnsConfig(mode="remote"))
+    p = _firefox(exit_id=ex.id)
+    assert store.describe_exit(store.exit_of(p)).startswith("plain · 10.64.0.1:1080 · dns remote")
+
+
+def test_new_with_an_endpoint_points_at_kiwi_proxy_add(capsys):
+    from kiwi_fox import cli
+
+    assert cli.main(["new", "ff", "socks5://10.64.0.1:1080", "--engine", "firefox"]) == 1
+    err = capsys.readouterr().err
+    assert "kiwi-proxy add NAME socks5://10.64.0.1:1080" in err
+    assert "kiwi-fox new ff --exit NAME" in err
+    assert exits.list_exits() == [] and store.find_by_name("ff") is None
+
+
+def test_new_says_where(capsys):
+    from kiwi_fox import cli
+
+    _exit("work")
+    assert cli.main(["new", "x", "--engine", "firefox"]) == 1
+    assert "--exit PROXY" in capsys.readouterr().err
+    assert cli.main(["new", "x", "--exit", "work", "--no-proxy", "--engine", "firefox"]) == 1
+    assert "--exit PROXY" in capsys.readouterr().err
+    assert cli.main(["new", "x", "--exit", "nope", "--engine", "firefox"]) == 1
+    assert "kiwi-proxy list" in capsys.readouterr().err
+    # --module and --dns-mode are kiwi-proxy's now: argparse refuses them outright.
+    with pytest.raises(SystemExit):
+        cli.main(["new", "x", "--module", "tor", "--engine", "firefox"])
+
+
 def test_new_on_an_existing_exit(capsys):
     from kiwi_fox import cli
 
@@ -330,46 +344,6 @@ def test_new_on_an_existing_exit(capsys):
     p = store.find_by_name("mt")
     assert p is not None and p.exit == ex.id
     assert "exit    : kiwi-master-tor · 10.64.0.1:1080" in capsys.readouterr().out
-
-
-def test_new_with_an_endpoint_makes_the_exit_and_a_failed_create_removes_it(capsys):
-    from kiwi_fox import cli
-
-    # Tor Browser on a plain endpoint is refused — and the shortcut exit goes too.
-    assert cli.main(["new", "tb", "10.64.0.1:1080", "--engine", "torbrowser"]) == 1
-    assert "tor module" in capsys.readouterr().err
-    assert exits.find_by_name("tb") is None
-    assert (
-        cli.main(["new", "ff", "10.64.0.1:1080", "--engine", "firefox", "--dns-mode", "remote"])
-        == 0
-    )
-    ex = exits.find_by_name("ff")
-    assert ex is not None and ex.owner == "kiwi-fox" and ex.dns.mode == "remote"
-    assert store.find_by_name("ff").exit == ex.id
-
-
-def test_new_says_where_one_way(capsys):
-    from kiwi_fox import cli
-
-    _exit("work")
-    assert cli.main(["new", "x", "--engine", "firefox"]) == 1
-    assert "one way" in capsys.readouterr().err
-    assert cli.main(["new", "x", "10.64.0.1:1080", "--exit", "work", "--engine", "firefox"]) == 1
-    assert "one way" in capsys.readouterr().err
-    assert (
-        cli.main(["new", "x", "--exit", "work", "--dns-mode", "remote", "--engine", "firefox"]) == 1
-    )
-    assert "keeps its own" in capsys.readouterr().err
-    assert cli.main(["new", "x", "--exit", "nope", "--engine", "firefox"]) == 1
-    assert "kiwi-proxy list" in capsys.readouterr().err
-
-
-def test_new_refuses_a_profile_name_kiwi_proxy_uses_and_points_at_exit(capsys):
-    from kiwi_fox import cli
-
-    _exit("work")
-    assert cli.main(["new", "work", "10.64.0.1:1080", "--engine", "firefox"]) == 1
-    assert "--exit work" in capsys.readouterr().err
 
 
 def test_new_no_proxy(capsys):

@@ -203,4 +203,8 @@ class Profile(Strict):
     # A desktop entry of its own in the app grid (core/desktop.py), so GNOME
     # launches this profile like any app. Opt-in; the store keeps it in line.
     desktop_entry: bool = False
+    # Free-form tags, for grouping and finding profiles: the GUI groups the list
+    # by the first one, `kiwi-fox list --tag` filters, the desktop entry lists
+    # them as keywords. Kept as typed, without duplicates (store.normalize_tags).
+    tags: list[str] = Field(default_factory=list)
     notes: str = ""

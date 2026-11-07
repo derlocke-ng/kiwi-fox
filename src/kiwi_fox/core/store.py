@@ -21,7 +21,7 @@ from pathlib import Path
 
 from kiwi_proxy import exits
 from kiwi_proxy import secrets as proxy_secrets
-from kiwi_proxy.models import Endpoint, Exit
+from kiwi_proxy.models import Exit
 
 from . import desktop, paths, secrets
 from .models import DnsConfig, EngineName, Fingerprint, Profile
@@ -89,16 +89,19 @@ def check_tor_exit(ex: Exit | None) -> None:
         )
 
 
-def create_exit(
-    name: str, endpoint: Endpoint, *, password: str | None = None, dns: DnsConfig | None = None
-) -> Exit:
-    """kiwi-fox's shortcut for `kiwi-proxy add`: a proxy named after the profile,
-    owned by kiwi-fox so that deleting its last profile removes it too. One made
-    with the kiwi-proxy CLI or app is the user's, and stays."""
-    try:
-        return exits.create(name, endpoint, password=password, dns=dns, owner=OWNER)
-    except exits.ExitError as exc:
-        raise StoreError(str(exc)) from exc
+def normalize_tags(values: list[str]) -> list[str]:
+    """Tags as typed — comma-separated or one per value, a leading # allowed —
+    trimmed, empty ones dropped, duplicates (case-insensitively) dropped, the
+    first spelling kept."""
+    out: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        for raw in value.split(","):
+            tag = raw.strip().lstrip("#").strip()
+            if tag and tag.lower() not in seen:
+                seen.add(tag.lower())
+                out.append(tag)
+    return out
 
 
 def profiles_on(exit_id: str) -> list[Profile]:
@@ -106,7 +109,9 @@ def profiles_on(exit_id: str) -> list[Profile]:
 
 
 def _drop_exit_if_unused(exit_id: str, *, leaving: str) -> bool:
-    """A kiwi-fox-made exit goes with its last profile; the user's own stay."""
+    """An exit kiwi-fox registered itself (0.3 made one per profile, owner
+    kiwi-fox) goes with its last profile; the user's own, made in kiwi-proxy,
+    stay. kiwi-fox makes no exits any more."""
     try:
         ex = exits.load(exit_id)
     except exits.ExitError:
@@ -282,8 +287,8 @@ def resolve_ref(ref: str) -> Profile:
 
 
 def delete(profile_id: str, *, purge: bool = False) -> None:
-    """The profile goes; a proxy kiwi-fox made for it goes with its last profile,
-    one the user made in kiwi-proxy stays."""
+    """The profile goes; an exit kiwi-fox 0.3 registered for it goes with its last
+    profile, one the user made in kiwi-proxy stays."""
     import shutil
 
     exit_id = None
