@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.6.2
+
+- Help text and docs still showed `kiwi-fox new … --module tor`, which 0.6.0
+  removed: a profile takes one of kiwi-proxy's proxies with `--exit`, and the
+  exit on a module is made with `kiwi-proxy add NAME --module tor --country de`.
+  `kiwi-fox module countries tor` lists where a module can exit (kiwi-proxy 0.4).
+
 ## 0.6.1
 
 - The tag-grouping helper lives in the store, not the GTK window module, so

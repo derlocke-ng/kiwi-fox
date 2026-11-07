@@ -97,7 +97,7 @@ kiwi install kiwi-plugin-tor                  # or -vpn, -9proxy, -myst
 kiwi-fox setup                                # builds the module's image
 kiwi-proxy add tor-de --module tor --country de
 kiwi-fox new work --exit tor-de
-kiwi-fox module list                          # = `kiwi-proxy module list`; `module leases tor`
+kiwi-fox module list                          # = `kiwi-proxy module list`; `module countries tor`
 ```
 
 How modules work and how to write one: kiwi-proxy's
@@ -131,7 +131,8 @@ pinned and mounted read-only with updates turned off.
 ```
 kiwi install kiwi-plugin-tor
 kiwi-fox engine fetch --engine torbrowser     # signature-verified against the pinned Tor key
-kiwi-fox new anon --engine torbrowser --module tor
+kiwi-proxy add tor-de --module tor --country de   # Tor Browser needs an exit on the tor module
+kiwi-fox new anon --engine torbrowser --exit tor-de
 kiwi-fox run anon
 ```
 

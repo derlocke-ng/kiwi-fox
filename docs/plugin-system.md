@@ -6,13 +6,15 @@ proxy engine in kiwi-fox 0.3.0. The contract, the lifecycle and how to write a
 module are in kiwi-proxy's
 [docs/plugin-system.md](https://github.com/derlocke-ng/kiwi-proxy/blob/main/docs/plugin-system.md).
 
-From kiwi-fox's side nothing changes in use:
+From kiwi-fox's side a module is something kiwi-proxy makes an exit from, and a
+profile picks that exit:
 
 ```
 kiwi install kiwi-plugin-tor                  # or -vpn, -9proxy, -myst
 kiwi-fox setup                                # builds the module's image (kiwi-proxy's setup)
-kiwi-fox module list                          # the same as `kiwi-proxy module list`
-kiwi-fox new work --module tor --country de   # the module produces the endpoint
+kiwi-fox module list                          # the same as `kiwi-proxy module list`; `module countries tor`
+kiwi-proxy add tor-de --module tor --country de   # the module produces the endpoint
+kiwi-fox new work --exit tor-de
 ```
 
 Modules install into kiwi-proxy's modules directory

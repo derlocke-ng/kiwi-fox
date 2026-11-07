@@ -80,7 +80,7 @@ def check_tor_exit(ex: Exit | None) -> None:
     if ex is None or ex.endpoint.module != TOR_MODULE:
         raise StoreError(
             "a Tor Browser profile exits only through the tor module: use an exit on it "
-            "(--module tor creates one; so does `kiwi-proxy add NAME --module tor`)"
+            "(`kiwi-proxy add NAME --module tor --country de` makes one)"
         )
     if ex.socks_auth != "passthrough":
         raise StoreError(

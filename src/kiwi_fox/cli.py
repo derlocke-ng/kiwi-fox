@@ -266,8 +266,8 @@ def cmd_list(a: argparse.Namespace) -> int:
     profiles = store.list_profiles()
     if not profiles:
         _p(
-            "no profiles yet — `kiwi-fox new NAME --exit PROXY` (a proxy from `kiwi-proxy list`), "
-            "`new NAME socks5://host:port`, `--module tor`, or `--no-proxy`"
+            "no profiles yet — `kiwi-fox new NAME --exit PROXY` (a proxy from `kiwi-proxy list`) "
+            "or `kiwi-fox new NAME --no-proxy`"
         )
         return 0
     from .core.engines import TITLES
@@ -1073,11 +1073,19 @@ def cmd_setup(a: argparse.Namespace) -> int:
     _p("")
     for step in steps:
         _p(f"  {step}")
-    _p("\nReady — create a profile:")
-    _p("  kiwi-fox new work socks5://user:pass@host:port        Camoufox, a Windows identity")
-    _p("  kiwi-fox new work --module tor --country de           exit through a provider module")
-    _p("  kiwi-fox new plain HOST:PORT --engine firefox         stock Firefox")
-    _p("  kiwi-fox new anon --engine torbrowser --module tor    Tor Browser")
+    _p("\nReady — create a profile (a proxy is one of kiwi-proxy's: `kiwi-proxy list`):")
+    _p(
+        "  kiwi-fox new work --exit mullvad                      Camoufox, a Windows identity, on that proxy"
+    )
+    _p(
+        "  kiwi-fox new plain --no-proxy --engine firefox        stock Firefox on this machine's connection"
+    )
+    _p(
+        "  kiwi-fox new anon --engine torbrowser --exit tor-de   Tor Browser; the exit is on the tor module:"
+    )
+    _p(
+        "                                                        kiwi-proxy add tor-de --module tor --country de"
+    )
     return 0
 
 
@@ -1208,8 +1216,8 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["camoufox", "firefox", "torbrowser"],
         default="camoufox",
         help="camoufox (default): a spoofed Windows identity; firefox: stock Firefox, "
-        "this machine's own values; torbrowser: Tor Browser through --module tor, a "
-        "circuit per site (no spoofing flags apply to the non-camoufox engines)",
+        "this machine's own values; torbrowser: Tor Browser through an exit on the tor "
+        "module, a circuit per site (no spoofing flags apply to the non-camoufox engines)",
     )
     n.add_argument(
         "--country",
