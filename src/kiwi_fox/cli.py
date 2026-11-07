@@ -285,7 +285,8 @@ def cmd_list(a: argparse.Namespace) -> int:
     _p(f"{'NAME':16} {'BROWSER':12} {'EXIT':24} {'COUNTRY':8} {'STATE':9} {'TAGS':16} ID")
     for p in profiles:
         state = "running" if launch.running(p) else "stopped"
-        country = (p.last_exit.country if p.last_exit else None) or "-"
+        seen = store.seen_exit(p)
+        country = (seen.country if seen else None) or "-"
         where = _exit_column(p, names)
         tags = ",".join(p.tags) or "-"
         _p(
@@ -310,10 +311,10 @@ def _show_common(p) -> None:
         _p(f"  app grid  yes — {desktop.entry_path(p.id)}")
     if p.tags:
         _p(f"  tags      {', '.join(p.tags)}")
-    if p.last_exit:
-        e = p.last_exit
+    if e := store.seen_exit(p):
         _p(
             f"  last exit {e.ip} {e.country or '?'} {e.city or ''} asn={e.asn or '?'} at {e.seen:%Y-%m-%d %H:%M}"
+            "  (kiwi-proxy check EXIT measures it again)"
         )
 
 
@@ -1280,7 +1281,6 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("show", help="everything about one profile")
     s.add_argument("ref")
     s.set_defaults(func=cmd_show)
-
     c = sub.add_parser("check", help="validate fingerprint coherence")
     c.add_argument("ref", nargs="?")
     c.set_defaults(func=cmd_check)

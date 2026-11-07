@@ -471,3 +471,33 @@ def test_camoufox_only_commands_say_why(argv, capsys):
     _firefox("plain", _exit().id)
     assert cli.main(argv) == 1
     assert "is a Firefox profile" in capsys.readouterr().err
+
+
+def test_what_a_profile_shows_is_the_exits_own_record():
+    """Measuring is kiwi-proxy's: a profile shows what its exit's record says,
+    whoever measured it (a launch, `kiwi-proxy check`, another profile on it); only
+    a profile with no proxy has a record of its own (this machine's connection)."""
+    import datetime as dt
+
+    ex = _exit("work")
+    p = _firefox("a", exit_id=ex.id)
+    assert store.seen_exit(p) is None
+    theirs = ExitInfo(ip="203.0.113.9", country="SE", city="Kista", seen=dt.datetime.now(dt.UTC))
+    exits.record_exit(exits.load(ex.id), theirs)
+    assert store.seen_exit(p).ip == "203.0.113.9"
+    own = ExitInfo(ip="198.51.100.4", country="DE", seen=dt.datetime.now(dt.UTC))
+    p.last_exit = own
+    assert store.seen_exit(p).ip == "203.0.113.9"  # the exit's record, not the profile's
+    direct = _firefox("plain", exit_id=None)
+    direct.last_exit = own
+    assert store.seen_exit(direct).ip == "198.51.100.4"
+
+
+def test_heal_exits_is_kiwi_proxys_heal_and_never_raises(monkeypatch):
+    import kiwi_proxy.podman as proxy_podman
+
+    monkeypatch.setattr(proxy_podman, "available", lambda: True)
+    monkeypatch.setattr(gateway, "heal", lambda: ["kf-gw-x"])
+    assert launch.heal_exits() == ["kf-gw-x"]
+    monkeypatch.setattr(gateway, "heal", lambda: (_ for _ in ()).throw(RuntimeError("podman gone")))
+    assert launch.heal_exits() == []

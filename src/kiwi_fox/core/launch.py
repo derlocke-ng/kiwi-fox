@@ -461,6 +461,16 @@ def launch(profile: Profile, *, strict: bool = False, start_url: str | None = No
         gw = up(profile)
         gateway_name, resolv = gw.name, gw.resolv_conf
         notes += [n for n in gw.notes if n not in notes]
+        if info is None:
+            # A provider exit (Tor, Mysterium) sits on the bridge, out of the
+            # host's reach: the pre-flight could not measure it. Ask through the
+            # gateway now — it is kiwi-proxy's gateway measuring its own exit.
+            try:
+                info = gateway.measure_exit(gw.name)
+            except _NETWORK_ERRORS as exc:
+                notes.append(f"could not measure the exit: {exc}")
+        if info is not None and (ex := exit_of(profile)):
+            exits.record_exit(ex, info)  # the exit's record is what both apps show
 
     clear_stale_lock(profile)
     br = browser_spec(profile, fp, gateway_name, info.ip if info else None, resolv)
@@ -496,6 +506,19 @@ def down(profile: Profile) -> None:
     only released, never pulled from under whoever else is inside; `kiwi-proxy
     down NAME` is the unconditional one."""
     stop(profile)
+
+
+def heal_exits() -> list[str]:
+    """kiwi-proxy's own recovery, asked for from kiwi-fox's refresh while windows
+    are open: a tunnel node that failed closed (a Mysterium session ended) is
+    started again behind its gateway, so the browser on it gets its route back
+    without anyone opening Kiwi Proxy. Never raises; the refresh must go on."""
+    try:
+        if not podman.available():
+            return []
+        return gateway.heal()
+    except Exception:  # noqa: BLE001 - a refresh tick, not a command
+        return []
 
 
 def running(profile: Profile) -> bool:

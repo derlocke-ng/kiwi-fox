@@ -58,6 +58,20 @@ def exit_of(profile: Profile) -> Exit | None:
         ) from exc
 
 
+def seen_exit(profile: Profile):
+    """What the world last saw through this profile's proxy. The exit is
+    kiwi-proxy's and so is measuring it: its record (`kiwi-proxy check`, `up`, a
+    launch, another profile on the same proxy) is what is shown. A profile with no
+    proxy has only what its own launches measured of this machine's connection."""
+    try:
+        ex = exit_of(profile)
+    except StoreError:
+        return profile.last_exit
+    if ex is None:
+        return profile.last_exit
+    return ex.last_exit or profile.last_exit
+
+
 def exit_label(ex: Exit | None) -> str:
     """Where a profile exits, the way a person reads it: the proxy's name, or none."""
     return ex.name if ex else "no proxy"

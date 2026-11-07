@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.7.0
+
+- **Stock Firefox renders like a Linux desktop.** The browser image's Firefox
+  font set was DejaVu alone, so every page asking for Arial, Verdana, Georgia or
+  Segoe came out in DejaVu Sans and looked wrong. It now carries Liberation (the
+  same metrics as Arial, Times and Courier) and Noto Sans, Serif and Mono, and
+  fontconfig's own rules pick them. Camoufox's per-profile fonts are untouched.
+  `kiwi-fox setup` rebuilds the image.
+- **Where a profile leaves is kiwi-proxy's measurement.** The exit is kiwi-proxy's
+  and so is measuring it: a profile's row and details show the exit's own record
+  (`kiwi-proxy check`, `up`, a launch, another profile on the same proxy). A
+  launch records what it measured on the exit — a provider exit (Tor, Mysterium)
+  is measured through the gateway, which the pre-flight could not reach — so both
+  apps show the same thing. A profile with no proxy keeps its own record of this
+  machine's connection.
+
 ## 0.6.2
 
 - Help text and docs still showed `kiwi-fox new … --module tor`, which 0.6.0

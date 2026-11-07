@@ -101,6 +101,10 @@ class Window(Adw.ApplicationWindow):
     # ------------------------------------------------------------------ list
     def _tick(self) -> bool:
         self.refresh(rebuild=False)
+        if any(launch.running(p) for p in store.list_profiles()):
+            # An exit whose tunnel node died comes back on its own (kiwi-proxy's
+            # heal), off the main loop; the next tick shows it.
+            worker.run(launch.heal_exits, lambda _healed: None, lambda _exc: None)
         return True
 
     def refresh(self, rebuild: bool = True) -> None:
@@ -162,11 +166,11 @@ class Window(Adw.ApplicationWindow):
     def _update_row(self, row: Adw.ActionRow, profile) -> None:
         running = profile.id in self._busy or launch.running(profile)
         exit_bits = []
-        if profile.last_exit:
-            exit_bits.append(profile.last_exit.country or "?")
-            if profile.last_exit.city:
-                exit_bits.append(profile.last_exit.city)
-        where = " · ".join(exit_bits) or "not probed yet"
+        if seen := store.seen_exit(profile):
+            exit_bits.append(seen.country or "?")
+            if seen.city:
+                exit_bits.append(seen.city)
+        where = " · ".join(exit_bits) or "not measured yet"
         subtitle = f"{TITLES[profile.engine]} · {exit_label(profile)} · {where}"
         if profile.tags:
             subtitle += " · " + " ".join(f"#{t}" for t in profile.tags)

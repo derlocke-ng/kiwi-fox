@@ -1035,9 +1035,15 @@ class ProfileDetails(Adw.Dialog):
             net.add(_row("DNS", f"{ex.dns.mode} via {ex.dns.upstream}{blocking}"))
         else:
             net.add(_row("DNS", "this machine's own"))
-        if profile.last_exit:
-            e = profile.last_exit
-            net.add(_row("Last exit", f"{e.ip}  {e.country or '?'} {e.city or ''}  {e.asn or ''}"))
+        if e := store.seen_exit(profile):
+            net.add(
+                _row(
+                    "Last seen exit",
+                    f"{e.ip}  {e.country or '?'} {e.city or ''}  {e.asn or ''}  · {e.seen:%Y-%m-%d %H:%M}",
+                )
+            )
+        else:
+            net.add(_row("Last seen exit", "not measured yet — Kiwi Proxy's Check the exit does"))
         if profile.exit:
             net.add(_row("Gateway", f"{paths.gateway_name(profile.exit)} (kiwi-proxy, shared)"))
         else:
