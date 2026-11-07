@@ -13,6 +13,7 @@ from kiwi_proxy import paths as proxy_paths  # noqa: E402
 
 from ..core import launch, modules, secrets, store  # noqa: E402
 from ..core.engines import TITLES, installed_versions  # noqa: E402
+from ..core.store import grouped_by_tag  # noqa: E402
 from . import worker  # noqa: E402
 from .dialogs import (  # noqa: E402
     EnginesDialog,
@@ -23,21 +24,6 @@ from .dialogs import (  # noqa: E402
 )
 
 REFRESH_SECONDS = 4
-
-
-def grouped_by_tag(profiles) -> list[tuple[str, list]]:
-    """Profiles by their first tag, tags in alphabetical order, the untagged last;
-    one "Profiles" group while nothing is tagged."""
-    tagged: dict[str, list] = {}
-    untagged = []
-    for p in profiles:
-        (tagged.setdefault(p.tags[0], []) if p.tags else untagged).append(p)
-    if not tagged:
-        return [("Profiles", list(profiles))]
-    out = sorted(tagged.items(), key=lambda kv: kv[0].lower())
-    if untagged:
-        out.append(("Untagged", untagged))
-    return out
 
 
 class Window(Adw.ApplicationWindow):

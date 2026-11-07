@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.6.1
+
+- The tag-grouping helper lives in the store, not the GTK window module, so
+  the unit tests run without GTK again (0.6.0's CI test job failed on it;
+  nothing in the app changed).
+
 ## 0.6.0
 
 The window shows up as the profile, proxies are kiwi-proxy's alone, and tags.

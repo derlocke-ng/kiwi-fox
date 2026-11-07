@@ -45,7 +45,7 @@ def test_cli_new_set_list_and_show(capsys):
 def test_the_window_groups_by_the_first_tag():
     from types import SimpleNamespace
 
-    from kiwi_fox.ui.window import grouped_by_tag
+    from kiwi_fox.core.store import grouped_by_tag
 
     a = SimpleNamespace(name="a", tags=["shop", "eu"])
     b = SimpleNamespace(name="b", tags=["Work"])

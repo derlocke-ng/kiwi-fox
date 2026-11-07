@@ -104,6 +104,21 @@ def normalize_tags(values: list[str]) -> list[str]:
     return out
 
 
+def grouped_by_tag(profiles: list[Profile]) -> list[tuple[str, list[Profile]]]:
+    """Profiles by their first tag, tags in alphabetical order, the untagged last;
+    one "Profiles" group while nothing is tagged."""
+    tagged: dict[str, list[Profile]] = {}
+    untagged = []
+    for p in profiles:
+        (tagged.setdefault(p.tags[0], []) if p.tags else untagged).append(p)
+    if not tagged:
+        return [("Profiles", list(profiles))]
+    out = sorted(tagged.items(), key=lambda kv: kv[0].lower())
+    if untagged:
+        out.append(("Untagged", untagged))
+    return out
+
+
 def profiles_on(exit_id: str) -> list[Profile]:
     return [p for p in list_profiles() if p.exit == exit_id]
 
