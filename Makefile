@@ -1,4 +1,4 @@
-.PHONY: run gui images test leak lint fmt engine setup screenshots
+.PHONY: run gui images smoke test leak lint fmt engine setup screenshots
 # Prefer the project venv when present (pytest/ruff live there; PyGObject comes
 # from system site-packages, per the tech-stack rule).
 PY := $(shell [ -x .venv/bin/python ] && echo .venv/bin/python || echo python3)
@@ -24,6 +24,13 @@ engine:
 # The gateway image is kiwi-proxy's: `make -C ../kiwi-proxy images`.
 images:
 	podman build -t kiwi-fox/browser:latest -f containers/browser/Containerfile containers/browser
+
+# Build the browser image and check from inside that it has what the Containerfile
+# promises (tests/smoke/browser-image.sh) — what ci.yml does, from a clean cache
+# there. A distinct tag, so a working kiwi-fox/browser:latest is left alone.
+smoke:
+	podman build $(BUILD_FLAGS) -t kiwi-fox/browser:smoke -f containers/browser/Containerfile containers/browser
+	bash tests/smoke/browser-image.sh kiwi-fox/browser:smoke
 
 test:
 	$(PY) -m pytest tests/unit -q

@@ -60,3 +60,17 @@ jobs:
           KIWI_PROXY_SRC: ${{ github.workspace }}/kiwi-proxy/src
           GSETTINGS_BACKEND: memory
           NO_AT_BRIDGE: "1"
+
+  # The browser image, built from a clean cache and inspected from inside
+  # (tests/smoke/browser-image.sh). 0.3.1's Containerfile failed on Fedora 43
+  # over a renamed font package, and nothing before a desktop build noticed:
+  # the unit tests never touch the Containerfile.
+  browser-image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: for f in tests/smoke/browser-image.sh containers/browser/entrypoint.sh; do bash -n "$f"; done
+      - name: build, without a cache that could hide a broken step
+        run: podman build --no-cache -t kiwi-fox/browser:smoke -f containers/browser/Containerfile containers/browser
+      - name: what the build must have produced
+        run: bash tests/smoke/browser-image.sh kiwi-fox/browser:smoke
