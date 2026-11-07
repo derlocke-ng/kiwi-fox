@@ -12,7 +12,7 @@ from kiwi_proxy import paths as proxy_paths
 from kiwi_proxy import secrets as proxy_secrets
 
 from . import __version__
-from .core import geometry, gpu, launch, paths, secrets, store
+from .core import desktop, geometry, gpu, launch, paths, secrets, store
 from .core.engines import fetch as engine_fetch
 from .core.fingerprint import edit, generate, validate, validate_against, webgl
 from .core.fingerprint import windows11 as w11
@@ -140,6 +140,7 @@ def _new_firefox(a: argparse.Namespace, ex) -> int:
         a.name, ex.id if ex else None, None, engine="firefox", engine_version=version
     )
     profile.appearance = a.appearance
+    profile.desktop_entry = bool(a.desktop_entry)
     store.save(profile)
     _p(f"created {profile.name}  {profile.id}")
     if version:
@@ -150,6 +151,8 @@ def _new_firefox(a: argparse.Namespace, ex) -> int:
         )
     _p("  identity: none — this machine's own Firefox, nothing spoofed")
     _p(f"  exit    : {store.describe_exit(ex)}")
+    if profile.desktop_entry:
+        _p(f"  app grid: {desktop.entry_path(profile.id)}")
     return 0
 
 
@@ -168,6 +171,9 @@ def _new_torbrowser(a: argparse.Namespace, ex) -> int:
         )
     except store.StoreError as exc:
         return _fail(str(exc))
+    if a.desktop_entry:
+        profile.desktop_entry = True
+        store.save(profile)
     _p(f"created {profile.name}  {profile.id}")
     if version:
         _p(f"  engine  : Tor Browser {version}")
@@ -178,6 +184,8 @@ def _new_torbrowser(a: argparse.Namespace, ex) -> int:
     if ex.endpoint.country or ex.endpoint.lease:
         _p("  note    : pinning a Tor exit shrinks your anonymity set")
     _p(f"  exit    : {store.describe_exit(ex)}")
+    if profile.desktop_entry:
+        _p(f"  app grid: {desktop.entry_path(profile.id)}")
     return 0
 
 
@@ -254,6 +262,7 @@ def _new_profile(a: argparse.Namespace, ex) -> int:
     profile.webgl_renderer = a.webgl_renderer if mode == "custom" else None
     profile.appearance = a.appearance
     profile.language = a.language
+    profile.desktop_entry = bool(a.desktop_entry)
     store.save(profile)
     for issue in validate_webgl(mode, profile.webgl_vendor, profile.webgl_renderer, series):
         _p(f"  {issue}")
@@ -269,6 +278,8 @@ def _new_profile(a: argparse.Namespace, ex) -> int:
     _p(f"  region  : {fp.locale} / {fp.timezone}")
     _p(f"  fonts   : {len(fp.fonts)} families")
     _p(f"  exit    : {store.describe_exit(ex)}")
+    if profile.desktop_entry:
+        _p(f"  app grid: {desktop.entry_path(profile.id)}")
     return 0
 
 
@@ -309,6 +320,8 @@ def _show_common(p) -> None:
         _p(f"  exit      {store.describe_exit(ex)}" + ("  (kiwi-proxy)" if ex else ""))
         if ex and ex.endpoint.username:
             _p(f"  auth      user {ex.endpoint.username}")
+    if p.desktop_entry:
+        _p(f"  app grid  yes — {desktop.entry_path(p.id)}")
     if p.last_exit:
         e = p.last_exit
         _p(
@@ -963,6 +976,12 @@ def cmd_set(a: argparse.Namespace) -> int:
             )
         if profile.exit:
             updates["exit"] = None
+    if a.desktop_entry and a.no_desktop_entry:
+        return _fail("--desktop-entry and --no-desktop-entry exclude each other")
+    if a.desktop_entry and not profile.desktop_entry:
+        updates["desktop_entry"] = True
+    if a.no_desktop_entry and profile.desktop_entry:
+        updates["desktop_entry"] = False
 
     changed = new != fp or bool(updates)
     if changed:
@@ -984,7 +1003,10 @@ def cmd_set(a: argparse.Namespace) -> int:
     if not changed:
         _p("")
         if fp is None:
-            _p("nothing changed — pass what to change: --name, --exit, --no-proxy, --appearance")
+            _p(
+                "nothing changed — pass what to change: --name, --exit, --no-proxy, "
+                "--appearance, --desktop-entry"
+            )
         else:
             _p(
                 "nothing changed — pass what to change, e.g. --screen 2560x1440; "
@@ -1028,6 +1050,22 @@ def cmd_module(a: argparse.Namespace) -> int:
     from kiwi_proxy import cli as proxy_cli
 
     return proxy_cli.main(["module", *a.args])
+
+
+def cmd_desktop(a: argparse.Namespace) -> int:
+    """The profiles' entries in the app grid."""
+    profiles = store.list_profiles()
+    if a.desktop_cmd == "sync":
+        with_entry, removed = desktop.sync_all(profiles, store.entry_description)
+        _p(f"entries: {len(with_entry)} ({', '.join(with_entry) or 'none'})")
+        if removed:
+            _p(f"removed stale: {', '.join(removed)}")
+        return 0
+    for p in profiles:
+        path = desktop.entry_path(p.id)
+        state = "yes" if p.desktop_entry else "no"
+        _p(f"{p.name:16} {state:4} {path if p.desktop_entry else ''}")
+    return 0
 
 
 def cmd_setup(a: argparse.Namespace) -> int:
@@ -1162,6 +1200,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-proxy",
         action="store_true",
         help="no proxy: the browser on this machine's own connection (not for Tor Browser)",
+    )
+    n.add_argument(
+        "--desktop-entry",
+        action="store_true",
+        help="also put the profile in the app grid: a desktop entry of its own that launches it",
     )
     n.add_argument(
         "--engine",
@@ -1361,7 +1404,19 @@ def build_parser() -> argparse.ArgumentParser:
     se.add_argument(
         "--no-proxy", action="store_true", help="take the profile off its proxy entirely"
     )
+    se.add_argument("--desktop-entry", action="store_true", help="put the profile in the app grid")
+    se.add_argument("--no-desktop-entry", action="store_true", help="take its desktop entry away")
     se.set_defaults(func=cmd_set)
+
+    ds = sub.add_parser("desktop", help="the profiles' entries in the app grid")
+    dsub = ds.add_subparsers(dest="desktop_cmd", required=True)
+    dsub.add_parser(
+        "sync",
+        help="write the entry of every profile that wants one (they name this launcher) and "
+        "remove stale ones",
+    )
+    dsub.add_parser("list", help="which profiles have an entry, and where")
+    ds.set_defaults(func=cmd_desktop)
 
     fo = sub.add_parser("fonts", help="the font families a profile may or may not have")
     fo.add_argument("ref", nargs="?")

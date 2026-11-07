@@ -53,6 +53,23 @@ def test_manifest_follows_the_kiwi_convention():
     assert (ROOT / "LICENSE").is_file()
 
 
+def test_the_desktop_entry_and_icon_carry_the_application_id():
+    # GNOME on Wayland finds a window's entry by its app-id: the entry and the icon
+    # are named after it, Icon= and StartupWMClass= say it, and the name shown has
+    # no dash (the command has one, the app does not).
+    from kiwi_fox import APP_ID
+
+    entry = ROOT / "data" / f"{APP_ID}.desktop"
+    assert entry.is_file()
+    fields = dict(line.split("=", 1) for line in entry.read_text().splitlines() if "=" in line)
+    assert fields["Icon"] == APP_ID
+    assert fields["StartupWMClass"] == APP_ID
+    assert fields["Name"] == "Kiwi Fox"
+    assert "-" not in fields["Name"]
+    assert manifest()["ICON"] == f"data/{APP_ID}.svg"
+    assert (ROOT / "data" / f"{APP_ID}.svg").is_file()
+
+
 def test_the_package_carries_its_data_files():
     # install.sh copies src/kiwi_fox and nothing else; anything read at runtime
     # has to live inside it.

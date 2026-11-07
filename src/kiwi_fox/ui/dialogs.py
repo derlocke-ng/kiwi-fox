@@ -449,6 +449,11 @@ class NewProfileDialog(Adw.Dialog):
         profile.add(self.engine_row)
         self.engine_state = Adw.ActionRow(title="Installed", use_markup=False)
         profile.add(self.engine_state)
+        self.entry_row = Adw.SwitchRow(
+            title="Show in the app grid",
+            subtitle="A desktop entry of its own, so GNOME launches this profile like any app",
+        )
+        profile.add(self.entry_row)
         page.add(profile)
 
         # ------------------------------------------------------------- proxy
@@ -590,6 +595,7 @@ class NewProfileDialog(Adw.Dialog):
         form = None if form.startswith("(") else form
         graphics = self.graphics.value()
         language = LANGUAGES[self.language_row.get_selected()][0]
+        app_grid = self.entry_row.get_active()
 
         self.create_button.set_sensitive(False)
         self._say("Probing the exit…" if engine == "camoufox" else "Creating the profile…")
@@ -600,13 +606,17 @@ class NewProfileDialog(Adw.Dialog):
         def work():
             exit_id = ex.id if ex else None
             if engine != "camoufox":
-                return store.create(
+                profile = store.create(
                     name,
                     exit_id,
                     None,
                     engine=engine,  # type: ignore[arg-type]
                     engine_version=version,
-                ), None
+                )
+                if app_grid:
+                    profile.desktop_entry = True
+                    store.save(profile)
+                return profile, None
             exit_info, probed = None, country
             if probed is None:
                 # The region follows the exit: a plain one is asked from here, a
@@ -646,6 +656,7 @@ class NewProfileDialog(Adw.Dialog):
             for field, value in graphics.items():
                 setattr(profile, field, value)
             profile.language = language  # type: ignore[assignment]
+            profile.desktop_entry = app_grid
             store.save(profile)
             return profile, exit_info
 
@@ -723,6 +734,12 @@ class ProfileEditor(Adw.Dialog):
         )
         if engine != "torbrowser":  # Tor Browser keeps its own look
             group.add(self.appearance_row)
+        self.entry_row = Adw.SwitchRow(
+            title="Show in the app grid",
+            subtitle="A desktop entry of its own, so GNOME launches this profile like any app",
+            active=profile.desktop_entry,
+        )
+        group.add(self.entry_row)
         page.add(group)
         if fp is not None:
             self._build_identity(page, profile, fp)
@@ -946,6 +963,7 @@ class ProfileEditor(Adw.Dialog):
             except store.StoreError as exc:
                 return self._say(str(exc))
         updates["exit"] = picked.id if picked else None
+        updates["desktop_entry"] = self.entry_row.get_active()
 
         saved = profile.model_copy(update=updates)
         if new is not None and new != self._fp:
@@ -976,6 +994,9 @@ class ProfileDetails(Adw.Dialog):
             )
         else:
             browser.add(_row("Appearance", dict(APPEARANCES)[profile.appearance]))
+        browser.add(
+            _row("App grid", "yes — a desktop entry launches it" if profile.desktop_entry else "no")
+        )
         page.add(browser)
 
         net = Adw.PreferencesGroup(title="Network")

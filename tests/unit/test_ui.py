@@ -484,6 +484,26 @@ def test_tor_browser_without_a_tor_exit_says_how_to_get_one():
     assert "kiwi install kiwi-plugin-tor" in dialog.exits.note.get_subtitle()
 
 
+def test_the_app_grid_switch_round_trips():
+    from kiwi_fox.core import desktop, store
+    from kiwi_fox.ui.dialogs import NewProfileDialog, ProfileDetails, ProfileEditor
+
+    dialog = NewProfileDialog(Adw.ApplicationWindow(), lambda p: None)
+    assert not dialog.entry_row.get_active(), "opt-in"
+    p = _plain("grid", "firefox")
+    editor = ProfileEditor(p)
+    assert not editor.entry_row.get_active()
+    editor.entry_row.set_active(True)
+    editor._on_save()
+    saved = store.find_by_name("grid")
+    assert saved.desktop_entry and desktop.entry_path(saved.id).exists()
+    ProfileDetails(saved)
+    editor = ProfileEditor(saved)
+    editor.entry_row.set_active(False)
+    editor._on_save()
+    assert not desktop.entry_path(saved.id).exists()
+
+
 def test_a_profile_with_a_lost_proxy_opens_and_says_so():
     from kiwi_proxy import exits
 

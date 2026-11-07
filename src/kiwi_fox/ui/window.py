@@ -27,7 +27,7 @@ REFRESH_SECONDS = 4
 
 class Window(Adw.ApplicationWindow):
     def __init__(self, **kwargs) -> None:
-        super().__init__(default_width=760, default_height=620, title="Kiwi-Fox", **kwargs)
+        super().__init__(default_width=760, default_height=620, title="Kiwi Fox", **kwargs)
         self._rows: dict[str, Adw.ActionRow] = {}
         self._busy: set[str] = set()
 

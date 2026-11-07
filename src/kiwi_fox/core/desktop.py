@@ -1,8 +1,21 @@
-"""What can be read from the desktop the browser window will appear on."""
+"""The desktop the browser window appears on: what is read from it, and the
+entries written to it so GNOME launches a profile like any app."""
 
 from __future__ import annotations
 
+import contextlib
+import re
+import shutil
 import subprocess
+from collections.abc import Callable
+from pathlib import Path
+
+from .. import APP_ID
+from . import paths
+from .models import Profile
+
+# A profile's entry: <app id>.profile-<id[:8]>.desktop, so the prefix finds them all.
+ENTRY_PREFIX = f"{APP_ID}.profile-"
 
 
 def prefers_dark() -> bool | None:
@@ -27,3 +40,91 @@ def prefers_dark() -> bool | None:
     if "light" in out or "default" in out:
         return False
     return None
+
+
+# ------------------------------------------------------------ profile entries
+def entry_path(profile_id: str) -> Path:
+    return paths.applications_dir() / f"{ENTRY_PREFIX}{profile_id[:8]}.desktop"
+
+
+def launcher() -> str:
+    """The kiwi-fox command an entry runs: the installed launcher by absolute
+    path, because the app grid need not have ~/.local/bin on its PATH."""
+    return shutil.which("kiwi-fox") or "kiwi-fox"
+
+
+def _exec_arg(value: str) -> str:
+    """One Exec= argument, quoted the way the Desktop Entry spec wants when it
+    holds a space or a reserved character."""
+    if re.search(r"""[\s"'\\><~|&;$*?#()`]""", value):
+        return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
+    return value
+
+
+def render_entry(profile: Profile, describe: str) -> str:
+    """The entry: the profile's name, the Kiwi Fox icon, `kiwi-fox run <id>`, and a
+    Stop action. `describe` is the browser and the proxy, for the comment."""
+    cmd = _exec_arg(launcher())
+    name = profile.name.replace("\n", " ")
+    keyword = name.replace(";", " ")
+    lines = [
+        "[Desktop Entry]",
+        "Type=Application",
+        f"Name={name}",
+        "GenericName=Kiwi Fox profile",
+        f"Comment={describe} — a Kiwi Fox browser identity",
+        f"Exec={cmd} run {profile.id}",
+        f"Icon={APP_ID}",
+        "Terminal=false",
+        "Categories=Network;WebBrowser;",
+        f"Keywords=kiwi;browser;profile;{keyword};",
+        "StartupNotify=false",
+        f"X-KiwiFox-Profile={profile.id}",
+        "Actions=stop;",
+        "",
+        "[Desktop Action stop]",
+        "Name=Stop",
+        f"Exec={cmd} stop {profile.id}",
+        "",
+    ]
+    return "\n".join(lines)
+
+
+def sync_entry(profile: Profile, describe: str) -> bool:
+    """Write the profile's entry when it wants one, remove it otherwise; returns
+    whether an entry exists afterwards. Best effort: a desktop that cannot take
+    the file does not stop a profile from being saved."""
+    path = entry_path(profile.id)
+    try:
+        if profile.desktop_entry:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_suffix(".tmp")
+            tmp.write_text(render_entry(profile, describe))
+            tmp.replace(path)
+            return True
+        path.unlink(missing_ok=True)
+        return False
+    except OSError:
+        return path.exists()
+
+
+def remove_entry(profile_id: str) -> None:
+    with contextlib.suppress(OSError):
+        entry_path(profile_id).unlink(missing_ok=True)
+
+
+def sync_all(
+    profiles: list[Profile], describe: Callable[[Profile], str]
+) -> tuple[list[str], list[str]]:
+    """Every entry in line with the profiles: written for those that want one (so
+    a moved launcher is followed), gone for those that do not or no longer exist.
+    Returns the names with an entry and the stale files removed."""
+    with_entry = [p.name for p in profiles if sync_entry(p, describe(p))]
+    keep = {entry_path(p.id) for p in profiles if p.desktop_entry}
+    removed = []
+    for stale in sorted(paths.applications_dir().glob(f"{ENTRY_PREFIX}*.desktop")):
+        if stale not in keep:
+            with contextlib.suppress(OSError):
+                stale.unlink()
+                removed.append(stale.name)
+    return with_entry, removed

@@ -37,6 +37,11 @@ def runtime_dir() -> Path:
     return Path(rt) / APP if rt else cache_dir() / "run"
 
 
+def applications_dir() -> Path:
+    """Where the desktop reads user entries from: the profiles' own go here."""
+    return _xdg("XDG_DATA_HOME", ".local/share") / "applications"
+
+
 def profiles_dir() -> Path:
     return data_dir() / "profiles"
 

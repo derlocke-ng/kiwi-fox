@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.5.0
+
+Kiwi Fox in the app grid, and its profiles too.
+
+- **The window has its icon again.** GNOME matches a window to its entry by the
+  app-id; ours was `dev.kiwinetwork.KiwiFox` beside a `kiwi-fox.desktop`, so the
+  shell showed a blank icon and no name. The id is `eu.kiwinetwork.KiwiFox` now,
+  like the other kiwi apps; the entry and the icon are named after it; the
+  install writes the launcher's absolute path into `Exec` and removes the old
+  file names. The app is **Kiwi Fox** in the grid, the title and About — the
+  command keeps its dash, the app does not.
+- **A profile can be in the app grid.** `--desktop-entry` on `new` or `set`
+  (`--no-desktop-entry` takes it away), or the "Show in the app grid" switch in
+  the GUI, writes a desktop entry of its own: the profile's name, the Kiwi Fox
+  icon, `kiwi-fox run <id>`, and a Stop action. The store keeps it in line — a
+  rename rewrites it, deleting the profile removes it — and `kiwi-fox desktop
+  sync` rewrites every entry, which the install runs so a moved launcher is
+  followed. An uninstall removes them all.
+
 ## 0.4.0
 
 A proxy is defined once, in kiwi-proxy, and shared.

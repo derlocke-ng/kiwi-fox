@@ -1,4 +1,4 @@
-# Kiwi-Fox
+# Kiwi Fox
 
 Isolated browser identities in rootless Podman.
 
@@ -43,7 +43,7 @@ kiwi-fox run work                                # or use the GUI
 kiwi-fox stop work
 kiwi-fox check                                   # is every profile still coherent?
 kiwi-fox selfcheck work                          # measure what pages see, then audit it
-kiwi-fox-gui                                     # "Kiwi-Fox" in your app grid
+kiwi-fox-gui                                     # "Kiwi Fox" in your app grid
 ```
 
 The GUI does all of it: **New profile** picks the browser and the proxy — one
@@ -53,6 +53,20 @@ is `kiwi-fox setup`.
 
 Endpoint formats: `socks5://user:pass@host:port`, `http://…`, `https://…`, and the
 vendor paste format `host:port:user:pass`.
+
+## A profile in the app grid
+
+A profile can have a desktop entry of its own, so GNOME launches it like any app:
+
+```
+kiwi-fox new work --exit mullvad --desktop-entry   # or later: kiwi-fox set work --desktop-entry
+kiwi-fox set work --no-desktop-entry               # takes it away
+kiwi-fox desktop sync                              # rewrite every entry (after a move of the install)
+```
+
+In the GUI it is the **Show in the app grid** switch. The entry carries the
+profile's name, the Kiwi Fox icon and a Stop action; a rename updates it and
+deleting the profile removes it.
 
 ## Proxies, and provider modules
 

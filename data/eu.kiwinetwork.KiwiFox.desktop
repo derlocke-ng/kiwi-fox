@@ -1,12 +1,12 @@
 [Desktop Entry]
 Type=Application
-Name=Kiwi-Fox
+Name=Kiwi Fox
 GenericName=Browser identity manager
 Comment=Isolated browser identities in rootless Podman: Camoufox, Firefox or Tor Browser
 Exec=kiwi-fox-gui
-Icon=kiwi-fox
+Icon=eu.kiwinetwork.KiwiFox
 Terminal=false
 Categories=Network;WebBrowser;Security;
 StartupNotify=true
-StartupWMClass=kiwi-fox
+StartupWMClass=eu.kiwinetwork.KiwiFox
 Keywords=browser;profile;proxy;fingerprint;identity;tor;firefox;

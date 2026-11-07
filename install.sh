@@ -14,6 +14,7 @@ KIWI_SCOPE="${KIWI_SCOPE:-user}"
 KIWI_PREFIX="${KIWI_PREFIX:-$HOME/.local}"
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP=kiwi-fox
+DESKTOP_ID=eu.kiwinetwork.KiwiFox   # the GTK application id: entry and icon carry it
 LIBDIR="$KIWI_PREFIX/lib/$APP"
 # The proxy engine: gateways, providers, DNS. A separate kiwi app (DEPENDS),
 # whose package the launchers put on the path.
@@ -67,11 +68,20 @@ export PYTHONPATH="$LIBDIR:$PROXY_LIB\${PYTHONPATH:+:\$PYTHONPATH}"
 exec python3 -m kiwi_fox.ui "\$@"
 EOF
         chmod +x "$KIWI_PREFIX/bin/$APP-gui"
-        install -Dm644 "$SRC/data/$APP.desktop" \
-            "$KIWI_PREFIX/share/applications/$APP.desktop" 2>/dev/null || true
-        install -Dm644 "$SRC/data/$APP.svg" \
-            "$KIWI_PREFIX/share/icons/hicolor/scalable/apps/$APP.svg" 2>/dev/null || true
+        # Entry and icon are named after the GTK application id, so GNOME links
+        # the window to them; Exec is the launcher's absolute path, as the app
+        # grid may not have ~/.local/bin on its PATH.
+        mkdir -p "$KIWI_PREFIX/share/applications"
+        sed "s|^Exec=.*|Exec=$KIWI_PREFIX/bin/$APP-gui|" "$SRC/data/$DESKTOP_ID.desktop" \
+            > "$KIWI_PREFIX/share/applications/$DESKTOP_ID.desktop"
+        install -Dm644 "$SRC/data/$DESKTOP_ID.svg" \
+            "$KIWI_PREFIX/share/icons/hicolor/scalable/apps/$DESKTOP_ID.svg" 2>/dev/null || true
+        rm -f "$KIWI_PREFIX/share/applications/$APP.desktop" \
+            "$KIWI_PREFIX/share/icons/hicolor/scalable/apps/$APP.svg"   # the names before 0.5.0
         refresh_desktop_caches
+        # The profiles' own entries (those that have one) follow this install:
+        # their Exec names this launcher.
+        "$KIWI_PREFIX/bin/$APP" desktop sync >/dev/null 2>&1 || true
     fi
 
     # Images and the engine are NOT built or downloaded here: that is slow,
@@ -90,7 +100,7 @@ EOF
     echo "  gateway image, DNS data and the images of any provider modules"
     echo
     if [[ "${KIWI_GUI:-1}" == 1 ]]; then
-        echo "Then create a profile in Kiwi-Fox (app grid, or $APP-gui), or here:"
+        echo "Then create a profile in Kiwi Fox (app grid, or $APP-gui), or here:"
     else
         echo "Then create a profile:"
     fi
@@ -128,8 +138,12 @@ do_uninstall() {
     "$KIWI_PREFIX/bin/$APP" stop >/dev/null 2>&1 || true
     retire_blocklist_timer
     rm -f "$KIWI_PREFIX/bin/$APP" "$KIWI_PREFIX/bin/$APP-gui"
-    rm -f "$KIWI_PREFIX/share/applications/$APP.desktop"
-    rm -f "$KIWI_PREFIX/share/icons/hicolor/scalable/apps/$APP.svg"
+    rm -f "$KIWI_PREFIX/share/applications/$DESKTOP_ID.desktop" \
+        "$KIWI_PREFIX/share/applications/$APP.desktop"
+    # The profiles' entries would launch a command that is gone.
+    rm -f "${XDG_DATA_HOME:-$HOME/.local/share}/applications/$DESKTOP_ID.profile-"*.desktop
+    rm -f "$KIWI_PREFIX/share/icons/hicolor/scalable/apps/$DESKTOP_ID.svg" \
+        "$KIWI_PREFIX/share/icons/hicolor/scalable/apps/$APP.svg"
     refresh_desktop_caches
     rm -rf "$LIBDIR"
 

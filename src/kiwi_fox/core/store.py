@@ -23,7 +23,7 @@ from kiwi_proxy import exits
 from kiwi_proxy import secrets as proxy_secrets
 from kiwi_proxy.models import Endpoint, Exit
 
-from . import paths, secrets
+from . import desktop, paths, secrets
 from .models import DnsConfig, EngineName, Fingerprint, Profile
 
 OWNER = "kiwi-fox"
@@ -165,8 +165,22 @@ def create(
     return profile
 
 
+def entry_description(profile: Profile) -> str:
+    """The browser and the proxy, for the profile's desktop entry."""
+    from .engines import TITLES
+
+    try:
+        where = exit_label(exit_of(profile))
+    except StoreError:
+        where = "proxy missing"
+    return f"{TITLES[profile.engine]} · {where}"
+
+
 def save(profile: Profile) -> None:
     _write_json(paths.profile_dir(profile.id) / "profile.json", profile.model_dump_json(indent=2))
+    # The app-grid entry follows the profile: written while it wants one (a rename
+    # rewrites it), removed as soon as it does not.
+    desktop.sync_entry(profile, entry_description(profile))
 
 
 def save_fingerprint(profile_id: str, fp: Fingerprint) -> None:
@@ -276,6 +290,7 @@ def delete(profile_id: str, *, purge: bool = False) -> None:
     with contextlib.suppress(Exception):  # a broken profile is still deletable
         exit_id = load(profile_id).exit
     secrets.clear(profile_id)  # a 0.3 keyring entry, if one is left
+    desktop.remove_entry(profile_id)
     if exit_id:
         _drop_exit_if_unused(exit_id, leaving=profile_id)
     pdir = paths.profile_dir(profile_id)

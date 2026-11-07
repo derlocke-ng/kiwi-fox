@@ -128,7 +128,7 @@ def render(win: Gtk.Window, content: Gtk.Widget, path: Path, height: int) -> Non
 class Shots(Adw.Application):
     def __init__(self) -> None:
         super().__init__(
-            application_id="dev.kiwinetwork.KiwiFoxScreenshots",
+            application_id="eu.kiwinetwork.KiwiFoxScreenshots",
             flags=Gio.ApplicationFlags.NON_UNIQUE,
         )
 

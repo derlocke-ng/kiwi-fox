@@ -200,4 +200,7 @@ class Profile(Strict):
     # Replaces the user agent in navigator and in the request header. None is the
     # engine's own: stock Firefox of its version, on Windows.
     user_agent: str | None = None
+    # A desktop entry of its own in the app grid (core/desktop.py), so GNOME
+    # launches this profile like any app. Opt-in; the store keeps it in line.
+    desktop_entry: bool = False
     notes: str = ""

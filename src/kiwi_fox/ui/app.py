@@ -11,11 +11,9 @@ gi.require_version("Adw", "1")
 
 from gi.repository import Adw, Gio, Gtk  # noqa: E402
 
-from .. import __version__  # noqa: E402
+from .. import APP_ID, __version__  # noqa: E402
 from ..core import paths  # noqa: E402
 from .window import Window  # noqa: E402
-
-APP_ID = "dev.kiwinetwork.KiwiFox"
 
 
 class Application(Adw.Application):
@@ -24,6 +22,7 @@ class Application(Adw.Application):
 
     def do_startup(self) -> None:  # noqa: N802 - GObject naming
         Adw.Application.do_startup(self)
+        Gtk.Window.set_default_icon_name(APP_ID)
         paths.ensure_tree()
         about = Gio.SimpleAction.new("about", None)
         about.connect("activate", self._on_about)
@@ -35,8 +34,8 @@ class Application(Adw.Application):
 
     def _on_about(self, *_args) -> None:
         dialog = Adw.AboutDialog(
-            application_name="Kiwi-Fox",
-            application_icon="dev.kiwinetwork.KiwiFox",
+            application_name="Kiwi Fox",
+            application_icon=APP_ID,
             version=__version__,
             comments="Isolated browser identities in rootless Podman: a spoofed Windows 11 "
             "machine in Camoufox, stock Firefox, or Tor Browser — each behind its own exit.",
