@@ -14,6 +14,7 @@ from kiwi_proxy import exits, podman  # noqa: E402
 from kiwi_proxy import paths as proxy_paths  # noqa: E402
 
 from ..core import launch, modules, paths, secrets, store  # noqa: E402
+from ..core import snapshots as profile_snapshots  # noqa: E402
 from ..core.engines import TITLES, installed_versions  # noqa: E402
 from ..core.store import grouped_by_tag  # noqa: E402
 from . import worker  # noqa: E402
@@ -26,6 +27,15 @@ from .dialogs import (  # noqa: E402
 )
 
 REFRESH_SECONDS = 4
+# How often the snapshot folder is looked at (in window ticks): a sync client
+# brings new snapshots now and then, not every few seconds.
+SNAPSHOT_TICKS = 5
+
+if profile_snapshots.available():
+    from kiwi_proxy import snapshots as snap  # noqa: E402
+    from kiwi_proxy.ui import snapshots as snapshot_ui  # noqa: E402
+else:  # pragma: no cover - kiwi-proxy older than 0.8
+    snap = snapshot_ui = None
 
 
 # A window large enough for the largest dialog (a profile editor is 660×780) to open
@@ -67,6 +77,16 @@ class Window(Adw.ApplicationWindow):
         self.connect("close-request", self._on_close_request)
         self._rows: dict[str, Adw.ActionRow] = {}
         self._busy: set[str] = set()
+        # Snapshots: what the folder says about each profile here, and what it
+        # holds that is not here; which profiles ran at the last tick (a browser
+        # that ended since gets its snapshot).
+        self._relations: dict[str, object] = {}
+        self._in_use: dict[str, list] = {}
+        self._away: list = []
+        self._away_rows: list[Adw.ActionRow] = []
+        self._snap_polling = False
+        self._ticks = 0
+        self._was_running: set[str] = set()
 
         self.toasts = Adw.ToastOverlay()
         header = Adw.HeaderBar()
@@ -76,8 +96,12 @@ class Window(Adw.ApplicationWindow):
         header.pack_start(new_button)
 
         menu = Gio.Menu()
-        menu.append("Set up environment", "win.setup")
+        if snapshot_ui is not None:
+            menu.append("Preferences", "win.preferences")
         menu.append("Browser engines", "win.engines")
+        if snapshot_ui is not None:
+            menu.append("Snapshot everything now", "win.snapshot-all")
+        menu.append("Set up environment", "win.setup")
         menu.append("Check environment", "win.doctor")
         menu.append("Stop everything", "win.stop-all")
         menu_button = Gtk.MenuButton(icon_name="open-menu-symbolic", menu_model=menu)
@@ -90,6 +114,13 @@ class Window(Adw.ApplicationWindow):
         self.status_banner = Adw.Banner(revealed=False)
         self.status_banner.set_button_label("Set up")
         self.status_banner.connect("button-clicked", lambda *_: self._run_setup())
+        self.snap_banner = Adw.Banner(
+            title="Snapshots are locked on this device", button_label="Unlock", revealed=False
+        )
+        if snapshot_ui is not None:
+            self.snap_banner.connect(
+                "button-clicked", lambda *_: snapshot_ui.ask_unlock(self, self._snapshots_changed)
+            )
 
         self.page = Adw.PreferencesPage()
         # One group per tag (a profile sits under its first tag), the untagged
@@ -107,7 +138,22 @@ class Window(Adw.ApplicationWindow):
         create.add_css_class("suggested-action")
         create.add_css_class("pill")
         create.connect("clicked", self._on_new)
-        self.empty.set_child(create)
+        buttons = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12, halign=Gtk.Align.CENTER)
+        buttons.append(create)
+        if snapshot_ui is not None:
+            from_folder = Gtk.Button(label="Use a snapshot folder", halign=Gtk.Align.CENTER)
+            from_folder.add_css_class("pill")
+            from_folder.set_tooltip_text(
+                "Bring the profiles of another device here, from snapshots"
+            )
+            from_folder.connect(
+                "clicked", lambda *_: snapshot_ui.choose_folder(self, self._snapshots_changed)
+            )
+            buttons.append(from_folder)
+        self.empty.set_child(buttons)
+        self.away_group = Adw.PreferencesGroup(
+            title="In your snapshot folder, not on this device", visible=False
+        )
 
         self.stack = Gtk.Stack()
         self.stack.add_named(self.page, "list")
@@ -116,6 +162,7 @@ class Window(Adw.ApplicationWindow):
         view = Adw.ToolbarView()
         view.add_top_bar(header)
         view.add_top_bar(self.status_banner)
+        view.add_top_bar(self.snap_banner)
         view.set_content(self.stack)
         self.toasts.set_child(view)
         self.set_content(self.toasts)
@@ -125,6 +172,8 @@ class Window(Adw.ApplicationWindow):
             ("engines", lambda *_: EnginesDialog(self._run_setup).present(self)),
             ("doctor", lambda *_: self._check_environment(announce=True)),
             ("stop-all", lambda *_: self._stop_all()),
+            ("preferences", lambda *_: self._open_preferences()),
+            ("snapshot-all", lambda *_: self._snapshot_all()),
         ):
             action = Gio.SimpleAction.new(name, None)
             action.connect("activate", handler)
@@ -132,6 +181,8 @@ class Window(Adw.ApplicationWindow):
 
         self.refresh()
         self._check_environment()
+        self._was_running = {p.id for p in store.list_profiles() if launch.running(p)}
+        self._catch_up()
         GLib.timeout_add_seconds(REFRESH_SECONDS, self._tick)
 
     # ------------------------------------------------------------------ list
@@ -141,8 +192,17 @@ class Window(Adw.ApplicationWindow):
         return False  # and close
 
     def _tick(self) -> bool:
+        self._ticks += 1
+        if self._ticks % SNAPSHOT_TICKS == 0:
+            self._poll_snapshots()
         self.refresh(rebuild=False)
-        if any(launch.running(p) for p in store.list_profiles()):
+        running = {p.id for p in store.list_profiles() if launch.running(p)}
+        ended = self._was_running - running - self._busy
+        self._was_running = running
+        for profile in store.list_profiles():
+            if profile.id in ended:
+                self._after_stop(profile)  # its browser was closed: snapshot what ran
+        if running:
             # An exit whose tunnel node died comes back on its own (kiwi-proxy's
             # heal), off the main loop; the next tick shows it.
             worker.run(launch.heal_exits, lambda _healed: None, lambda _exc: None)
@@ -150,12 +210,14 @@ class Window(Adw.ApplicationWindow):
 
     def refresh(self, rebuild: bool = True) -> None:
         profiles = store.list_profiles()
-        self.stack.set_visible_child_name("list" if profiles else "empty")
+        self.stack.set_visible_child_name("list" if profiles or self._away else "empty")
         if rebuild:
             for group in self._groups.values():
                 self.page.remove(group)
             self._groups.clear()
             self._rows.clear()
+            if self.away_group.get_parent() is not None:
+                self.page.remove(self.away_group)
             for title, members in grouped_by_tag(profiles):
                 group = Adw.PreferencesGroup(title=title)
                 self.page.add(group)
@@ -164,6 +226,8 @@ class Window(Adw.ApplicationWindow):
                     row = self._build_row(profile)
                     self._rows[profile.id] = row
                     group.add(row)
+            self.page.add(self.away_group)
+            self._poll_snapshots()
         for profile in profiles:
             row = self._rows.get(profile.id)
             if row:
@@ -182,6 +246,8 @@ class Window(Adw.ApplicationWindow):
         menu.append("Details", f"win.details::{profile.id}")
         menu.append("Edit…", f"win.edit::{profile.id}")
         menu.append("Duplicate", f"win.duplicate::{profile.id}")
+        if snapshot_ui is not None:
+            menu.append("Snapshots…", f"win.snapshots::{profile.id}")
         menu.append("Delete", f"win.delete::{profile.id}")
         more = Gtk.MenuButton(
             icon_name="view-more-symbolic", valign=Gtk.Align.CENTER, menu_model=menu
@@ -199,6 +265,8 @@ class Window(Adw.ApplicationWindow):
             ("edit", self._act_edit),
             ("duplicate", self._act_duplicate),
             ("delete", self._act_delete),
+            ("snapshots", self._act_snapshots),
+            ("forget-snapshots", self._act_forget_snapshots),
         ):
             action = Gio.SimpleAction.new(name, GLib.VariantType.new("s"))
             action.connect("activate", handler)
@@ -215,6 +283,8 @@ class Window(Adw.ApplicationWindow):
         subtitle = f"{TITLES[profile.engine]} · {exit_label(profile)} · {where}"
         if profile.tags:
             subtitle += " · " + " ".join(f"#{t}" for t in profile.tags)
+        if note := self._snapshot_note(profile):
+            subtitle += f"\n{note}"
         row.set_subtitle(subtitle)
         button = row.run_button  # type: ignore[attr-defined]
         if profile.id in self._busy:
@@ -238,6 +308,13 @@ class Window(Adw.ApplicationWindow):
     def _after_edit(self, profile) -> None:
         self.refresh()
         self._toast(f"Saved {profile.name}")
+
+        def done(note) -> None:
+            if note:
+                self._toast(note)
+            self._poll_snapshots()
+
+        worker.run(lambda: profile_snapshots.changed(profile), done, lambda _exc: None)
 
     def _act_edit(self, _action, param) -> None:
         if profile := self._profile(param.get_string()):
@@ -294,6 +371,72 @@ class Window(Adw.ApplicationWindow):
         self._toast(f"Created {profile.name}")
 
     def _on_toggle(self, _button, profile) -> None:
+        if launch.running(profile) or snapshot_ui is None:
+            self._start_or_stop(profile)
+            return
+
+        def look():
+            return profile_snapshots.before_start(profile)
+
+        def decide(check) -> None:
+            if not check.needs_asking:
+                self._start_or_stop(profile)
+                return
+            self._ask_before_start(profile, check)
+
+        worker.run(look, decide, lambda _exc: self._start_or_stop(profile))
+
+    def _ask_before_start(self, profile, check) -> None:
+        def newer() -> None:
+            rel = check.relation
+            if not (rel and rel.newer_elsewhere):
+                self._start_or_stop(profile)
+                return
+
+            def restore_then_start() -> None:
+                def work():
+                    return profile_snapshots.restore(profile.id, rel.head.id)
+
+                def done(restored) -> None:
+                    self._snapshots_changed()
+                    if missing := profile_snapshots.missing_engine(restored):
+                        self._offer_engine(restored, missing)
+                        return
+                    self._start_or_stop(restored)
+
+                worker.run(
+                    work,
+                    done,
+                    lambda exc: self._alert(f"Could not restore {profile.name}", str(exc)),
+                )
+
+            def keep_mine() -> None:
+                worker.run(
+                    lambda: profile_snapshots.keep_mine(profile, check),
+                    lambda _m: (self._snapshots_changed(), self._start_or_stop(profile)),
+                    lambda exc: self._alert("No snapshot taken", str(exc)),
+                )
+
+            snapshot_ui.ask_newer(
+                self,
+                profile.name,
+                rel,
+                verb="start",
+                on_restore=restore_then_start,
+                on_as_is=lambda: self._start_or_stop(profile),
+                on_keep_mine=keep_mine,
+            )
+
+        if check.in_use:
+            from .start_prompt import in_use_dialog
+
+            in_use_dialog(
+                profile.name, check.in_use, lambda r: newer() if r == "start" else None
+            ).present(self)
+        else:
+            newer()
+
+    def _start_or_stop(self, profile) -> None:
         running = launch.running(profile)
         self._busy.add(profile.id)
         self.refresh(rebuild=False)
@@ -308,8 +451,11 @@ class Window(Adw.ApplicationWindow):
             self._busy.discard(profile.id)
             self.refresh()
             if result is None:
+                self._was_running.discard(profile.id)
                 self._toast(f"Stopped {profile.name}")
+                self._after_stop(profile)
                 return
+            self._was_running.add(profile.id)
             for issue in result.warnings:
                 self._toast(str(issue))
             if result.exit_info:
@@ -328,11 +474,309 @@ class Window(Adw.ApplicationWindow):
 
     def _stop_all(self) -> None:
         def work():
+            notes = []
             for profile in store.list_profiles():
+                was = launch.running(profile)
                 launch.stop(profile)
+                if was and (note := profile_snapshots.after_stop(profile)):
+                    notes.append(note)
             launch.reap()
+            return notes
 
-        worker.run(work, lambda _r: (self.refresh(), self._toast("Everything stopped")))
+        def done(notes) -> None:
+            self._was_running.clear()
+            self.refresh()
+            self._toast("Everything stopped")
+            for note in notes:
+                self._toast(note)
+
+        worker.run(work, done)
+
+    # ------------------------------------------------------------- snapshots
+    def _snapshot_note(self, profile) -> str:
+        """The second line of a row: what the snapshot folder says."""
+        if snap is None:
+            return ""
+        bits = []
+        for device, since in self._in_use.get(profile.id, []):
+            bits.append(f"in use on {device} since {snap.when_text(since)}")
+        rel = self._relations.get(profile.id)
+        if rel is not None and rel.state != "only_here":
+            bits.append(rel.describe())
+        return " · ".join(bits)
+
+    def _poll_snapshots(self) -> None:
+        """Read the snapshot folder off the main loop."""
+        if snap is None or self._snap_polling:
+            return
+        self._snap_polling = True
+
+        def work():
+            st = snap.status()
+            if st.settings is None or not st.folder_present or not st.unlocked:
+                return st, {}, {}, []
+            opened = snap.folder()
+            here = {p.id for p in store.list_profiles()}
+            grouped: dict[str, list] = {}
+            for meta in opened.metas():
+                if meta.kind == profile_snapshots.KIND:
+                    grouped.setdefault(meta.item, []).append(meta)
+            relations, in_use, away = {}, {}, []
+            for pid in here:
+                relations[pid] = snap.relation(
+                    profile_snapshots.KIND,
+                    pid,
+                    here=True,
+                    metas=grouped.get(pid, []),
+                    folder_id=opened.id,
+                )
+                if pid in grouped:
+                    in_use[pid] = snap.in_use_elsewhere(profile_snapshots.KIND, pid)
+            for pid, metas in grouped.items():
+                if pid not in here:
+                    away.append((pid, metas[0].name, metas))
+            away.sort(key=lambda a: a[1])
+            return st, relations, in_use, away
+
+        def done(result) -> None:
+            self._snap_polling = False
+            st, relations, in_use, away = result
+            self.snap_banner.set_revealed(
+                bool(st.settings and st.folder_present and not st.unlocked)
+            )
+
+            def key(rels):
+                return {k: (v.state, v.head.id if v.head else None) for k, v in rels.items()}
+
+            changed = (
+                key(relations) != key(self._relations)
+                or in_use != self._in_use
+                or [a[:2] for a in away] != [a[:2] for a in self._away]
+            )
+            self._relations, self._in_use, self._away = relations, in_use, away
+            if changed:
+                self._show_away()
+                self.refresh(rebuild=False)
+
+        def failed(_exc: Exception) -> None:
+            self._snap_polling = False
+
+        worker.run(work, done, failed)
+
+    def _show_away(self) -> None:
+        for row in self._away_rows:
+            self.away_group.remove(row)
+        self._away_rows = []
+        for pid, name, metas in self._away:
+            head = metas[0]
+            engine = TITLES.get(head.extra.get("engine", ""), head.extra.get("engine", ""))
+            version = head.extra.get("engine_version") or ""
+            row = Adw.ActionRow(use_markup=False)
+            row.set_title(name)
+            row.set_subtitle(
+                " · ".join(
+                    x
+                    for x in (
+                        f"{engine} {version}".strip(),
+                        f"from {head.device}, {snap.when_text(head.created)}",
+                        snap.size_text(head.size),
+                    )
+                    if x
+                )
+            )
+            restore = Gtk.Button(label="Restore", valign=Gtk.Align.CENTER)
+            restore.connect("clicked", self._on_restore_away, pid, name, head)
+            row.add_suffix(restore)
+            menu = Gio.Menu()
+            menu.append("Snapshots…", f"win.snapshots::{pid}")
+            menu.append("Delete from the snapshot folder", f"win.forget-snapshots::{pid}")
+            more = Gtk.MenuButton(
+                icon_name="view-more-symbolic", valign=Gtk.Align.CENTER, menu_model=menu
+            )
+            more.add_css_class("flat")
+            row.add_suffix(more)
+            self.away_group.add(row)
+            self._away_rows.append(row)
+        self.away_group.set_visible(bool(self._away))
+        self.stack.set_visible_child_name(
+            "list" if self._away or store.list_profiles() else "empty"
+        )
+
+    def _on_restore_away(self, _button, pid: str, name: str, head) -> None:
+        if exit_name := profile_snapshots.missing_exit(head):
+            self._alert(
+                f"Restore {exit_name} in Kiwi Proxy first",
+                f"{name} goes out through the exit {exit_name}, which is not on this device. "
+                "Kiwi Proxy restores exits from the same snapshot folder; then restore "
+                f"{name} here.",
+            )
+            return
+        self._restore(pid, head.id, name)
+
+    def _restore(self, pid: str, sid: str, name: str) -> None:
+        def done(restored) -> None:
+            self._toast(f"Restored {restored.name}")
+            self._snapshots_changed()
+            if missing := profile_snapshots.missing_engine(restored):
+                self._offer_engine(restored, missing)
+
+        worker.run(
+            lambda: profile_snapshots.restore(pid, sid),
+            done,
+            lambda exc: self._alert(f"Could not restore {name}", str(exc)),
+        )
+
+    def _offer_engine(self, profile, missing: tuple[str, str]) -> None:
+        engine, version = missing
+        title = f"{TITLES.get(engine, engine)} {'' if version == 'newest' else version}".strip()
+        dialog = Adw.AlertDialog(
+            heading=f"{profile.name} needs {title}",
+            body=f"This device does not have {title}. It is downloaded from its publisher "
+            "and its signature or checksum is checked, as at any first install.",
+        )
+        dialog.add_response("later", "Later")
+        dialog.add_response("install", "Install it now")
+        dialog.set_response_appearance("install", Adw.ResponseAppearance.SUGGESTED)
+        dialog.set_close_response("later")
+
+        def on_response(_d, response: str) -> None:
+            if response != "install":
+                return
+            self._toast(f"Installing {title}…")
+            worker.run(
+                lambda: profile_snapshots.fetch_engine(engine, version),
+                lambda _r: (self._toast(f"{title} installed"), self.refresh()),
+                lambda exc: self._alert(f"Could not install {title}", str(exc)),
+            )
+
+        dialog.connect("response", on_response)
+        dialog.present(self)
+
+    def _after_stop(self, profile) -> None:
+        """A profile's browser ended: snapshot it when it ran, off the main loop."""
+
+        def done(note) -> None:
+            if note:
+                self._toast(note)
+            self._poll_snapshots()
+
+        worker.run(lambda: profile_snapshots.after_stop(profile), done, lambda _exc: None)
+
+    def _catch_up(self) -> None:
+        """At start: snapshot stopped profiles that ran since their last snapshot
+        (their browser ended while no window watched), one after the other."""
+        if snap is None or snap.load_settings() is None:
+            return
+        stopped = [p for p in store.list_profiles() if not launch.running(p)]
+
+        def work():
+            return [n for p in stopped if (n := profile_snapshots.after_stop(p))]
+
+        def done(notes) -> None:
+            for note in notes[:3]:
+                self._toast(note)
+            self._poll_snapshots()
+
+        worker.run(work, done, lambda _exc: None)
+
+    def _snapshots_changed(self) -> None:
+        self._relations = {}
+        self.refresh()
+
+    def _open_preferences(self) -> None:
+        if snapshot_ui is None:
+            return
+        page = snapshot_ui.SnapshotsPage(
+            "when a profile stops after it ran, and when you change its settings",
+            on_changed=self._snapshots_changed,
+            take_all=self._take_all,
+            take_all_text="every stopped profile; a running one is taken when it stops",
+        )
+        snapshot_ui.preferences_dialog(page).present(self)
+
+    def _take_all(self) -> str:
+        taken = skipped = size = 0
+        for profile in store.list_profiles():
+            if launch.running(profile):
+                skipped += 1
+                continue
+            size += profile_snapshots.take(profile).size
+            taken += 1
+        if not taken and not skipped:
+            return "nothing to snapshot yet"
+        line = f"{taken} profile{'s' if taken != 1 else ''} · {snap.size_text(size)}"
+        if skipped:
+            line += f" · {skipped} running, taken when {'they stop' if skipped > 1 else 'it stops'}"
+        return line
+
+    def _snapshot_all(self) -> None:
+        if snap is None:
+            return
+        if not snap.load_settings():
+            self._open_preferences()
+            return
+        if not snap.unlocked():
+            snapshot_ui.ask_unlock(self, self._snapshot_all)
+            return
+        self._toast("Taking snapshots…")
+        worker.run(
+            self._take_all,
+            lambda summary: (self._toast(f"Snapshots taken: {summary}"), self._snapshots_changed()),
+            lambda exc: self._alert("No snapshot taken", str(exc)),
+        )
+
+    def _act_snapshots(self, _action, param) -> None:
+        if snap is None:
+            return
+        pid = param.get_string()
+        if not snap.load_settings():
+            self._open_preferences()
+            return
+        if not snap.unlocked():
+            snapshot_ui.ask_unlock(self, lambda: self._act_snapshots(_action, param))
+            return
+        profile = self._profile(pid)
+        here = profile is not None
+        name = profile.name if here else next((a[1] for a in self._away if a[0] == pid), pid)
+        take = (lambda: profile_snapshots.take(store.load(pid))) if here else None
+        snapshot_ui.HistoryDialog(
+            profile_snapshots.KIND,
+            pid,
+            name,
+            here=here,
+            take=take,
+            restore=lambda sid: profile_snapshots.restore(pid, sid),
+            on_changed=self._snapshots_changed,
+            toast=self._toast,
+        ).present(self)
+
+    def _act_forget_snapshots(self, _action, param) -> None:
+        pid = param.get_string()
+        name = next((a[1] for a in self._away if a[0] == pid), pid)
+        dialog = Adw.AlertDialog(
+            heading=f"Delete the snapshots of {name}?",
+            body="Every snapshot of it is deleted from the snapshot folder, on every device "
+            "that syncs the folder. This cannot be undone.",
+        )
+        dialog.add_response("cancel", "Cancel")
+        dialog.add_response("delete", "Delete")
+        dialog.set_response_appearance("delete", Adw.ResponseAppearance.DESTRUCTIVE)
+        dialog.set_close_response("cancel")
+
+        def on_response(_d, response: str) -> None:
+            if response != "delete":
+                return
+            worker.run(
+                lambda: snap.forget(profile_snapshots.KIND, pid),
+                lambda n: (
+                    self._toast(f"Deleted {n} snapshot(s) of {name}"),
+                    self._snapshots_changed(),
+                ),
+                lambda exc: self._alert("Could not delete", str(exc)),
+            )
+
+        dialog.connect("response", on_response)
+        dialog.present(self)
 
     # ----------------------------------------------------------- environment
     def _check_environment(self, announce: bool = False) -> None:

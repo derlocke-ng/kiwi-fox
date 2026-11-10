@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 
 from kiwi_proxy import dns, exits, gateway, podman, providers
@@ -13,6 +14,7 @@ from kiwi_proxy import secrets as proxy_secrets
 
 from . import __version__
 from .core import desktop, geometry, gpu, launch, paths, secrets, store
+from .core import snapshots as profile_snapshots
 from .core.engines import fetch as engine_fetch
 from .core.fingerprint import edit, generate, validate, validate_against, webgl
 from .core.fingerprint import windows11 as w11
@@ -405,6 +407,10 @@ def cmd_run(a: argparse.Namespace) -> int:
     p = store.resolve_ref(a.ref)
     if launch.running(p):
         return _fail(f"{p.name} is already running")
+    if profile_snapshots.available() and not a.as_is:
+        p = _look_before_start(p, a)
+        if p is None:
+            return 1
     try:
         res = launch.launch(p, strict=a.strict, start_url=a.url)
     except launch.LaunchError as exc:
@@ -426,6 +432,8 @@ def cmd_run(a: argparse.Namespace) -> int:
             _p("detached; the profile keeps running")
             return 0
         _p(f"browser exited ({code}); gateway released")
+        if note := profile_snapshots.after_stop(p):
+            _p(f"note: {note}")
     return 0
 
 
@@ -434,6 +442,8 @@ def cmd_stop(a: argparse.Namespace) -> int:
         p = store.resolve_ref(ref)
         launch.stop(p)
         _p(f"stopped {p.name}")
+        if note := profile_snapshots.after_stop(p):
+            _p(f"  {note}")
     return 0
 
 
@@ -1015,6 +1025,8 @@ def cmd_set(a: argparse.Namespace) -> int:
             _p("  regions : " + " ".join(sorted(w11.REGIONS)))
     elif launch.running(profile):
         _p("  (running — takes effect at the next launch)")
+    if changed and (note := profile_snapshots.changed(profile)):
+        _p(f"  {note}")
     return 0
 
 
@@ -1176,6 +1188,204 @@ def cmd_ps(a: argparse.Namespace) -> int:
 
 
 # -------------------------------------------------------------------- parser
+# ----------------------------------------------------------------- snapshots
+# The folder commands are kiwi-proxy's: one folder, one passphrase for every app.
+PROXY_SNAPSHOT_COMMANDS = ("setup", "status", "unlock", "lock", "set")
+SNAPSHOT_ERRORS: tuple[type[Exception], ...] = (
+    (profile_snapshots.snap.SnapshotError,) if profile_snapshots.available() else ()
+)
+
+
+def _ask_tty(question: str, choices: dict[str, str], default: str) -> str:
+    """One letter from the terminal; `choices` maps letters to answers."""
+    while True:
+        answer = input(question).strip().lower() or default
+        if answer in choices:
+            return choices[answer]
+
+
+def _ask_before_start(p: Profile, check) -> str:
+    """restore | asis | mine | cancel — from the terminal, a small window when
+    started from the app grid, or "asis" with a note when there is neither."""
+    if sys.stdin.isatty():
+        snap = profile_snapshots.snap
+        for device, since in check.in_use or []:
+            if (
+                _ask_tty(
+                    f"{p.name} is in use on {device} since {snap.when_text(since)} "
+                    "(as far as the snapshot folder knows). Start anyway? [y/N] ",
+                    {"y": "go", "n": "cancel"},
+                    "n",
+                )
+                == "cancel"
+            ):
+                return "cancel"
+        rel = check.relation
+        if not (rel and rel.newer_elsewhere):
+            return "asis"
+        head = rel.head
+        when = f"{head.device}, {snap.when_text(head.created)}"
+        if rel.state == "diverged":
+            _p(f"{p.name} changed here and on {head.device} ({when}) since they parted.")
+            return _ask_tty(
+                "  [u] use the snapshot (this copy is kept as a snapshot)\n"
+                "  [k] keep this device's (it becomes the newest)\n"
+                "  [c] cancel\nChoice [c]: ",
+                {"u": "restore", "k": "mine", "c": "cancel"},
+                "c",
+            )
+        _p(f"A newer snapshot of {p.name} exists: from {when}.")
+        return _ask_tty(
+            "  [r] restore it and start (this copy is kept as a snapshot)\n"
+            "  [s] start as it is\n  [c] cancel\nChoice [r]: ",
+            {"r": "restore", "s": "asis", "c": "cancel"},
+            "r",
+        )
+    if os.environ.get("WAYLAND_DISPLAY") or os.environ.get("DISPLAY"):
+        from .ui import start_prompt
+
+        return start_prompt.ask(p.name, check)
+    rel = check.relation
+    if rel and rel.newer_elsewhere:
+        _p(f"note: {rel.describe()} — kiwi-fox snapshot restore {p.name}")
+    return "asis"
+
+
+def _look_before_start(p: Profile, a: argparse.Namespace) -> Profile | None:
+    """Before `run`: a newer copy in the folder, or the profile in use elsewhere.
+    Returns the profile to start (restored, perhaps), or None to stop."""
+    check = profile_snapshots.before_start(p)
+    if not check.needs_asking:
+        return p
+    rel = check.relation
+    asked_to_restore = a.restore and rel and rel.newer_elsewhere
+    choice = "restore" if asked_to_restore else _ask_before_start(p, check)
+    if choice == "cancel":
+        _p("not started")
+        return None
+    if choice == "restore" and rel and rel.head:
+        p = profile_snapshots.restore(p.id, rel.head.id)
+        _p(f"restored {p.name} from {rel.head.device}")
+        if missing := profile_snapshots.missing_engine(p):
+            _fail(
+                f"{p.name} needs {missing[0]} {missing[1]}: {profile_snapshots.fetch_hint(*missing)}"
+            )
+            return None
+    elif choice == "mine":
+        profile_snapshots.keep_mine(p, check)
+        _p(f"this device's {p.name} is the newest snapshot now")
+    return p
+
+
+def cmd_snapshot(a: argparse.Namespace) -> int:
+    if not profile_snapshots.available():
+        return _fail(profile_snapshots.NEEDS)
+    snap = profile_snapshots.snap
+    cmd = a.snapshot_cmd
+    if cmd == "list":
+        opened = snap.folder()
+        here = {p.id: p for p in store.list_profiles()}
+        grouped = snap.catalog((profile_snapshots.KIND,))
+        rows = []
+        for pid in sorted(
+            set(here) | {item for _k, item in grouped},
+            key=lambda i: (
+                here[i].name if i in here else grouped[(profile_snapshots.KIND, i)][0].name
+            ),
+        ):
+            metas = grouped.get((profile_snapshots.KIND, pid), [])
+            name = here[pid].name if pid in here else metas[0].name
+            rel = snap.relation(
+                profile_snapshots.KIND, pid, here=pid in here, metas=metas, folder_id=opened.id
+            )
+            newest = (
+                f"{metas[0].device}, {snap.when_text(metas[0].created)} · {len(metas)} kept"
+                if metas
+                else ""
+            )
+            rows.append((name, rel.describe(), newest))
+        if not rows:
+            _p("no profiles")
+            return 0
+        width = max(len(r[0]) for r in rows)
+        state_width = max(len(r[1]) for r in rows)
+        for name, state, newest in rows:
+            _p(f"{name:{width}}  {state:{state_width}}  {newest}".rstrip())
+        return 0
+    if cmd == "now":
+        targets = [store.resolve_ref(r) for r in a.refs] if a.refs else store.list_profiles()
+        for p in targets:
+            if launch.running(p):
+                _p(f"{p.name}: running, skipped (snapshots are taken of stopped profiles)")
+                continue
+            meta = profile_snapshots.take(p)
+            _p(f"{p.name}: snapshot taken ({snap.size_text(meta.size)})")
+        return 0
+    if cmd == "history":
+        pid, name = _profile_ref(a.ref)
+        metas = snap.history(profile_snapshots.KIND, pid)
+        if not metas:
+            _p(f"no snapshot of {name} yet")
+            return 0
+        for meta in metas:
+            aside = " · kept before a restore" if meta.aside else ""
+            _p(
+                f"{meta.id}  {snap.when_text(meta.created):20} {meta.device:12} {snap.size_text(meta.size):>8}{aside}"
+            )
+        return 0
+    if cmd == "restore":
+        pid, name = _profile_ref(a.ref)
+        here = (paths.profile_dir(pid) / "profile.json").is_file()
+        if a.id:
+            sid = a.id
+        else:
+            rel = snap.relation(profile_snapshots.KIND, pid, here=here)
+            if rel.head is None:
+                return _fail(f"no snapshot of {name} in the folder")
+            if here and rel.state == "same":
+                _p(f"{name} is the newest snapshot already")
+                return 0
+            sid = rel.head.id
+        if here and not a.yes:
+            if not sys.stdin.isatty():
+                return _fail(f"{name} is on this device; restoring replaces it — pass --yes")
+            if input(
+                f"Replace this device's {name} with snapshot {sid[:8]}? [y/N] "
+            ).strip().lower() not in ("y", "yes"):
+                _p("nothing changed")
+                return 1
+        p = profile_snapshots.restore(pid, sid)
+        _p(f"restored {p.name}")
+        if here:
+            _p(f"  what was here is kept as a snapshot: kiwi-fox snapshot history {p.name}")
+        if missing := profile_snapshots.missing_engine(p):
+            if a.fetch:
+                _p(f"  fetching {missing[0]} {missing[1]}…")
+                profile_snapshots.fetch_engine(*missing)
+            else:
+                _p(
+                    f"  it needs {missing[0]} {missing[1]}: {profile_snapshots.fetch_hint(*missing)}"
+                )
+        return 0
+    if cmd == "forget":
+        pid, name = _profile_ref(a.ref)
+        if not a.yes:
+            return _fail(f"this deletes every snapshot of {name} from the folder — pass --yes")
+        removed = snap.forget(profile_snapshots.KIND, pid)
+        _p(f"deleted {removed} snapshot(s) of {name}")
+        return 0
+    return _fail(f"unknown snapshot command {cmd}")
+
+
+def _profile_ref(ref: str) -> tuple[str, str]:
+    """A profile here, or one only in the folder: (id, name)."""
+    try:
+        p = store.resolve_ref(ref)
+        return p.id, p.name
+    except store.StoreError:
+        return profile_snapshots.find_in_folder(ref)
+
+
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(prog="kiwi-fox", description=__doc__)
     ap.add_argument("--version", action="version", version=f"kiwi-fox {__version__}")
@@ -1293,6 +1503,16 @@ def build_parser() -> argparse.ArgumentParser:
         "--wait",
         action="store_true",
         help="block until the browser exits, then tear the namespace down",
+    )
+    r.add_argument(
+        "--as-is",
+        action="store_true",
+        help="start without asking, even when the snapshot folder holds a newer copy",
+    )
+    r.add_argument(
+        "--restore",
+        action="store_true",
+        help="when the snapshot folder holds a newer copy, restore it first without asking",
     )
     r.set_defaults(func=cmd_run)
 
@@ -1469,6 +1689,31 @@ def build_parser() -> argparse.ArgumentParser:
     )
     m.add_argument("args", nargs=argparse.REMAINDER, help="as for `kiwi-proxy module`")
     m.set_defaults(func=cmd_module)
+
+    sn = sub.add_parser("snapshot", help="encrypted snapshots of profiles, for your other devices")
+    ssub = sn.add_subparsers(dest="snapshot_cmd", required=True)
+    for name, text in (
+        ("setup", "choose the snapshot folder (kiwi-proxy's, shared by every kiwi app)"),
+        ("status", "folder, device, locked or not"),
+        ("unlock", "enter the passphrase on this device"),
+        ("lock", "forget the passphrase on this device"),
+        ("set", "change how snapshots are taken"),
+    ):
+        ssub.add_parser(name, help=text, add_help=False)
+    ssub.add_parser("list", help="the profiles in the folder, and how they relate to here")
+    nw = ssub.add_parser("now", help="snapshot stopped profiles now")
+    nw.add_argument("refs", nargs="*", metavar="PROFILE", help="default: every stopped profile")
+    hi = ssub.add_parser("history", help="the snapshots of one profile")
+    hi.add_argument("ref", metavar="PROFILE")
+    rs = ssub.add_parser("restore", help="restore a profile from the folder")
+    rs.add_argument("ref", metavar="PROFILE")
+    rs.add_argument("--id", help="which snapshot (see history); default the newest")
+    rs.add_argument("--yes", action="store_true", help="replace this device's copy without asking")
+    rs.add_argument("--fetch", action="store_true", help="download its browser engine if missing")
+    fg = ssub.add_parser("forget", help="delete every snapshot of a profile from the folder")
+    fg.add_argument("ref", metavar="PROFILE")
+    fg.add_argument("--yes", action="store_true")
+    sn.set_defaults(func=cmd_snapshot)
     return ap
 
 
@@ -1478,6 +1723,13 @@ def main(argv: list[str] | None = None) -> int:
         # All of it is kiwi-proxy's, --help included, which kiwi-fox's own
         # parser would take for one of its options.
         return cmd_module(argparse.Namespace(args=argv[1:]))
+    if argv[:1] == ["snapshot"] and argv[1:2] and argv[1] in PROXY_SNAPSHOT_COMMANDS:
+        # The folder, the passphrase and the settings are shared: kiwi-proxy's.
+        if not profile_snapshots.available():
+            return _fail(profile_snapshots.NEEDS)
+        from kiwi_proxy import cli as proxy_cli
+
+        return proxy_cli.main(argv)
     paths.ensure_tree()
     args = build_parser().parse_args(argv)
     try:
@@ -1490,6 +1742,7 @@ def main(argv: list[str] | None = None) -> int:
         podman.PodmanError,
         launch.LaunchError,
         providers.ProviderError,
+        *SNAPSHOT_ERRORS,
     ) as exc:
         return _fail(str(exc))
     except KeyboardInterrupt:

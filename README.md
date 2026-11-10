@@ -78,6 +78,38 @@ deleting the profile removes it. The browser window announces the entry's id, so
 the dock and the overview show the profile's name and icon while it runs — a
 profile without an entry shows as Kiwi Fox.
 
+## A profile on your other devices
+
+Profiles go into the same encrypted snapshot folder as Kiwi Proxy's exits; your
+sync client (Nextcloud) carries it to your other devices. A snapshot holds the
+profile's settings, its fingerprint and its browser data — logins, cookies,
+history, bookmarks, site storage, extensions, open tabs — and leaves out what the
+browser rebuilds (caches, safe-browsing lists, crash reports) and the downloads:
+a profile of 243 MB on disk is a 9 MB snapshot.
+
+```bash
+kiwi-proxy snapshot setup ~/Nextcloud/kiwi-snapshots   # once per device; the same in Preferences
+kiwi-fox snapshot list
+kiwi-fox snapshot restore work --fetch                 # --fetch installs its engine if missing
+```
+
+- **When:** after a profile ran and stopped, after you change its settings, and
+  whenever you ask (Snapshots… in its menu, or "Snapshot everything now"). Never
+  while its browser runs.
+- **Starting an older copy asks first.** When the folder holds a newer snapshot
+  from another device, Launch (and the app-grid entry) asks: restore and start,
+  start as it is, or cancel. When both devices changed it, you choose which wins.
+- **In use elsewhere:** a profile open on another device says so in its row and
+  before it starts here. The folder can only tell as fast as it syncs.
+- **Its exit comes from Kiwi Proxy.** A profile whose exit is not on this device
+  says "restore it in Kiwi Proxy first"; Kiwi Fox never makes or restores proxies.
+- **Its engine:** a restored profile that needs an engine version this device
+  lacks offers to install it (downloaded and verified like any other).
+
+A restore keeps what was here as a snapshot first, so it can be undone. The
+folder, the passphrase and the encryption are kiwi-proxy's; see
+[kiwi-proxy's docs/snapshots.md](https://github.com/derlocke-ng/kiwi-proxy/blob/main/docs/snapshots.md).
+
 ## Proxies, and provider modules
 
 A proxy is a kiwi-proxy exit: a SOCKS5 you were given, or one a provider module

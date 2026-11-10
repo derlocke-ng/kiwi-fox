@@ -564,3 +564,136 @@ def test_the_window_opens_large_and_remembers_its_size():
     assert Window().get_default_size() == (900, 700)
     (paths.config_dir() / "window.json").write_text('{"width": 10, "height": 10}')
     assert Window().get_default_size() == (640, 480)  # never unusably small
+
+
+# -------------------------------------------------------------- snapshots
+def _pump_until(until, timeout=8.0):
+    import time
+
+    from gi.repository import GLib
+
+    ctx = GLib.MainContext.default()
+    deadline = time.monotonic() + timeout
+    while not until() and time.monotonic() < deadline:
+        while ctx.pending():
+            ctx.iteration(False)
+        time.sleep(0.01)
+    assert until(), "the window never got there"
+
+
+@pytest.fixture
+def snapshot_device(monkeypatch, tmp_path):
+    """Fast gpg, no podman, and a way to be another device."""
+    import contextlib
+    import shutil
+    import subprocess
+    import tempfile
+
+    from kiwi_fox.core import snapshots as fox
+
+    if not fox.available() or fox.snap.missing_tools():
+        pytest.skip("profile snapshots need kiwi-proxy 0.8, gpg and zstd")
+    from kiwi_proxy import podman
+    from kiwi_proxy.snapshots import crypt
+    from kiwi_proxy.snapshots.folder import Folder
+
+    from kiwi_fox.core import launch
+
+    home = tempfile.mkdtemp(prefix="kf-ui-gpg-")
+    monkeypatch.setattr(crypt, "S2K_COUNT", 1024)
+    monkeypatch.setattr(crypt, "_gpg_home", lambda: contextlib.nullcontext(home))
+    running: set[str] = set()
+    monkeypatch.setattr(launch, "running", lambda p: p.id in running)
+    monkeypatch.setattr(podman, "available", lambda: False)
+
+    def device(name):
+        for var in ("XDG_DATA_HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_RUNTIME_DIR"):
+            monkeypatch.setenv(var, str(tmp_path / name / var.lower()))
+        fox.snap._session.clear()
+        Folder.forget_unlocked()
+
+    device.running = running  # type: ignore[attr-defined]
+    yield device
+    fox.snap._session.clear()
+    Folder.forget_unlocked()
+    subprocess.run(["gpgconf", "--homedir", home, "--kill", "all"], capture_output=True)
+    shutil.rmtree(home, ignore_errors=True)
+
+
+def _snap_profile(name="work"):
+    from kiwi_proxy import exits
+    from kiwi_proxy.models import Endpoint
+
+    from kiwi_fox.core import store
+    from kiwi_fox.core.fingerprint import generate
+
+    ex = exits.find_by_name("mullvad") or exits.create(
+        "mullvad", Endpoint(host="10.64.0.1", port=1080)
+    )
+    fp = generate(engine_version="152.0.4", country="DE", seed="b" * 32)
+    return store.create(name, ex.id, fp), ex
+
+
+def test_the_window_offers_profiles_only_in_the_folder(snapshot_device, tmp_path):
+    from kiwi_proxy import exits
+    from kiwi_proxy.models import Endpoint
+
+    from kiwi_fox.core import snapshots as fox
+    from kiwi_fox.ui.window import Window
+
+    snapshot_device("lime")
+    fox.snap.setup(tmp_path / "shared", "correct horse battery staple", device_name="lime")
+    p, ex = _snap_profile()
+    fox.take(p)
+
+    snapshot_device("titan")
+    fox.snap.setup(tmp_path / "shared", "correct horse battery staple", device_name="titan")
+    win = Window()
+    _pump_until(lambda: win.away_group.get_visible())
+    assert win.stack.get_visible_child_name() == "list"
+    row = win._away_rows[0]
+    assert row.get_title() == "work" and "from lime" in row.get_subtitle()
+
+    # its exit is not here: the window says to restore it in Kiwi Proxy, and nothing changes
+    alerts = []
+    win._alert = lambda heading, body: alerts.append(heading)
+    win._on_restore_away(None, p.id, "work", fox.snap.history("profile", p.id)[0])
+    assert alerts == ["Restore mullvad in Kiwi Proxy first"]
+
+    exits.create("mullvad", Endpoint(host="10.64.0.1", port=1080), exit_id=ex.id)
+    win._offer_engine = lambda profile, missing: None
+    win._on_restore_away(None, p.id, "work", fox.snap.history("profile", p.id)[0])
+    _pump_until(lambda: p.id in win._rows and not win.away_group.get_visible())
+    _pump_until(lambda: "snapshot" in win._rows[p.id].get_subtitle())
+
+
+def test_a_browser_that_ended_gets_its_snapshot(snapshot_device, tmp_path):
+    from kiwi_fox.core import snapshots as fox
+    from kiwi_fox.ui.window import Window
+
+    snapshot_device("lime")
+    fox.snap.setup(tmp_path / "shared", "correct horse battery staple", device_name="lime")
+    p, _ex = _snap_profile()
+    win = Window()
+    _pump_until(lambda: len(fox.snap.history("profile", p.id)) == 1)  # the catch-up
+    snapshot_device.running.add(p.id)
+    fox.started(p)
+    win._tick()
+    snapshot_device.running.discard(p.id)  # the user closed the browser
+    win._tick()
+    _pump_until(lambda: len(fox.snap.history("profile", p.id)) == 2)
+
+
+def test_everything_now_from_the_window(snapshot_device, tmp_path):
+    from kiwi_fox.core import snapshots as fox
+    from kiwi_fox.ui.window import Window
+
+    snapshot_device("lime")
+    fox.snap.setup(tmp_path / "shared", "correct horse battery staple", device_name="lime")
+    a, _ = _snap_profile("a")
+    b, _ = _snap_profile("b")
+    snapshot_device.running.add(b.id)
+    win = Window()
+    assert "1 profile" in win._take_all() and "1 running" in win._take_all()
+    assert len(fox.snap.history("profile", a.id)) >= 1
+    assert fox.snap.history("profile", b.id) == []

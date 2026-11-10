@@ -487,6 +487,9 @@ def launch(profile: Profile, *, strict: bool = False, start_url: str | None = No
     if info:
         profile.last_exit = info
     store.touch(profile)
+    from . import snapshots as profile_snapshots  # late: it imports this module
+
+    profile_snapshots.started(profile)  # this copy changes now; "in use here"
     return LaunchResult(profile, gateway_name, br.name, info, warnings, notes)
 
 

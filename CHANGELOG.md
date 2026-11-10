@@ -1,5 +1,37 @@
 # Changelog
 
+## 0.8.0
+
+**Profiles on your other devices.** Profiles go into kiwi-proxy's encrypted
+snapshot folder, which your sync client (Nextcloud) carries to your other devices.
+Needs kiwi-proxy 0.8.1.
+
+- **What a snapshot holds:** the profile's settings, its fingerprint and its
+  browser data — logins, cookies, history, bookmarks, site storage, extensions,
+  open tabs, and the database journals an unclean stop leaves. Left out: caches,
+  safe-browsing lists, remote settings, crash reports, lock files and the
+  downloads. A profile of 243 MB is a 9 MB snapshot.
+- **When:** after a profile ran and its browser stopped (the window notices, as do
+  `kiwi-fox stop` and `run --wait`; the window catches up on what stopped while it
+  was closed), after its settings change, and when asked. Never while it runs.
+- **Before it starts:** when the folder holds a newer copy from another device,
+  Launch asks: restore and start, start as it is, or cancel; when both changed,
+  you choose which wins. The same question comes up in a small window when the
+  profile is started from the app grid, and in the terminal for `kiwi-fox run`
+  (`--restore` and `--as-is` answer it ahead).
+- **In use elsewhere:** a profile open on another device says so in its row and
+  asks before it starts here.
+- **Restoring:** "In your snapshot folder, not on this device" lists profiles to
+  bring here; Snapshots… in a profile's menu shows its history. A profile whose
+  exit is not here says to restore that exit in Kiwi Proxy first. A missing engine
+  version is offered for install. What was here is kept as a snapshot first.
+- **In the app:** Preferences (Ctrl+,) with the Snapshots page, "Snapshot
+  everything now", a banner when snapshots are locked, "Use a snapshot folder" on
+  a device without profiles.
+- **On the command line:** `kiwi-fox snapshot list | now | history | restore |
+  forget`; `setup`, `status`, `unlock`, `lock` and `set` are kiwi-proxy's, the same
+  folder for every app.
+
 ## 0.7.1
 
 - **A bigger window, and the size you leave it at.** The window opened at
