@@ -1,4 +1,4 @@
-"""Profile -> gateway + browser -> lifecycle.
+"""Profile -> gateway + container + browser -> lifecycle.
 
 The gateway container owns the network namespace; the browser joins it and has
 no routing table of its own, so the kill switch is the absence of a route
@@ -8,18 +8,30 @@ rather than software that has to notice. Measured working rootless on this host
 The gateway is kiwi-proxy's: a profile's exit (store.sync_exit) is brought up
 with `gateway.up`, and the browser joins `Gateway.name`. What stays here is the
 browser half, and the rules a browser imposes on its exit.
+
+A profile's container and its browser are two things (the window's two buttons):
+the container's process 1 is the launcher (containers/browser/entrypoint.sh,
+mounted over the image's copy), which starts the browser, quits it on a signal,
+and ends with it unless told to keep running. A watcher outside the container
+(:func:`watch`, a transient user unit) snapshots the profile when its browser
+closes and lets go of the exit when the container ends — whoever started it: the
+window, the command line or the app grid.
 """
 
 from __future__ import annotations
 
 import contextlib
 import os
+import shutil
+import subprocess
+import sys
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from kiwi_proxy import endpoint, exits, gateway, podman, providers
 
-from . import desktop, geometry, paths, store
+from . import desktop, geometry, paths, settings, store
 from .engines import get_engine
 from .engines.camoufox import fontconfig_xml
 from .fingerprint import validate, validate_against
@@ -27,6 +39,11 @@ from .fingerprint.validator import Issue, errors
 from .models import ExitInfo, Fingerprint, Profile
 
 BROWSER_IMAGE = "kiwi-fox/browser:latest"
+# The launcher, from the app over the image's copy, and the folder it shares.
+LAUNCHER_MOUNT = "/usr/local/bin/kf-browser"
+CONTROL_MOUNT = "/run/kf-control"
+# How long a browser asked to start in a running container has to say so.
+OPEN_TIMEOUT = 15.0
 # Errors the network half can raise; launch turns every one into a LaunchError.
 _NETWORK_ERRORS = (
     gateway.GatewayError,
@@ -55,6 +72,34 @@ def runtime_dir(profile_id: str) -> Path:
     d = paths.runtime_dir() / profile_id
     d.mkdir(parents=True, exist_ok=True)
     return d
+
+
+def control_dir(profile_id: str) -> Path:
+    """The folder the container's launcher shares with this side: the browser's
+    state ("open PID" / "closed CODE"), "keep", the pages to open with."""
+    d = runtime_dir(profile_id) / "control"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def launcher_script() -> Path:
+    """The launcher the container runs as process 1. crun refuses a file without
+    the executable bit, and a copy can lose it (git keeps this one 644, the image
+    build sets it): then an executable copy in the runtime folder is used."""
+    from .setup import containers_dir
+
+    script = containers_dir() / "browser" / "entrypoint.sh"
+    if os.access(script, os.X_OK):
+        return script
+    copy = paths.runtime_dir() / "kf-browser"
+    copy.parent.mkdir(parents=True, exist_ok=True)
+    data = script.read_bytes()
+    if not copy.exists() or copy.read_bytes() != data:
+        tmp = copy.with_suffix(".new")
+        tmp.write_bytes(data)
+        tmp.chmod(0o755)
+        tmp.replace(copy)
+    return copy
 
 
 def write_fontconfig(profile: Profile, fp: Fingerprint) -> Path:
@@ -209,6 +254,11 @@ def browser_spec(
     spec.args = [*desktop.window_args(profile), *spec.args]
     if resolv_conf:
         spec.volumes.append((resolv_conf, "/etc/resolv.conf", "ro,z"))
+    # The launcher that supervises the browser, and the folder it reports in.
+    spec.volumes.append((str(launcher_script()), LAUNCHER_MOUNT, "ro"))
+    spec.volumes.append((str(control_dir(profile.id)), CONTROL_MOUNT, "rw"))
+    spec.env["KF_CONTROL"] = CONTROL_MOUNT
+    spec.labels["kiwi-fox.supervised"] = "1"
     wayland = _wayland_mount()
     if wayland:
         src, dst = wayland
@@ -357,9 +407,31 @@ def start_gateway(profile: Profile) -> tuple[str, ExitInfo | None]:
     return gw.name, gw.info
 
 
-def launch(profile: Profile, *, strict: bool = False, start_url: str | None = None) -> LaunchResult:
+def launch(
+    profile: Profile,
+    *,
+    strict: bool = False,
+    start_url: str | None = None,
+    browser: bool = True,
+) -> LaunchResult:
+    """Start the profile's container and, with `browser`, its browser. When the
+    container already runs (kept after its browser quit, or started on its own),
+    only the browser is started in it."""
     if not podman.available():
         raise LaunchError("podman not found")
+    name = paths.browser_name(profile.id)
+    if container_running(profile):
+        if not browser:
+            raise LaunchError(f"{profile.name}'s container is already running")
+        if running(profile):
+            raise LaunchError(f"{profile.name} is already open")
+        if not supervised(profile):
+            raise LaunchError(
+                f"{profile.name}'s container was started by an older Kiwi Fox; stop it first"
+            )
+        open_browser(profile, start_url)
+        ensure_watcher(profile)
+        return LaunchResult(profile, gateway_of(profile), name, profile.last_exit, [], [])
     engine = get_engine(profile.engine)
     # Only camoufox carries a fingerprint; the non-spoofing engines pass None
     # through every step below.
@@ -474,8 +546,13 @@ def launch(profile: Profile, *, strict: bool = False, start_url: str | None = No
 
     clear_stale_lock(profile)
     br = browser_spec(profile, fp, gateway_name, info.ip if info else None, resolv)
+    br.env["KF_START_BROWSER"] = "1" if browser else "0"
+    control = control_dir(profile.id)
+    for stale in ("browser", "url"):
+        (control / stale).unlink(missing_ok=True)
     if start_url:
-        br.args.append(start_url)
+        (control / "url").write_text(start_url + "\n")
+    set_keep(profile, settings.load().keep_container or not browser)
     if "WAYLAND_DISPLAY" not in br.env:
         notes.append("no Wayland socket found; the browser window cannot open")
     try:
@@ -483,14 +560,103 @@ def launch(profile: Profile, *, strict: bool = False, start_url: str | None = No
     except podman.PodmanError as exc:
         release(profile, ignore=(br.name,))
         raise LaunchError(f"browser failed to start: {exc}") from exc
+    if note := ensure_watcher(profile):
+        notes.append(note)
 
     if info:
         profile.last_exit = info
     store.touch(profile)
-    from . import snapshots as profile_snapshots  # late: it imports this module
+    if browser:
+        from . import snapshots as profile_snapshots  # late: it imports this module
 
-    profile_snapshots.started(profile)  # this copy changes now; "in use here"
+        profile_snapshots.started(profile)  # this copy changes now; "in use here"
     return LaunchResult(profile, gateway_name, br.name, info, warnings, notes)
+
+
+# ------------------------------------------------------- container and browser
+def gateway_of(profile: Profile) -> str | None:
+    return paths.gateway_name(profile.exit) if profile.exit else None
+
+
+def container_running(profile: Profile) -> bool:
+    return podman.is_running(paths.browser_name(profile.id))
+
+
+def supervised(profile: Profile) -> bool:
+    """The container runs this version's launcher (an older one ran the browser
+    as process 1 and ended with it)."""
+    return (runtime_dir(profile.id) / "control" / "browser").exists()
+
+
+def browser_state(profile: Profile) -> tuple[str, str]:
+    """("open", PID) | ("closed", CODE) | ("", "") when the launcher has not said."""
+    try:
+        state, _, rest = (
+            (runtime_dir(profile.id) / "control" / "browser").read_text().strip().partition(" ")
+        )
+    except OSError:
+        return "", ""
+    return state, rest
+
+
+def set_keep(profile: Profile, keep: bool) -> None:
+    """Whether the container outlives its browser (the launcher looks when the
+    browser ends)."""
+    flag = control_dir(profile.id) / "keep"
+    if keep:
+        flag.touch()
+    else:
+        flag.unlink(missing_ok=True)
+
+
+def apply_keep_setting() -> None:
+    """The preference changed: every running container follows it from now on,
+    except one started without a browser, which waits for one."""
+    keep = settings.load().keep_container
+    for p in store.list_profiles():
+        if (runtime_dir(p.id) / "control").is_dir():
+            started_empty = browser_state(p)[1] == "-" and not running(p)
+            set_keep(p, keep or started_empty)
+
+
+def open_browser(profile: Profile, start_url: str | None = None) -> None:
+    """Start the browser in the running container and wait until it says so."""
+    control = control_dir(profile.id)
+    if start_url:
+        (control / "url").write_text(start_url + "\n")
+    set_keep(profile, settings.load().keep_container)
+    _signal(profile, "USR1")
+    deadline = time.monotonic() + OPEN_TIMEOUT
+    while time.monotonic() < deadline:
+        if browser_state(profile)[0] == "open":
+            from . import snapshots as profile_snapshots
+
+            store.touch(profile)
+            profile_snapshots.started(profile)
+            return
+        if not container_running(profile):
+            break
+        time.sleep(0.2)
+    raise LaunchError(f"{profile.name}: the browser did not start in its container")
+
+
+def _signal(profile: Profile, sig: str) -> None:
+    proc = podman._run(["kill", "--signal", sig, paths.browser_name(profile.id)], check=False)
+    if proc.returncode != 0:
+        raise LaunchError(
+            f"{profile.name}: {proc.stderr.strip() or 'the container did not take the signal'}"
+        )
+
+
+def quit_browser(profile: Profile) -> None:
+    """Close the browser. Its container stops after it unless the preference
+    keeps it (the watcher then lets go of the exit)."""
+    if not container_running(profile):
+        return
+    if supervised(profile):
+        _signal(profile, "USR2")
+    else:
+        stop(profile)
 
 
 def stop(profile: Profile) -> None:
@@ -525,7 +691,13 @@ def heal_exits() -> list[str]:
 
 
 def running(profile: Profile) -> bool:
-    return podman.is_running(paths.browser_name(profile.id))
+    """The browser is open: the profile's data is in use. (A container kept
+    running without a browser does not count.)"""
+    if not container_running(profile):
+        return False
+    state, _ = browser_state(profile)
+    # a container of an older Kiwi Fox ran the browser as process 1
+    return state != "closed" if state else True
 
 
 def wait_and_teardown(profile: Profile) -> int:
@@ -537,6 +709,148 @@ def wait_and_teardown(profile: Profile) -> int:
     code = podman.wait(paths.browser_name(profile.id))
     stop(profile)
     return code
+
+
+# ------------------------------------------------------------------ watcher
+WATCH_POLL = 1.0
+
+
+def container_id(profile: Profile) -> str | None:
+    proc = podman._run(
+        ["container", "inspect", "--format", "{{.Id}}", paths.browser_name(profile.id)], check=False
+    )
+    return (proc.stdout.strip() or None) if proc.returncode == 0 else None
+
+
+def watcher_unit(profile_id: str, cid: str) -> str:
+    return f"kiwi-fox-watch-{profile_id[:12]}-{cid[:8]}"
+
+
+# What a watcher needs to see the same stores as whoever started it.
+_WATCH_ENV = (
+    "PATH",
+    "PYTHONPATH",
+    "XDG_DATA_HOME",
+    "XDG_CONFIG_HOME",
+    "XDG_CACHE_HOME",
+    "XDG_RUNTIME_DIR",
+    "KIWI_PROXY_SECRETS",
+    "DBUS_SESSION_BUS_ADDRESS",
+)
+
+
+def ensure_watcher(profile: Profile) -> str | None:
+    """Start the watcher for the profile's current container, unless one runs.
+    A transient user unit (systemd-run) when there is a user manager, so it
+    outlives the window and the terminal; a detached process otherwise. A line
+    to show when neither worked."""
+    cid = container_id(profile)
+    if cid is None:
+        return None
+    if (control_dir(profile.id) / f"watch-{cid[:12]}").exists():
+        return None  # one is watching this container
+    cmd = [sys.executable, "-m", "kiwi_fox", "watch", profile.id]
+    if shutil.which("systemd-run"):
+        env = [f"--setenv={k}={os.environ[k]}" for k in _WATCH_ENV if k in os.environ]
+        proc = subprocess.run(  # noqa: S603
+            [
+                "systemd-run",
+                "--user",
+                "--quiet",
+                "--collect",
+                f"--unit={watcher_unit(profile.id, cid)}",
+                f"--description=Kiwi Fox: {profile.name}, snapshot and let go of its exit",
+                *env,
+                *cmd,
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if proc.returncode == 0 or "already" in proc.stderr:
+            return None
+    try:
+        with open(runtime_dir(profile.id) / "watch.log", "ab") as log:
+            subprocess.Popen(  # noqa: S603
+                cmd, stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True
+            )
+    except OSError as exc:
+        return f"nothing watches {profile.name}'s container ({exc}); stop it from here"
+    return None
+
+
+def watch(profile: Profile) -> int:
+    """Stay with the profile's container until it ends: snapshot when its browser
+    closes, and when the container ends remove it and let go of the exit. Only
+    this container: a newer one with the same name gets its own watcher."""
+    from . import snapshots as profile_snapshots  # late: it imports this module
+
+    name = paths.browser_name(profile.id)
+    cid = container_id(profile)
+    if cid is None:
+        return 0
+    marker = control_dir(profile.id) / f"watch-{cid[:12]}"
+    try:
+        fd = os.open(marker, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    except FileExistsError:
+        return 0  # another watcher has it
+    os.write(fd, str(os.getpid()).encode())
+    os.close(fd)
+    waiter = subprocess.Popen(  # noqa: S603
+        ["podman", "wait", cid], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+    )
+    try:
+        was_open = running(profile)
+        while waiter.poll() is None:
+            time.sleep(WATCH_POLL)
+            now_open = browser_state(profile)[0] == "open"
+            if was_open and not now_open:
+                with contextlib.suppress(Exception):
+                    profile_snapshots.after_stop(profile)
+            was_open = now_open
+        # The container ended. Remove it (by id: a new one may carry the name by
+        # now) and let go of the exit unless something else is inside it.
+        podman._run(["rm", "--force", cid], check=False)
+        current = container_id(profile)
+        if current is None or current == cid:
+            release(profile, ignore=(name,))
+        with contextlib.suppress(Exception):
+            profile_snapshots.after_stop(profile)
+    finally:
+        marker.unlink(missing_ok=True)
+        if waiter.poll() is None:
+            waiter.kill()
+    return 0
+
+
+def repair() -> list[str]:
+    """Before anything starts (the preference "Repair on start"): remove this
+    app's containers a crash or a reset left, clear the locks of profiles whose
+    browser is not running, and give every running container a watcher. What
+    was done, for a note."""
+    if not podman.available():
+        return []
+    done = []
+    try:
+        from kiwi_proxy import storage
+    except ImportError:  # kiwi-proxy older than 0.8.2
+        storage = None
+    if storage is not None:
+        gone = storage.remove_leftovers("kiwi-fox")
+        if gone:
+            done.append(f"removed {len(gone)} container(s) an unclean stop left")
+    for p in store.list_profiles():
+        if container_running(p):
+            if supervised(p):
+                ensure_watcher(p)
+            continue
+        if clear_stale_lock(p):
+            done.append(f"cleared {p.name}'s stale lock")
+        # its exit, held for a container that is gone (kept while anything else
+        # is inside it)
+        with contextlib.suppress(*_NETWORK_ERRORS):
+            release(p, ignore=(paths.browser_name(p.id),))
+    return done
 
 
 def reap() -> list[str]:

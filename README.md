@@ -38,8 +38,10 @@ kiwi-proxy add kiwi-master-tor socks5://10.8.0.1:9050 --dns remote   # a proxy, 
 kiwi-fox new work --exit kiwi-master-tor         # a profile on it: probes it, draws a matching identity
 kiwi-fox new bare --no-proxy                     # this machine's own connection, nothing sealed
 kiwi-fox list                                    # --tag shop, --by-tag
-kiwi-fox run work                                # or use the GUI
-kiwi-fox stop work
+kiwi-fox run work                                # the browser (and its container); or use the GUI
+kiwi-fox quit work                               # close the browser; the container follows unless kept
+kiwi-fox up work                                 # the container alone: the exit up, the browser starts at once later
+kiwi-fox stop work                               # the container, browser and all
 kiwi-fox check                                   # is every profile still coherent?
 kiwi-fox selfcheck work                          # measure what pages see, then audit it
 kiwi-fox-gui                                     # "Kiwi Fox" in your app grid
@@ -53,6 +55,26 @@ environment** is `kiwi-fox setup`.
 kiwi-fox makes no proxies itself. An endpoint goes to kiwi-proxy (`kiwi-proxy add
 NAME socks5://user:pass@host:port`, also `http://…`, `https://…`, or the vendor
 paste format `host:port:user:pass`), and the profile is put on it with `--exit`.
+
+## Browser and container
+
+Each profile has two buttons: **Browser** and **Container**. The container holds
+the profile's network namespace on its exit; the browser runs in it. When the
+browser quits — Quit browser, `kiwi-fox quit`, or its window closed — its container
+stops too and lets go of the exit, which Kiwi Proxy takes down when nothing else
+uses it. Preferences → General → "When the browser quits" can keep the container
+running instead, so the browser starts again at once.
+
+That happens however the profile was started: the window, the command line or
+the app grid. Each container gets a watcher (a transient systemd user unit,
+`kiwi-fox-watch-…`) that takes a snapshot when the browser closes and lets go of
+the exit when the container ends.
+
+**Repair on start** (Preferences → General, on by default) removes Kiwi Fox's
+containers an unclean shutdown left, clears stale profile locks and gives running
+containers their watcher; `kiwi-fox repair` does it by hand. **Check and repair**
+in the menu runs podman's quick storage check and names every broken container,
+Kiwi's or not, before anything is removed.
 
 ## Tags
 

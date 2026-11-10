@@ -3,10 +3,12 @@ from types import SimpleNamespace
 
 import pytest
 
+from kiwi_fox.core import launch as _launch
 from kiwi_fox.core.fingerprint import generate
 from kiwi_fox.core.models import Endpoint, Profile
 
 ENGINE = "152.0.4"
+REAL_REPAIR = _launch.repair  # test_container_split tests the real one, with podman faked
 
 
 @pytest.fixture(autouse=True)
@@ -16,6 +18,21 @@ def _hermetic(tmp_path, monkeypatch):
     drawn here must be the same one drawn anywhere."""
     for var in ("XDG_DATA_HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME"):
         monkeypatch.setenv(var, str(tmp_path / var.lower()))
+    # The runtime folder (a profile's control folder) too; the Wayland socket a
+    # launch mounts is faked there.
+    runtime = tmp_path / "xdg_runtime_dir"
+    runtime.mkdir()
+    (runtime / "wayland-0").touch()
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(runtime))
+    monkeypatch.setenv("WAYLAND_DISPLAY", "wayland-0")
+    # No test starts a watcher (a real transient unit), repairs this machine's
+    # podman (the window does at start) or connects to a proxy.
+    monkeypatch.setattr("kiwi_fox.core.launch.ensure_watcher", lambda profile: None)
+    monkeypatch.setattr("kiwi_fox.core.launch.repair", lambda: [])
+    from kiwi_proxy import endpoint
+
+    if hasattr(endpoint, "reachable"):
+        monkeypatch.setattr(endpoint, "reachable", lambda ep, timeout=None: None)
     # kiwi-proxy's exits and their passwords land in the same temporary tree, and
     # kiwi-fox's own (0.3) keyring is never asked: no test touches the real one.
     monkeypatch.setenv("KIWI_PROXY_SECRETS", "file")

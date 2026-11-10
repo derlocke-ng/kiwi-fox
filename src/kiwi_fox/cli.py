@@ -13,7 +13,7 @@ from kiwi_proxy import paths as proxy_paths
 from kiwi_proxy import secrets as proxy_secrets
 
 from . import __version__
-from .core import desktop, geometry, gpu, launch, paths, secrets, store
+from .core import desktop, geometry, gpu, launch, paths, secrets, settings, store
 from .core import snapshots as profile_snapshots
 from .core.engines import fetch as engine_fetch
 from .core.fingerprint import edit, generate, validate, validate_against, webgl
@@ -286,7 +286,13 @@ def cmd_list(a: argparse.Namespace) -> int:
     names = {ex.id: ex.name for ex in exits.list_exits()}
     _p(f"{'NAME':16} {'BROWSER':12} {'EXIT':24} {'COUNTRY':8} {'STATE':9} {'TAGS':16} ID")
     for p in profiles:
-        state = "running" if launch.running(p) else "stopped"
+        state = (
+            "open"
+            if launch.running(p)
+            else "container"
+            if launch.container_running(p)
+            else "stopped"
+        )
         seen = store.seen_exit(p)
         country = (seen.country if seen else None) or "-"
         where = _exit_column(p, names)
@@ -434,6 +440,73 @@ def cmd_run(a: argparse.Namespace) -> int:
         _p(f"browser exited ({code}); gateway released")
         if note := profile_snapshots.after_stop(p):
             _p(f"note: {note}")
+    return 0
+
+
+def cmd_up(a: argparse.Namespace) -> int:
+    """The profile's container without its browser: the exit is up and the
+    browser starts at once later (run, or Start browser in the window)."""
+    p = store.resolve_ref(a.ref)
+    try:
+        res = launch.launch(p, browser=False)
+    except launch.LaunchError as exc:
+        return _fail(str(exc))
+    for note in res.notes:
+        _p(f"note: {note}")
+    _p(f"{p.name}: container {res.browser} running, no browser; kiwi-fox run {p.name} opens it")
+    return 0
+
+
+def cmd_quit(a: argparse.Namespace) -> int:
+    """Close the browser; its container follows unless the preference keeps it."""
+    for ref in a.refs:
+        p = store.resolve_ref(ref)
+        if not launch.running(p):
+            _p(f"{p.name}: no browser open")
+            continue
+        try:
+            launch.quit_browser(p)
+        except launch.LaunchError as exc:
+            return _fail(str(exc))
+        kept = settings.load().keep_container
+        _p(
+            f"{p.name}: browser closing"
+            + ("; the container keeps running" if kept else ", and its container")
+        )
+    return 0
+
+
+def cmd_watch(a: argparse.Namespace) -> int:
+    """Internal: the watcher a start leaves behind (a transient user unit)."""
+    try:
+        p = store.load(a.profile_id)
+    except store.StoreError:
+        return 0
+    return launch.watch(p)
+
+
+def cmd_repair(a: argparse.Namespace) -> int:
+    done = launch.repair()
+    for line in done:
+        _p(line)
+    if not done:
+        _p("nothing to repair")
+    return 0
+
+
+def cmd_prefs(a: argparse.Namespace) -> int:
+    s = settings.load()
+    if a.keep_container is not None:
+        s.keep_container = a.keep_container == "on"
+    if a.repair_on_start is not None:
+        s.repair_on_start = a.repair_on_start == "on"
+    if a.keep_container is not None or a.repair_on_start is not None:
+        settings.save(s)
+        launch.apply_keep_setting()
+    _p(
+        f"when the browser quits  {'keep its container running' if s.keep_container else 'stop its container'}"
+    )
+    _p(f"repair on start         {'on' if s.repair_on_start else 'off'}")
     return 0
 
 
@@ -1516,9 +1589,33 @@ def build_parser() -> argparse.ArgumentParser:
     )
     r.set_defaults(func=cmd_run)
 
-    st = sub.add_parser("stop", help="stop profiles (all when none given)")
+    st = sub.add_parser(
+        "stop", help="stop profiles' containers, browser and all (all when none given)"
+    )
     st.add_argument("refs", nargs="*")
     st.set_defaults(func=cmd_stop)
+
+    up = sub.add_parser("up", help="start a profile's container without its browser")
+    up.add_argument("ref")
+    up.set_defaults(func=cmd_up)
+
+    qu = sub.add_parser("quit", help="close profiles' browsers (the containers follow unless kept)")
+    qu.add_argument("refs", nargs="+")
+    qu.set_defaults(func=cmd_quit)
+
+    rp = sub.add_parser("repair", help="remove containers an unclean stop left, clear stale locks")
+    rp.set_defaults(func=cmd_repair)
+
+    pf = sub.add_parser("prefs", help="show or change Kiwi Fox's preferences")
+    pf.add_argument(
+        "--keep-container", choices=("on", "off"), help="keep the container when its browser quits"
+    )
+    pf.add_argument("--repair-on-start", choices=("on", "off"))
+    pf.set_defaults(func=cmd_prefs)
+
+    wt = sub.add_parser("watch")  # internal: the watcher a start leaves behind
+    wt.add_argument("profile_id")
+    wt.set_defaults(func=cmd_watch)
 
     d = sub.add_parser("delete", help="delete a profile")
     d.add_argument("ref")

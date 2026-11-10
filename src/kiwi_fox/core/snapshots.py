@@ -286,7 +286,11 @@ def restore(profile_id: str, sid: str) -> Profile:
     if here:
         current = store.load(profile_id)
         if launch.running(current):
-            raise RestoreError(f"{current.name} is running; stop it first")
+            raise RestoreError(f"{current.name} is open; close its browser first")
+        if launch.container_running(current):
+            # its container mounts the folder a restore replaces: it would go on
+            # seeing the old one
+            launch.stop(current)
 
     def apply(staging: Path, _meta) -> None:
         incoming = staging / "profile"

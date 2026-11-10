@@ -1,5 +1,37 @@
 # Changelog
 
+## 0.9.0
+
+**The browser and its container, two buttons.** Needs kiwi-proxy 0.8.2.
+
+- **Start browser / Quit browser and Start container / Stop container** on every
+  profile, with "browser open · container running" on its row. The container's
+  first process is now a small supervisor (the launcher, mounted from the app so
+  no image rebuild is needed): it starts the browser, quits it on request, and
+  ends with it unless told to keep running. `kiwi-fox up` starts the container
+  alone, `kiwi-fox quit` closes the browser, `kiwi-fox list` says open, container
+  or stopped.
+- **When the browser quits, its container stops**, and lets go of the exit, which
+  Kiwi Proxy takes down when nothing else uses it. Preferences → General → "When
+  the browser quits" keeps it running instead (`kiwi-fox prefs --keep-container
+  on`).
+- **The same however it was started.** Before, only `kiwi-fox run --wait` tore
+  down: a profile started from the window or the app grid left its container
+  exited and its exit up. Every container now gets a watcher, a transient systemd
+  user unit, that snapshots the profile when its browser closes and removes the
+  container and lets go of the exit when it ends.
+- **Repair on start** (Preferences → General, on): leftovers of an unclean
+  shutdown are removed, stale locks cleared, running containers given a watcher.
+  `kiwi-fox repair` by hand.
+- **Check and repair** in the menu: podman's quick storage check, naming every
+  broken container and whose it is; Repair removes Kiwi's, and others only when
+  you say so.
+- **A dead proxy fails at once:** a refused port in under a second, no answer in
+  five (it took 37 to 52 seconds). The check is kiwi-proxy 0.8.2's.
+- "Open in Kiwi Proxy" in a profile's menu. A restore stops a container that
+  runs without its browser first, so it does not keep the replaced folder.
+- Preferences has a General page now (Ctrl+,), also without snapshots set up.
+
 ## 0.8.0
 
 **Profiles on your other devices.** Profiles go into kiwi-proxy's encrypted

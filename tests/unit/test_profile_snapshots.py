@@ -46,6 +46,7 @@ def _fast(monkeypatch, _gpg_home, tmp_path):
     monkeypatch.setattr(crypt, "S2K_COUNT", 1024)
     monkeypatch.setattr(crypt, "_gpg_home", lambda: contextlib.nullcontext(_gpg_home))
     monkeypatch.setattr(launch, "running", lambda profile: False)
+    monkeypatch.setattr(launch, "container_running", lambda profile: False)
     fox.snap._session.clear()
     Folder.forget_unlocked()
     yield
@@ -234,8 +235,20 @@ def test_restoring_a_running_profile_is_refused(tmp_path, monkeypatch, fp):
     p, _ex = make_profile(fp)
     meta = fox.take(p)
     monkeypatch.setattr(launch, "running", lambda profile: True)
-    with pytest.raises(fox.RestoreError, match="running"):
+    with pytest.raises(fox.RestoreError, match="is open; close its browser first"):
         fox.restore(p.id, meta.id)
+
+
+def test_restoring_stops_a_container_kept_without_its_browser(tmp_path, monkeypatch, fp):
+    device(tmp_path, monkeypatch, "lime")
+    fox.snap.setup(tmp_path / "shared", PASS)
+    p, _ex = make_profile(fp)
+    meta = fox.take(p)
+    monkeypatch.setattr(launch, "container_running", lambda profile: True)
+    stopped = []
+    monkeypatch.setattr(launch, "stop", lambda profile: stopped.append(profile.id))
+    fox.restore(p.id, meta.id)
+    assert stopped == [p.id]
 
 
 def test_an_engine_this_device_lacks_is_named(tmp_path, monkeypatch, fp):

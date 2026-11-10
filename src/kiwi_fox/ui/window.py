@@ -13,7 +13,7 @@ from gi.repository import Adw, Gio, GLib, Gtk  # noqa: E402
 from kiwi_proxy import exits, podman  # noqa: E402
 from kiwi_proxy import paths as proxy_paths  # noqa: E402
 
-from ..core import launch, modules, paths, secrets, store  # noqa: E402
+from ..core import launch, modules, paths, secrets, settings, store  # noqa: E402
 from ..core import snapshots as profile_snapshots  # noqa: E402
 from ..core.engines import TITLES, installed_versions  # noqa: E402
 from ..core.store import grouped_by_tag  # noqa: E402
@@ -36,6 +36,27 @@ if profile_snapshots.available():
     from kiwi_proxy.ui import snapshots as snapshot_ui  # noqa: E402
 else:  # pragma: no cover - kiwi-proxy older than 0.8
     snap = snapshot_ui = None
+try:
+    from kiwi_proxy.ui import storage as storage_ui  # noqa: E402
+except ImportError:  # pragma: no cover - kiwi-proxy older than 0.8.2
+    storage_ui = None
+PROXY_APP_ID = "eu.kiwinetwork.KiwiProxy"
+
+
+def _widen(page: Adw.PreferencesPage, width: int) -> None:
+    """A preferences page's own clamp keeps rows at 600 px; let them grow."""
+    child = page.get_first_child()
+    stack = [child] if child else []
+    while stack:
+        widget = stack.pop()
+        if isinstance(widget, Adw.Clamp):
+            widget.set_maximum_size(width)
+            widget.set_tightening_threshold(width - 200)
+            return
+        sub = widget.get_first_child()
+        while sub is not None:
+            stack.append(sub)
+            sub = sub.get_next_sibling()
 
 
 # A window large enough for the largest dialog (a profile editor is 660×780) to open
@@ -77,6 +98,7 @@ class Window(Adw.ApplicationWindow):
         self.connect("close-request", self._on_close_request)
         self._rows: dict[str, Adw.ActionRow] = {}
         self._busy: set[str] = set()
+        self._busy_what: dict[str, str] = {}  # profile id -> open | quit | up | stop
         # Snapshots: what the folder says about each profile here, and what it
         # holds that is not here; which profiles ran at the last tick (a browser
         # that ended since gets its snapshot).
@@ -96,13 +118,14 @@ class Window(Adw.ApplicationWindow):
         header.pack_start(new_button)
 
         menu = Gio.Menu()
-        if snapshot_ui is not None:
-            menu.append("Preferences", "win.preferences")
+        menu.append("Preferences", "win.preferences")
         menu.append("Browser engines", "win.engines")
         if snapshot_ui is not None:
             menu.append("Snapshot everything now", "win.snapshot-all")
         menu.append("Set up environment", "win.setup")
         menu.append("Check environment", "win.doctor")
+        if storage_ui is not None:
+            menu.append("Check and repair", "win.storage")
         menu.append("Stop everything", "win.stop-all")
         menu_button = Gtk.MenuButton(icon_name="open-menu-symbolic", menu_model=menu)
         header.pack_end(menu_button)
@@ -123,6 +146,7 @@ class Window(Adw.ApplicationWindow):
             )
 
         self.page = Adw.PreferencesPage()
+        _widen(self.page, 900)  # two buttons per row need the room
         # One group per tag (a profile sits under its first tag), the untagged
         # last; a single "Profiles" group while nothing is tagged.
         self._groups: dict[str, Adw.PreferencesGroup] = {}
@@ -174,6 +198,7 @@ class Window(Adw.ApplicationWindow):
             ("stop-all", lambda *_: self._stop_all()),
             ("preferences", lambda *_: self._open_preferences()),
             ("snapshot-all", lambda *_: self._snapshot_all()),
+            ("storage", lambda *_: storage_ui and storage_ui.check_and_repair(self, self.refresh)),
         ):
             action = Gio.SimpleAction.new(name, None)
             action.connect("activate", handler)
@@ -182,6 +207,7 @@ class Window(Adw.ApplicationWindow):
         self.refresh()
         self._check_environment()
         self._was_running = {p.id for p in store.list_profiles() if launch.running(p)}
+        self._repair_on_start()
         self._catch_up()
         GLib.timeout_add_seconds(REFRESH_SECONDS, self._tick)
 
@@ -237,14 +263,20 @@ class Window(Adw.ApplicationWindow):
         row = Adw.ActionRow(title=profile.name, activatable=True)
         row.connect("activated", lambda *_: ProfileDetails(profile, self._after_edit).present(self))
 
-        run_button = Gtk.Button(valign=Gtk.Align.CENTER)
-        run_button.connect("clicked", self._on_toggle, profile)
-        row.add_suffix(run_button)
-        row.run_button = run_button  # type: ignore[attr-defined]
+        browser_button = Gtk.Button(valign=Gtk.Align.CENTER)
+        browser_button.connect("clicked", self._on_browser, profile)
+        row.add_suffix(browser_button)
+        row.browser_button = browser_button  # type: ignore[attr-defined]
+        container_button = Gtk.Button(valign=Gtk.Align.CENTER)
+        container_button.connect("clicked", self._on_container, profile)
+        row.add_suffix(container_button)
+        row.container_button = container_button  # type: ignore[attr-defined]
 
         menu = Gio.Menu()
         menu.append("Details", f"win.details::{profile.id}")
         menu.append("Edit…", f"win.edit::{profile.id}")
+        if profile.exit:
+            menu.append("Open in Kiwi Proxy", "win.open-proxy")
         menu.append("Duplicate", f"win.duplicate::{profile.id}")
         if snapshot_ui is not None:
             menu.append("Snapshots…", f"win.snapshots::{profile.id}")
@@ -260,6 +292,9 @@ class Window(Adw.ApplicationWindow):
     def _ensure_row_actions(self) -> None:
         if self.lookup_action("details"):
             return
+        action = Gio.SimpleAction.new("open-proxy", None)
+        action.connect("activate", lambda *_: self._open_kiwi_proxy())
+        self.add_action(action)
         for name, handler in (
             ("details", self._act_details),
             ("edit", self._act_edit),
@@ -273,7 +308,8 @@ class Window(Adw.ApplicationWindow):
             self.add_action(action)
 
     def _update_row(self, row: Adw.ActionRow, profile) -> None:
-        running = profile.id in self._busy or launch.running(profile)
+        container = launch.container_running(profile)
+        browser = container and launch.running(profile)
         exit_bits = []
         if seen := store.seen_exit(profile):
             exit_bits.append(seen.country or "?")
@@ -283,19 +319,37 @@ class Window(Adw.ApplicationWindow):
         subtitle = f"{TITLES[profile.engine]} · {exit_label(profile)} · {where}"
         if profile.tags:
             subtitle += " · " + " ".join(f"#{t}" for t in profile.tags)
+        state = [
+            "browser open" if browser else "browser closed",
+            "container running" if container else "container stopped",
+        ]
         if note := self._snapshot_note(profile):
-            subtitle += f"\n{note}"
+            state.append(note)
+        subtitle += "\n" + " · ".join(state)
         row.set_subtitle(subtitle)
-        button = row.run_button  # type: ignore[attr-defined]
-        if profile.id in self._busy:
-            button.set_label("Working…")
-            button.set_sensitive(False)
-            return
-        button.set_sensitive(True)
-        button.set_label("Stop" if running else "Launch")
-        for css in ("suggested-action", "destructive-action"):
-            button.remove_css_class(css)
-        button.add_css_class("destructive-action" if running else "suggested-action")
+        row.set_subtitle_lines(0)
+        browser_button = row.browser_button  # type: ignore[attr-defined]
+        container_button = row.container_button  # type: ignore[attr-defined]
+        busy = self._busy_what.get(profile.id) if profile.id in self._busy else None
+        for button in (browser_button, container_button):
+            button.set_sensitive(busy is None)
+            button.remove_css_class("suggested-action")
+        browser_button.set_label(
+            "Working…"
+            if busy in ("open", "quit")
+            else "Quit browser"
+            if browser
+            else "Start browser"
+        )
+        container_button.set_label(
+            "Working…"
+            if busy in ("up", "stop")
+            else "Stop container"
+            if container
+            else "Start container"
+        )
+        if not browser and busy is None:
+            browser_button.add_css_class("suggested-action")
 
     # --------------------------------------------------------------- actions
     def _profile(self, ident: str):
@@ -370,8 +424,14 @@ class Window(Adw.ApplicationWindow):
         self.refresh()
         self._toast(f"Created {profile.name}")
 
-    def _on_toggle(self, _button, profile) -> None:
-        if launch.running(profile) or snapshot_ui is None:
+    def _on_container(self, _button, profile) -> None:
+        self._do(profile, "stop" if launch.container_running(profile) else "up")
+
+    def _on_browser(self, _button, profile) -> None:
+        if launch.running(profile):
+            self._do(profile, "quit")
+            return
+        if snapshot_ui is None:
             self._start_or_stop(profile)
             return
 
@@ -437,23 +497,41 @@ class Window(Adw.ApplicationWindow):
             newer()
 
     def _start_or_stop(self, profile) -> None:
-        running = launch.running(profile)
+        """The browser button, after the look before a start."""
+        self._do(profile, "quit" if launch.running(profile) else "open")
+
+    def _do(self, profile, what: str) -> None:
+        """open | quit (the browser) · up | stop (the container)."""
         self._busy.add(profile.id)
+        self._busy_what[profile.id] = what
         self.refresh(rebuild=False)
 
         def work():
-            if running:
+            if what == "quit":
+                launch.quit_browser(profile)
+                return "quit"
+            if what == "stop":
                 launch.stop(profile)
                 return None
-            return launch.launch(profile)
+            return launch.launch(profile, browser=what == "open")
 
         def done(result) -> None:
             self._busy.discard(profile.id)
+            self._busy_what.pop(profile.id, None)
             self.refresh()
+            if result == "quit":
+                kept = settings.load().keep_container
+                self._toast(
+                    f"Closing {profile.name}" + ("; its container keeps running" if kept else "")
+                )
+                return
             if result is None:
                 self._was_running.discard(profile.id)
-                self._toast(f"Stopped {profile.name}")
+                self._toast(f"Stopped {profile.name}'s container")
                 self._after_stop(profile)
+                return
+            if what == "up":
+                self._toast(f"{profile.name}'s container is running; the browser starts at once")
                 return
             self._was_running.add(profile.id)
             for issue in result.warnings:
@@ -467,10 +545,37 @@ class Window(Adw.ApplicationWindow):
 
         def failed(exc: Exception) -> None:
             self._busy.discard(profile.id)
+            self._busy_what.pop(profile.id, None)
             self.refresh()
-            self._alert(f"Could not launch {profile.name}", str(exc))
+            verb = {"open": "start", "quit": "close", "up": "start", "stop": "stop"}[what]
+            thing = "the browser of" if what in ("open", "quit") else "the container of"
+            self._alert(f"Could not {verb} {thing} {profile.name}", str(exc))
 
         worker.run(work, done, failed)
+
+    def _repair_on_start(self) -> None:
+        if not settings.load().repair_on_start:
+            return
+
+        def done(lines) -> None:
+            for line in lines[:3]:
+                self._toast(line[0].upper() + line[1:])
+            if lines:
+                self.refresh()
+
+        worker.run(launch.repair, done, lambda _exc: None)
+
+    def _open_kiwi_proxy(self) -> None:
+        info = Gio.DesktopAppInfo.new(f"{PROXY_APP_ID}.desktop")
+        try:
+            if info is not None:
+                info.launch([], None)
+            else:
+                import subprocess
+
+                subprocess.Popen(["kiwi-proxy-gui"])  # noqa: S603, S607
+        except Exception:  # noqa: BLE001 - say so
+            self._toast("Kiwi Proxy could not be opened: kiwi install kiwi-proxy")
 
     def _stop_all(self) -> None:
         def work():
@@ -683,8 +788,51 @@ class Window(Adw.ApplicationWindow):
         self._relations = {}
         self.refresh()
 
+    def _general_page(self) -> Adw.PreferencesPage:
+        s = settings.load()
+        page = Adw.PreferencesPage(title="General", icon_name="preferences-system-symbolic")
+        group = Adw.PreferencesGroup(title="Browser and container")
+        quits = Adw.ComboRow(
+            title="When the browser quits",
+            subtitle="A stopped container lets go of its exit; Kiwi Proxy takes the exit "
+            "down when nothing else uses it.",
+            model=Gtk.StringList.new(["Stop its container", "Keep it running"]),
+        )
+        quits.set_subtitle_lines(0)
+        quits.set_selected(1 if s.keep_container else 0)
+
+        def on_quits(row, _param) -> None:
+            cur = settings.load()
+            cur.keep_container = row.get_selected() == 1
+            settings.save(cur)
+            worker.run(launch.apply_keep_setting, lambda _r: None, lambda _e: None)
+
+        quits.connect("notify::selected", on_quits)
+        group.add(quits)
+        repair = Adw.SwitchRow(
+            title="Repair on start",
+            subtitle="Remove this app's containers that an unclean shutdown left broken, "
+            "before anything is started",
+            active=s.repair_on_start,
+        )
+        repair.set_subtitle_lines(0)
+
+        def on_repair(row, _param) -> None:
+            cur = settings.load()
+            cur.repair_on_start = row.get_active()
+            settings.save(cur)
+
+        repair.connect("notify::active", on_repair)
+        group.add(repair)
+        page.add(group)
+        return page
+
     def _open_preferences(self) -> None:
+        general = self._general_page()
         if snapshot_ui is None:
+            dialog = Adw.PreferencesDialog(title="Preferences")
+            dialog.add(general)
+            dialog.present(self)
             return
         page = snapshot_ui.SnapshotsPage(
             "when a profile stops after it ran, and when you change its settings",
@@ -692,7 +840,7 @@ class Window(Adw.ApplicationWindow):
             take_all=self._take_all,
             take_all_text="every stopped profile; a running one is taken when it stops",
         )
-        snapshot_ui.preferences_dialog(page).present(self)
+        snapshot_ui.preferences_dialog(general, page).present(self)
 
     def _take_all(self) -> str:
         taken = skipped = size = 0

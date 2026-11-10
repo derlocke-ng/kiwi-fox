@@ -728,7 +728,9 @@ class ProfileEditor(Adw.Dialog):
         # ------------------------------------------------------------ profile
         group = Adw.PreferencesGroup(
             title="Profile",
-            description="Takes effect at the next launch." if launch.running(profile) else "",
+            description="Takes effect when its container next starts."
+            if launch.container_running(profile)
+            else "",
         )
         self.name_row = Adw.EntryRow(title="Name")
         self.name_row.set_text(profile.name)
