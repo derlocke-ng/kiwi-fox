@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.10.0
+
+**Engine versions.**
+
+- **Browser engines** (the menu) lists every version of Camoufox, Firefox and Tor
+  Browser: installed or not, which profiles use it, Install and Remove, older
+  releases behind an expander, and "Repair search" on a Camoufox build whose
+  address bar cannot search. "Look for new versions" asks the publishers now.
+- **A version in use cannot be removed**; the dialog names the profiles.
+  Installing never removes one.
+- **Per profile, Version… in its menu:** a Firefox or Tor Browser profile follows
+  the newest installed version or is pinned to one; a Camoufox profile moves to
+  another version only when its fingerprint fits it (its user agent moves along).
+  Going back is one more click, and the browser is told the downgrade is meant.
+- **Preferences → Engines:** when a new version is out (tell me and I install it,
+  the default; install it by itself; do nothing), and per engine the version new
+  Camoufox profiles get or unpinned profiles use. Kiwi Fox looks once a day.
+- **Tor Browser** is never offered below the floor the app enforces, and pinning
+  an older one than the newest installed warns that it stands out and misses fixes.
+- New Firefox and Tor Browser profiles follow the newest installed version; they
+  were pinned to the version of the day before. Existing pins stay as they are.
+- Command line: `kiwi-fox engine list --available`, `engine remove`, `engine
+  default`, `engine check`, `engine use PROFILE VERSION|newest`, `prefs
+  --engine-updates tell|auto|off`.
+
 ## 0.9.1
 
 - **Preferences → General, complete:** besides the browser and container, what a

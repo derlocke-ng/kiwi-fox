@@ -13,8 +13,9 @@ from kiwi_proxy import paths as proxy_paths
 from kiwi_proxy import secrets as proxy_secrets
 
 from . import __version__
-from .core import desktop, geometry, gpu, launch, paths, secrets, settings, store
+from .core import desktop, engine_versions, geometry, gpu, launch, paths, secrets, settings, store
 from .core import snapshots as profile_snapshots
+from .core.engines import TITLES, installed_versions
 from .core.engines import fetch as engine_fetch
 from .core.fingerprint import edit, generate, validate, validate_against, webgl
 from .core.fingerprint import windows11 as w11
@@ -115,7 +116,12 @@ def _new_firefox(a: argparse.Namespace, ex) -> int:
         return _fail(
             f"stock Firefox shows this machine's own values, so {', '.join(given)} do not apply"
         )
-    version = a.engine_version or firefox_fetch.latest_installed()
+    # No version given: the profile follows (the default, else the newest installed).
+    if a.engine_version and a.engine_version not in firefox_fetch.installed():
+        return _fail(
+            f"Firefox {a.engine_version} is not installed (kiwi-fox engine fetch --engine firefox {a.engine_version})"
+        )
+    version = a.engine_version or None
     profile = store.create(
         a.name, ex.id if ex else None, None, engine="firefox", engine_version=version
     )
@@ -145,7 +151,9 @@ def _new_torbrowser(a: argparse.Namespace, ex) -> int:
         return _fail(
             f"Tor Browser keeps its own uniform fingerprint, so {', '.join(given)} do not apply"
         )
-    version = a.engine_version or torbrowser_fetch.latest_installed()
+    if a.engine_version and a.engine_version not in torbrowser_fetch.installed():
+        return _fail(f"Tor Browser {a.engine_version} is not installed")
+    version = a.engine_version or None  # None: follows the newest installed
     try:
         profile = store.create(
             a.name, ex.id if ex else None, None, engine="torbrowser", engine_version=version
@@ -185,7 +193,7 @@ def _new_profile(a: argparse.Namespace, ex) -> int:
     if a.engine == "torbrowser":
         return _new_torbrowser(a, ex)
 
-    version = a.engine_version or engine_fetch.preferred()
+    version = a.engine_version or engine_versions.for_new_profile("camoufox")
     if not version:
         return _fail(
             "Camoufox is not installed; run `kiwi-fox setup` first "
@@ -500,13 +508,25 @@ def cmd_prefs(a: argparse.Namespace) -> int:
         s.keep_container = a.keep_container == "on"
     if a.repair_on_start is not None:
         s.repair_on_start = a.repair_on_start == "on"
-    if a.keep_container is not None or a.repair_on_start is not None:
+    if a.engine_updates is not None:
+        s.engine_updates = a.engine_updates
+    if (
+        a.keep_container is not None
+        or a.repair_on_start is not None
+        or a.engine_updates is not None
+    ):
         settings.save(s)
         launch.apply_keep_setting()
     _p(
         f"when the browser quits  {'keep its container running' if s.keep_container else 'stop its container'}"
     )
     _p(f"repair on start         {'on' if s.repair_on_start else 'off'}")
+    words = {
+        "tell": "tell me, and I install it",
+        "auto": "install it by itself",
+        "off": "do nothing",
+    }
+    _p(f"a new engine release    {words[s.engine_updates]}")
     return 0
 
 
@@ -627,6 +647,89 @@ def cmd_engine(a: argparse.Namespace) -> int:
                     )
             except engine_fetch.RepairError as exc:
                 return _fail(str(exc))
+        return 0
+
+    if a.engine_cmd == "list" and a.available:
+        for engine in engine_versions.ENGINES:
+            have = installed_versions(engine)
+            default = engine_versions.default_for(engine)
+            _p(f"{TITLES[engine]}:")
+            for rel in engine_versions.releases(engine, refresh=a.refresh):
+                users = engine_versions.users(engine, rel.version) if rel.version in have else []
+                bits = ["installed" if rel.version in have else "not installed"]
+                if rel.beta:
+                    bits.append("beta")
+                if default == rel.version:
+                    bits.append("default")
+                if users:
+                    bits.append(", ".join(p.name for p in users))
+                _p(f"  {rel.version:12} {' · '.join(bits)}")
+        return 0
+
+    if a.engine_cmd == "remove":
+        try:
+            engine_versions.remove(a.engine, a.version)
+        except engine_versions.VersionError as exc:
+            return _fail(str(exc))
+        _p(f"removed {TITLES[a.engine]} {a.version}")
+        return 0
+
+    if a.engine_cmd == "default":
+        try:
+            engine_versions.set_default(
+                a.engine, "" if a.version in ("auto", "newest") else a.version
+            )
+        except engine_versions.VersionError as exc:
+            return _fail(str(exc))
+        now = engine_versions.default_for(a.engine) or "the newest installed"
+        what = (
+            "new Camoufox profiles get" if a.engine == "camoufox" else "profiles without a pin use"
+        )
+        _p(f"{TITLES[a.engine]}: {what} {now}")
+        return 0
+
+    if a.engine_cmd == "check":
+        found = engine_versions.news(force=True)
+        if not found.news:
+            _p("every engine you use is on its newest release")
+        for item in found.news:
+            if item.installed:
+                _p(f"{TITLES[item.engine]} {item.version}: installed")
+            elif item.error:
+                _p(f"{TITLES[item.engine]} {item.version}: could not install: {item.error}")
+            else:
+                _p(
+                    f"{TITLES[item.engine]} {item.version} is out: kiwi-fox engine fetch --engine {item.engine} {item.version}"
+                )
+        return 0
+
+    if a.engine_cmd == "use":
+        profile = store.resolve_ref(a.ref)
+        try:
+            if profile.engine == "camoufox":
+                if a.version in ("newest", "auto"):
+                    return _fail("a Camoufox profile moves to a version by number")
+                refused, warnings = engine_versions.move(profile, a.version)
+                if refused:
+                    for line in refused:
+                        _p(f"  {line}")
+                    return _fail(
+                        f"{profile.name} stays on its version: its fingerprint would not fit {a.version}"
+                    )
+                _p(f"{profile.name} moved to Camoufox {a.version}")
+            else:
+                version = None if a.version in ("newest", "auto") else a.version
+                profile, warnings = engine_versions.pin(profile, version)
+                now = engine_versions.version_of(profile)
+                _p(
+                    f"{profile.name}: {'pinned to' if version else 'follows, now'} {TITLES[profile.engine]} {now}"
+                )
+        except engine_versions.VersionError as exc:
+            return _fail(str(exc))
+        for line in warnings:
+            _p(f"warning: {line}")
+        if launch.container_running(profile):
+            _p("its container is running: the version applies when it next starts")
         return 0
 
     if a.engine_cmd == "list":
@@ -1611,6 +1714,9 @@ def build_parser() -> argparse.ArgumentParser:
         "--keep-container", choices=("on", "off"), help="keep the container when its browser quits"
     )
     pf.add_argument("--repair-on-start", choices=("on", "off"))
+    pf.add_argument(
+        "--engine-updates", choices=("tell", "auto", "off"), help="a new engine release"
+    )
     pf.set_defaults(func=cmd_prefs)
 
     wt = sub.add_parser("watch")  # internal: the watcher a start leaves behind
@@ -1640,7 +1746,27 @@ def build_parser() -> argparse.ArgumentParser:
     )
     ef.add_argument("--prerelease", action="store_true", help="consider beta releases too")
     ef.add_argument("--force", action="store_true")
-    esub.add_parser("list")
+    el = esub.add_parser(
+        "list", help="installed versions; --available: every release, who uses what"
+    )
+    el.add_argument("--available", action="store_true")
+    el.add_argument("--refresh", action="store_true", help="ask the publishers now, not the cache")
+    erm = esub.add_parser("remove", help="remove an installed version no profile uses")
+    erm.add_argument("version")
+    erm.add_argument("--engine", choices=["camoufox", "firefox", "torbrowser"], default="camoufox")
+    edf = esub.add_parser(
+        "default", help="the version new Camoufox profiles get, or unpinned ones use"
+    )
+    edf.add_argument("version", help="a version, or 'newest' for the engine's own choice")
+    edf.add_argument("--engine", choices=["camoufox", "firefox", "torbrowser"], default="camoufox")
+    esub.add_parser(
+        "check", help="look for new releases now (installs them when the preference says so)"
+    )
+    eu = esub.add_parser(
+        "use", help="pin a profile to a version ('newest' to follow); move a Camoufox one"
+    )
+    eu.add_argument("ref")
+    eu.add_argument("version")
     er = esub.add_parser(
         "repair", help="re-enable address-bar search (edits omni.ja, keeps a backup)"
     )

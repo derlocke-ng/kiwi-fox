@@ -95,6 +95,39 @@ def build_images(progress: Progress | None = None, force: bool = False) -> list[
     return built
 
 
+def prepare_camoufox(version: str, say=lambda _m: None) -> list[str]:
+    """Make an installed Camoufox behave like Firefox (the tweaks, the default
+    search) and give it its GPU probe helpers; what was done. Setup does it, and
+    so does an install from the engines dialog."""
+    steps: list[str] = []
+    engine_dir = engine_fetch.target_dir(version)
+    say("Making the engine behave like Firefox…")
+    applied = []
+    for tweak in engine_fetch.TWEAKS:
+        try:
+            if engine_fetch.apply_tweak(engine_dir, tweak):
+                applied.append(tweak)
+        except engine_fetch.RepairError as exc:
+            steps.append(f"tweak {tweak}: skipped ({exc})")
+    steps.append(f"tweaks: {', '.join(applied) if applied else 'already applied'}")
+
+    try:
+        engine_fetch.set_default_search(engine_dir, "ddg")
+        steps.append("default search: ddg")
+    except engine_fetch.RepairError as exc:
+        steps.append(f"default search: skipped ({exc})")
+
+    say("Installing the GPU probe helpers…")
+    try:
+        added = engine_fetch.install_gl_helpers_from_mozilla(engine_dir, version)
+        # Having the helper says nothing about what it will find; the GPU
+        # measurement does.
+        steps.append(f"gpu helper: {', '.join(added) if added else 'present'}")
+    except engine_fetch.RepairError as exc:
+        steps.append(f"gpu helper: unavailable ({exc})")
+    return steps
+
+
 def run(progress: Progress | None = None, *, engine_version: str | None = None) -> list[str]:
     """Idempotent: safe to run again at any time."""
 
@@ -123,31 +156,7 @@ def run(progress: Progress | None = None, *, engine_version: str | None = None) 
         steps.append(f"engine: camoufox {version} already present")
 
     engine_dir = engine_fetch.target_dir(version)
-
-    say("Making the engine behave like Firefox…")
-    applied = []
-    for tweak in engine_fetch.TWEAKS:
-        try:
-            if engine_fetch.apply_tweak(engine_dir, tweak):
-                applied.append(tweak)
-        except engine_fetch.RepairError as exc:
-            steps.append(f"tweak {tweak}: skipped ({exc})")
-    steps.append(f"tweaks: {', '.join(applied) if applied else 'already applied'}")
-
-    try:
-        engine_fetch.set_default_search(engine_dir, "ddg")
-        steps.append("default search: ddg")
-    except engine_fetch.RepairError as exc:
-        steps.append(f"default search: skipped ({exc})")
-
-    say("Installing the GPU probe helpers…")
-    try:
-        added = engine_fetch.install_gl_helpers_from_mozilla(engine_dir, version)
-        # Having the helper says nothing about what it will find; the measurement
-        # two steps down does.
-        steps.append(f"gpu helper: {', '.join(added) if added else 'present'}")
-    except engine_fetch.RepairError as exc:
-        steps.append(f"gpu helper: unavailable ({exc})")
+    steps += prepare_camoufox(version, say)
 
     say("Checking what the browser will draw with…")
     try:

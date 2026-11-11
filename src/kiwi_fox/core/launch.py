@@ -252,6 +252,13 @@ def browser_spec(
     # The window's app id, so the desktop shows the profile's (or Kiwi Fox's)
     # name and icon instead of "camoufox" and a blank.
     spec.args = [*desktop.window_args(profile), *spec.args]
+    # Back to an older version than the profile last ran (a pin, a move): Firefox
+    # refuses the profile unless told the downgrade is meant.
+    from . import engine_versions
+
+    version = engine_versions.version_of(profile)
+    if version and engine_versions.downgrading(profile, version):
+        spec.args.append("--allow-downgrade")
     if resolv_conf:
         spec.volumes.append((resolv_conf, "/etc/resolv.conf", "ro,z"))
     # The launcher that supervises the browser, and the folder it reports in.

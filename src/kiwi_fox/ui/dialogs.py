@@ -14,7 +14,6 @@ from kiwi_proxy import secrets as proxy_secrets  # noqa: E402
 
 from ..core import geometry, launch, modules, paths, store  # noqa: E402
 from ..core.engines import TITLES, installed_versions  # noqa: E402
-from ..core.engines import fetch as engine_fetch  # noqa: E402
 from ..core.engines.camoufox import webgl_report  # noqa: E402
 from ..core.fingerprint import (  # noqa: E402
     edit,
@@ -618,13 +617,14 @@ class NewProfileDialog(Adw.Dialog):
             if problem := self.graphics.problem():
                 self._say(f"Graphics: {problem}")
                 return
-            version = engine_fetch.preferred()
+            from ..core import engine_versions
+
+            version = engine_versions.for_new_profile("camoufox")
             if not version:
                 self._say("Camoufox is not installed yet — run “Set up environment” first.")
                 return
         else:
-            have = installed_versions(engine)
-            version = have[-1] if have else None
+            version = None  # follows the newest installed (or the Engines default)
 
         country = COUNTRIES[self.country_row.get_selected()]
         country = None if country.startswith("(") else country
@@ -1146,78 +1146,6 @@ class ProfileDetails(Adw.Dialog):
 
         self.close()
         ProfileEditor(self._profile, saved).present(parent)
-
-
-class EnginesDialog(Adw.Dialog):
-    """The browsers on this machine, and getting the ones that are not."""
-
-    def __init__(self, on_setup) -> None:
-        super().__init__(title="Browser engines", content_width=600, content_height=440)
-        self._on_setup = on_setup
-        page = Adw.PreferencesPage()
-        group = Adw.PreferencesGroup(description="Each profile runs one of these")
-        explain(
-            group,
-            "Mounted read-only into the profile's container. Firefox and Tor Browser are "
-            "checked against their publishers' signing keys before they are installed.",
-            app=APP,
-        )
-        self._rows: dict[str, Adw.ActionRow] = {}
-        for engine in ENGINES:
-            row = Adw.ActionRow(title=TITLES[engine], use_markup=False)
-            row.set_subtitle_lines(0)
-            button = Gtk.Button(valign=Gtk.Align.CENTER)
-            button.connect("clicked", self._on_get, engine)
-            row.add_suffix(button)
-            row.button = button  # type: ignore[attr-defined]
-            group.add(row)
-            self._rows[engine] = row
-        page.add(group)
-
-        view = Adw.ToolbarView()
-        view.add_top_bar(Adw.HeaderBar())
-        view.set_content(page)
-        self.set_child(view)
-        self._refresh()
-
-    def _refresh(self) -> None:
-        for engine, row in self._rows.items():
-            have = installed_versions(engine)
-            about = ENGINE_ABOUT[engine]
-            row.set_subtitle(f"{', '.join(have)} installed\n{about}" if have else about)
-            button = row.button  # type: ignore[attr-defined]
-            if engine == "camoufox":
-                # Camoufox arrives with setup, which also adjusts it to behave like Firefox.
-                button.set_label("Set up")
-                button.set_visible(not have)
-            else:
-                button.set_label("Update" if have else "Download")
-            button.set_sensitive(True)
-
-    def _on_get(self, button: Gtk.Button, engine: str) -> None:
-        if engine == "camoufox":
-            self.close()
-            self._on_setup()
-            return
-        from ..core.engines import firefox_fetch, torbrowser_fetch
-
-        fetcher = firefox_fetch if engine == "firefox" else torbrowser_fetch
-        row = self._rows[engine]
-        button.set_sensitive(False)
-        row.set_subtitle("Checking the current release…")
-
-        def progress(done: int, total: int) -> None:
-            if total:
-                GLib.idle_add(row.set_subtitle, f"Downloading {done >> 20} of {total >> 20} MiB…")
-
-        def work():
-            return fetcher.fetch(None, progress=progress)
-
-        def failed(exc: Exception) -> None:
-            self._refresh()
-            row.set_subtitle(f"Could not install {TITLES[engine]}: {exc}")
-
-        worker.run(work, lambda _path: self._refresh(), failed)
 
 
 def _row(title: str, subtitle: str) -> Adw.ActionRow:

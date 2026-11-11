@@ -540,13 +540,71 @@ def test_a_profile_with_a_lost_proxy_opens_and_says_so():
     assert "gone from kiwi-proxy" in editor.status_label.get_text()
 
 
-def test_engines_dialog_offers_each_engine():
-    from kiwi_fox.ui.dialogs import ENGINES, EnginesDialog
+def _engines(monkeypatch, tmp_path):
+    """Firefox 158.0 and 159.0.1 and Camoufox 152.0.4 installed; the publishers
+    list a few more; no network."""
+    from kiwi_fox.core import engine_versions as ev
+    from kiwi_fox.core import paths
 
-    dialog = EnginesDialog(lambda: None)
-    assert list(dialog._rows) == ENGINES
-    labels = {e: row.button.get_label() for e, row in dialog._rows.items()}
-    assert labels == {"camoufox": "Set up", "firefox": "Download", "torbrowser": "Download"}
+    for name, binary in (
+        ("firefox-158.0", "firefox"),
+        ("firefox-159.0.1", "firefox"),
+        ("camoufox-152.0.4", "camoufox"),
+    ):
+        d = paths.engines_dir() / name
+        d.mkdir(parents=True, exist_ok=True)
+        (d / binary).write_text("x")
+    listed = {
+        "camoufox": ["157.0.1", "156.0.1", "152.0.4", "150.0.2", "148.0.1", "146.0"],
+        "firefox": ["160.0", "159.0.1", "158.0"],
+        "torbrowser": ["15.0.2"],
+    }
+    monkeypatch.setattr(
+        ev, "_fetch_releases", lambda engine: [ev.Release(v) for v in listed[engine]]
+    )
+
+
+def test_the_engines_dialog_lists_versions_and_older_ones_behind_an_expander(monkeypatch, tmp_path):
+    from kiwi_fox.ui.engines import EnginesDialog
+
+    _engines(monkeypatch, tmp_path)
+    dialog = EnginesDialog()
+    _pump_until(lambda: dialog._rows)
+    titles = [r.get_title() for r in dialog._rows]
+    assert "157.0.1" in titles and "152.0.4" in titles and "160.0" in titles  # newest + installed
+    expanders = [r for r in dialog._rows if isinstance(r, Adw.ExpanderRow)]
+    assert expanders and "156.0.1" in expanders[0].get_subtitle()
+
+
+def test_a_profile_is_pinned_and_follows_again(monkeypatch, tmp_path):
+    from kiwi_fox.core import engine_versions as ev
+    from kiwi_fox.core import store
+    from kiwi_fox.ui.engines import VersionDialog
+
+    _engines(monkeypatch, tmp_path)
+    p = store.create("ff", _exit("ff-exit").id, None, engine="firefox")
+    assert ev.version_of(p) == "159.0.1"  # follows the newest installed
+    got = []
+    dialog = VersionDialog(p, got.append)
+    checks = list(dialog._iter_checks())
+    assert [c.choice for c in checks if c.get_active()] == [None]
+    next(c for c in checks if c.choice == "158.0").set_active(True)
+    dialog._on_use()
+    _pump_until(lambda: got)
+    assert store.load(p.id).engine_version == "158.0"
+
+
+def test_the_engines_page_says_who_uses_what(monkeypatch, tmp_path):
+    from kiwi_fox.core import store
+    from kiwi_fox.ui.engines import EnginesPage
+
+    _engines(monkeypatch, tmp_path)
+    store.create("ff", _exit("ff-exit").id, None, engine="firefox", engine_version="158.0")
+    page = EnginesPage(lambda: None)
+    _pump_until(lambda: page._built)
+    subtitles = [row.get_subtitle() for _g, row in page._built if isinstance(row, Adw.ActionRow)]
+    assert any("158.0 (1 profile, 1 pinned)" in (s or "") for s in subtitles)
+    assert any((s or "").startswith("160.0 — not installed") for s in subtitles)
 
 
 def test_the_window_opens_large_and_remembers_its_size():

@@ -20,12 +20,12 @@ from ..core.engines import TITLES, installed_versions  # noqa: E402
 from ..core.store import grouped_by_tag  # noqa: E402
 from . import worker  # noqa: E402
 from .dialogs import (  # noqa: E402
-    EnginesDialog,
     NewProfileDialog,
     ProfileDetails,
     ProfileEditor,
     exit_label,
 )
+from .engines import EnginesDialog, EnginesPage, VersionDialog  # noqa: E402
 from .help import APP, explain, widen  # noqa: E402
 
 REFRESH_SECONDS = 4
@@ -178,7 +178,7 @@ class Window(Adw.ApplicationWindow):
 
         for name, handler in (
             ("setup", lambda *_: self._run_setup()),
-            ("engines", lambda *_: EnginesDialog(self._run_setup).present(self)),
+            ("engines", lambda *_: self._open_engines()),
             ("doctor", lambda *_: self._check_environment(announce=True)),
             ("stop-all", lambda *_: self._stop_all()),
             ("preferences", lambda *_: self._open_preferences()),
@@ -193,6 +193,7 @@ class Window(Adw.ApplicationWindow):
         self._check_environment()
         self._was_running = {p.id for p in store.list_profiles() if launch.running(p)}
         self._repair_on_start()
+        self._look_for_engines()
         self._catch_up()
         GLib.timeout_add_seconds(REFRESH_SECONDS, self._tick)
 
@@ -260,6 +261,7 @@ class Window(Adw.ApplicationWindow):
         menu = Gio.Menu()
         menu.append("Details", f"win.details::{profile.id}")
         menu.append("Edit…", f"win.edit::{profile.id}")
+        menu.append("Version…", f"win.version::{profile.id}")
         if profile.exit:
             menu.append("Open in Kiwi Proxy", "win.open-proxy")
         menu.append("Duplicate", f"win.duplicate::{profile.id}")
@@ -283,6 +285,7 @@ class Window(Adw.ApplicationWindow):
         for name, handler in (
             ("details", self._act_details),
             ("edit", self._act_edit),
+            ("version", self._act_version),
             ("duplicate", self._act_duplicate),
             ("delete", self._act_delete),
             ("snapshots", self._act_snapshots),
@@ -354,6 +357,41 @@ class Window(Adw.ApplicationWindow):
             self._poll_snapshots()
 
         worker.run(lambda: profile_snapshots.changed(profile), done, lambda _exc: None)
+
+    def _act_version(self, _action, param) -> None:
+        profile = self._profile(param.get_string())
+        if not profile:
+            return
+
+        def done(warnings) -> None:
+            self.refresh()
+            self._toast(f"{profile.name}: version changed")
+            for line in warnings:
+                self._toast(line)
+
+        VersionDialog(profile, done).present(self)
+
+    def _open_engines(self) -> None:
+        EnginesDialog(self._run_setup, on_changed=self.refresh).present(self)
+
+    def _look_for_engines(self) -> None:
+        """Once a day: new engine releases, as the preference says."""
+        from ..core import engine_versions as ev
+        from ..core.engines import TITLES as ENGINE_TITLES
+
+        def done(found) -> None:
+            for item in found.news:
+                name = f"{ENGINE_TITLES[item.engine]} {item.version}"
+                if item.installed:
+                    self._toast(f"Installed {name}")
+                elif item.error:
+                    self._toast(f"{name} is out; it could not be installed: {item.error}")
+                else:
+                    toast = Adw.Toast(title=f"{name} is out", button_label="Engines…", timeout=0)
+                    toast.connect("button-clicked", lambda *_: self._open_engines())
+                    self.toasts.add_toast(toast)
+
+        worker.run(ev.news, done, lambda _exc: None)
 
     def _act_edit(self, _action, param) -> None:
         if profile := self._profile(param.get_string()):
@@ -878,9 +916,11 @@ class Window(Adw.ApplicationWindow):
 
     def _open_preferences(self) -> None:
         general = self._general_page()
+        engines = EnginesPage(self._open_engines)
         if snapshot_ui is None:
             dialog = Adw.PreferencesDialog(title="Preferences")
             dialog.add(general)
+            dialog.add(engines)
             dialog.present(self)
             return
         page = snapshot_ui.SnapshotsPage(
@@ -889,7 +929,7 @@ class Window(Adw.ApplicationWindow):
             take_all=self._take_all,
             take_all_text="every stopped profile; a running one is taken when it stops",
         )
-        snapshot_ui.preferences_dialog(general, page).present(self)
+        snapshot_ui.preferences_dialog(general, engines, page).present(self)
 
     def _take_all(self) -> str:
         taken = skipped = size = 0

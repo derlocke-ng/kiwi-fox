@@ -35,7 +35,9 @@ class TorBrowser:
     binary = torbrowser_fetch.BINARY
 
     def engine_dir(self, profile: Profile, fp: Fingerprint | None = None) -> Path:
-        version = profile.engine_version or torbrowser_fetch.latest_installed()
+        from ..engine_versions import version_of
+
+        version = version_of(profile)
         if not version:
             raise RuntimeError(
                 "no Tor Browser installed; run `kiwi-fox engine fetch --engine torbrowser`"

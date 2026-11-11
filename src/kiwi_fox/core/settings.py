@@ -25,6 +25,15 @@ class Settings:
     # for no proxy, or "" to leave the choice to the dialog (its first exit).
     new_engine: str = "camoufox"
     new_exit: str = ""
+    # Engine versions (the Engines page): what new Camoufox profiles get, and what
+    # Firefox and Tor Browser profiles without a pin use; "" for the engine's own
+    # choice (the preferred / newest installed).
+    camoufox_default: str = ""
+    firefox_default: str = ""
+    torbrowser_default: str = ""
+    # A new engine release: "tell" (and you install it), "auto" (installed by
+    # itself), "off" (you look yourself).
+    engine_updates: str = "tell"
 
 
 def path():
@@ -38,9 +47,12 @@ def load() -> Settings:
         return Settings()
     known = Settings.__dataclass_fields__
     try:
-        return Settings(**{k: v for k, v in data.items() if k in known})
+        s = Settings(**{k: v for k, v in data.items() if k in known})
     except TypeError:
         return Settings()
+    if s.engine_updates not in ("tell", "auto", "off"):
+        s.engine_updates = "tell"
+    return s
 
 
 def save(s: Settings) -> None:
