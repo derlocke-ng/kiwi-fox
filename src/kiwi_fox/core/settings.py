@@ -21,6 +21,10 @@ class Settings:
     # Before anything starts: remove this app's containers an unclean shutdown
     # left, clear stale profile locks, start a watcher for each running container.
     repair_on_start: bool = True
+    # What the New profile dialog starts with: an engine, and an exit id, "none"
+    # for no proxy, or "" to leave the choice to the dialog (its first exit).
+    new_engine: str = "camoufox"
+    new_exit: str = ""
 
 
 def path():

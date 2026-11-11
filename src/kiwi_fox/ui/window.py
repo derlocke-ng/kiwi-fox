@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 
 import gi
@@ -25,6 +26,7 @@ from .dialogs import (  # noqa: E402
     ProfileEditor,
     exit_label,
 )
+from .help import APP, explain, widen  # noqa: E402
 
 REFRESH_SECONDS = 4
 # How often the snapshot folder is looked at (in window ticks): a sync client
@@ -41,22 +43,6 @@ try:
 except ImportError:  # pragma: no cover - kiwi-proxy older than 0.8.2
     storage_ui = None
 PROXY_APP_ID = "eu.kiwinetwork.KiwiProxy"
-
-
-def _widen(page: Adw.PreferencesPage, width: int) -> None:
-    """A preferences page's own clamp keeps rows at 600 px; let them grow."""
-    child = page.get_first_child()
-    stack = [child] if child else []
-    while stack:
-        widget = stack.pop()
-        if isinstance(widget, Adw.Clamp):
-            widget.set_maximum_size(width)
-            widget.set_tightening_threshold(width - 200)
-            return
-        sub = widget.get_first_child()
-        while sub is not None:
-            stack.append(sub)
-            sub = sub.get_next_sibling()
 
 
 # A window large enough for the largest dialog (a profile editor is 660×780) to open
@@ -127,6 +113,7 @@ class Window(Adw.ApplicationWindow):
         if storage_ui is not None:
             menu.append("Check and repair", "win.storage")
         menu.append("Stop everything", "win.stop-all")
+        menu.append("About Kiwi Fox", "app.about")
         menu_button = Gtk.MenuButton(icon_name="open-menu-symbolic", menu_model=menu)
         header.pack_end(menu_button)
 
@@ -146,7 +133,7 @@ class Window(Adw.ApplicationWindow):
             )
 
         self.page = Adw.PreferencesPage()
-        _widen(self.page, 900)  # two buttons per row need the room
+        widen(self.page)  # two buttons per row need the room
         # One group per tag (a profile sits under its first tag), the untagged
         # last; a single "Profiles" group while nothing is tagged.
         self._groups: dict[str, Adw.PreferencesGroup] = {}
@@ -154,9 +141,7 @@ class Window(Adw.ApplicationWindow):
         self.empty = Adw.StatusPage(
             icon_name="avatar-default-symbolic",
             title="No profiles yet",
-            description="A profile is one identity: its own storage, on a kiwi-proxy exit or "
-            "this machine's own connection, in Camoufox with a frozen Windows fingerprint, "
-            "in stock Firefox, or in Tor Browser.",
+            description="One identity per profile, on its own exit",
         )
         create = Gtk.Button(label="Create a profile", halign=Gtk.Align.CENTER)
         create.add_css_class("suggested-action")
@@ -794,11 +779,15 @@ class Window(Adw.ApplicationWindow):
         group = Adw.PreferencesGroup(title="Browser and container")
         quits = Adw.ComboRow(
             title="When the browser quits",
-            subtitle="A stopped container lets go of its exit; Kiwi Proxy takes the exit "
-            "down when nothing else uses it.",
             model=Gtk.StringList.new(["Stop its container", "Keep it running"]),
         )
-        quits.set_subtitle_lines(0)
+        explain(
+            quits,
+            "A stopped container lets go of its exit; Kiwi Proxy takes the exit down when "
+            "nothing else uses it. A container kept running starts its browser again at once.",
+            app=APP,
+            anchor="browser-and-container",
+        )
         quits.set_selected(1 if s.keep_container else 0)
 
         def on_quits(row, _param) -> None:
@@ -809,13 +798,14 @@ class Window(Adw.ApplicationWindow):
 
         quits.connect("notify::selected", on_quits)
         group.add(quits)
-        repair = Adw.SwitchRow(
-            title="Repair on start",
-            subtitle="Remove this app's containers that an unclean shutdown left broken, "
-            "before anything is started",
-            active=s.repair_on_start,
+        repair = Adw.SwitchRow(title="Repair on start", active=s.repair_on_start)
+        explain(
+            repair,
+            "Before anything starts, remove this app's containers an unclean shutdown "
+            "left, clear stale profile locks, and give running containers their watcher.",
+            app=APP,
+            anchor="browser-and-container",
         )
-        repair.set_subtitle_lines(0)
 
         def on_repair(row, _param) -> None:
             cur = settings.load()
@@ -825,7 +815,66 @@ class Window(Adw.ApplicationWindow):
         repair.connect("notify::active", on_repair)
         group.add(repair)
         page.add(group)
+        page.add(self._new_profiles_group(s))
+        page.add(self._window_group())
         return page
+
+    def _new_profiles_group(self, s) -> Adw.PreferencesGroup:
+        from ..core.engines import TITLES as ENGINE_TITLES
+
+        group = Adw.PreferencesGroup(title="New profiles")
+        engines = ["camoufox", "firefox", "torbrowser"]
+        engine = Adw.ComboRow(
+            title="Engine", model=Gtk.StringList.new([ENGINE_TITLES[e] for e in engines])
+        )
+        engine.set_selected(engines.index(s.new_engine) if s.new_engine in engines else 0)
+
+        def on_engine(row, _param) -> None:
+            cur = settings.load()
+            cur.new_engine = engines[row.get_selected()]
+            settings.save(cur)
+
+        engine.connect("notify::selected", on_engine)
+        group.add(engine)
+        found = sorted(exits.list_exits(), key=lambda e: e.name)
+        choices = [("", "Ask every time"), ("none", "No proxy")] + [(e.id, e.name) for e in found]
+        exit_row = Adw.ComboRow(
+            title="Exit", model=Gtk.StringList.new([label for _k, label in choices])
+        )
+        keys = [k for k, _l in choices]
+        exit_row.set_selected(keys.index(s.new_exit) if s.new_exit in keys else 0)
+
+        def on_exit(row, _param) -> None:
+            cur = settings.load()
+            cur.new_exit = keys[row.get_selected()]
+            settings.save(cur)
+
+        exit_row.connect("notify::selected", on_exit)
+        group.add(exit_row)
+        return group
+
+    def _window_group(self) -> Adw.PreferencesGroup:
+        group = Adw.PreferencesGroup(title="Window")
+        row = Adw.ActionRow(title="Size")
+
+        def show() -> None:
+            w, h, maxed = saved_geometry()
+            row.set_subtitle("maximized" if maxed else f"{w} × {h}, kept when you close it")
+
+        reset = Gtk.Button(label="Reset", valign=Gtk.Align.CENTER)
+
+        def on_reset(*_a) -> None:
+            with contextlib.suppress(OSError):
+                (paths.config_dir() / "window.json").unlink()
+            self.unmaximize()
+            self.set_default_size(*DEFAULT_SIZE)
+            show()
+
+        reset.connect("clicked", on_reset)
+        row.add_suffix(reset)
+        show()
+        group.add(row)
+        return group
 
     def _open_preferences(self) -> None:
         general = self._general_page()

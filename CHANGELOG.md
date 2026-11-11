@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.9.1
+
+- **Preferences → General, complete:** besides the browser and container, what a
+  new profile starts with (engine, and an exit or "Ask every time") and the window
+  size with a Reset.
+- **Short texts, the rest behind a (?)** that opens the explanation and a link to
+  kiwi-network.eu (shared with Kiwi Proxy 0.8.3).
+- The menu in the same order as the other two apps, with About Kiwi Fox; the list
+  of profiles up to 920 px wide.
+
 ## 0.9.0
 
 **The browser and its container, two buttons.** Needs kiwi-proxy 0.8.2.

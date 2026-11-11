@@ -26,19 +26,24 @@ from ..core.fingerprint import (  # noqa: E402
 from ..core.fingerprint import windows11 as w11  # noqa: E402
 from ..core.fingerprint.validator import check_webgl_mode, check_window_fits, errors  # noqa: E402
 from . import worker  # noqa: E402
+from .help import APP, explain  # noqa: E402
 
 COUNTRIES = ["(from the exit)", "DE", "AT", "CH", "NL", "SE", "FR", "FI", "NO", "DK", "GB", "US"]
 
 # The three browsers a profile can run, in the order they are offered.
 ENGINES = ["camoufox", "firefox", "torbrowser"]
 ENGINE_ABOUT = {
-    "camoufox": "A spoofed, frozen Windows 11 machine: websites see an ordinary Windows PC "
-    "with its own region, screen and graphics card.",
-    "firefox": "Stock Firefox, nothing spoofed: websites see this machine's own values. Less "
-    "unique, and nothing faked that could slip.",
-    "torbrowser": "The Tor Browser bundle, unmodified, through the tor module: Tor Browser's "
-    "own uniform fingerprint and a circuit per site.",
+    "camoufox": "a spoofed Windows 11 PC",
+    "firefox": "stock Firefox, nothing spoofed",
+    "torbrowser": "Tor Browser, through the tor module",
 }
+ENGINES_HELP = (
+    "Camoufox: a spoofed, frozen Windows 11 machine; websites see an ordinary Windows "
+    "PC with its own region, screen and graphics card.\n\nFirefox: stock, nothing "
+    "spoofed; websites see this machine's own values. Less unique, and nothing faked "
+    "that could slip.\n\nTor Browser: the bundle, unmodified, through the tor module; "
+    "its own uniform fingerprint and a circuit per site."
+)
 ENGINE_IDENTITY = {
     "firefox": "None — this machine's own Firefox, nothing spoofed",
     "torbrowser": "Tor Browser's own uniform fingerprint, untouched",
@@ -93,9 +98,13 @@ class ExitPicker:
         group.add(self.row)
         self.proxy_row = Adw.ActionRow(
             title="Proxies are defined in Kiwi Proxy",
-            subtitle="A SOCKS5 you were given, or a provider module — Tor, a VPN, 9proxy, "
-            "Mysterium — with its DNS and ad-blocking. Add or change one there; this "
-            "list follows.",
+            subtitle="Add or change one there; this list follows",
+        )
+        explain(
+            self.proxy_row,
+            "A SOCKS5 you were given, or a provider module (Tor, a VPN, 9proxy, "
+            "Mysterium), with its DNS and ad-blocking.",
+            app="kiwi-proxy",
         )
         self.proxy_row.set_subtitle_lines(0)
         open_button = Gtk.Button(label="Open Kiwi Proxy", valign=Gtk.Align.CENTER)
@@ -268,9 +277,14 @@ class GraphicsChooser:
 
         self.exact_row = Adw.SwitchRow(
             title="Show the exact model",
-            subtitle="Off, like every Firefox: websites get the group the card is in. On: "
-            "one extra field names the card itself — only a Firefox with a hidden "
-            "setting changed does that, so it is rarer.",
+            subtitle="off, like every Firefox",
+        )
+        explain(
+            self.exact_row,
+            "Off: websites get the group the card is in, as from every Firefox. On: one "
+            "extra field names the card itself. Only a Firefox with a hidden setting "
+            "changed does that, so it is rarer.",
+            app=APP,
         )
         self.exact_row.set_subtitle_lines(0)
         self.exact_row.connect("notify::active", self._refresh)
@@ -456,12 +470,12 @@ class NewProfileDialog(Adw.Dialog):
         self.engine_row = Adw.ComboRow(title="Browser")
         self.engine_row.set_model(Gtk.StringList.new([TITLES[e] for e in ENGINES]))
         self.engine_row.set_subtitle_lines(0)
+        explain(self.engine_row, ENGINES_HELP, app=APP)
         profile.add(self.engine_row)
         self.engine_state = Adw.ActionRow(title="Installed", use_markup=False)
         profile.add(self.engine_state)
         self.entry_row = Adw.SwitchRow(
-            title="Show in the app grid",
-            subtitle="A desktop entry of its own, so GNOME launches this profile like any app",
+            title="Show in the app grid", subtitle="launch it like any app"
         )
         profile.add(self.entry_row)
         self.tags_row = Adw.EntryRow(title="Tags (comma-separated; the list groups by the first)")
@@ -470,10 +484,13 @@ class NewProfileDialog(Adw.Dialog):
 
         # ------------------------------------------------------------- proxy
         self.exit_group = Adw.PreferencesGroup(
-            title="Proxy",
-            description="Where this profile's traffic leaves. A kiwi-proxy exit is the only "
-            "route the browser has, and every profile on it shares it; with no proxy the "
-            "browser uses this machine's own connection.",
+            title="Proxy", description="Where its traffic leaves"
+        )
+        explain(
+            self.exit_group,
+            "A kiwi-proxy exit is the only route the browser has, and every profile on it "
+            "shares it. With no proxy the browser uses this machine's own connection.",
+            app=APP,
         )
         self.exits = ExitPicker(self.exit_group, self, on_change=self._on_exit)
         page.add(self.exit_group)
@@ -498,10 +515,12 @@ class NewProfileDialog(Adw.Dialog):
         self.identity.add(self.language_row)
         page.add(self.identity)
 
-        self.graphics_group = Adw.PreferencesGroup(
-            title="Graphics",
-            description="Firefox tells a page the series a card belongs to, never the "
-            "card. Can be changed later.",
+        self.graphics_group = Adw.PreferencesGroup(title="Graphics")
+        explain(
+            self.graphics_group,
+            "Firefox tells a page the series a card belongs to, never the card. Can be "
+            "changed later.",
+            app=APP,
         )
         self.graphics = GraphicsChooser(self.graphics_group)
         page.add(self.graphics_group)
@@ -527,7 +546,16 @@ class NewProfileDialog(Adw.Dialog):
         self.set_child(view)
 
         self.engine_row.connect("notify::selected", self._on_engine)
+        from ..core import settings
+
+        prefer = settings.load()
+        if prefer.new_engine in ENGINES:
+            self.select_engine(prefer.new_engine)
         self._on_engine()
+        if prefer.new_exit == "none":
+            self.exits.select(None)
+        elif prefer.new_exit:
+            self.exits.select(prefer.new_exit)
 
     # ------------------------------------------------------------- choices
     @property
@@ -546,10 +574,7 @@ class NewProfileDialog(Adw.Dialog):
         elif engine == "camoufox":
             self.engine_state.set_subtitle("Not yet — run “Set up environment” from the menu")
         else:
-            self.engine_state.set_subtitle(
-                "Not yet — the profile can be created now; download it under "
-                "“Browser engines” in the menu before launching"
-            )
+            self.engine_state.set_subtitle("Not yet — get it under Browser engines in the menu")
         camoufox = engine == "camoufox"
         self.identity.set_visible(camoufox)
         self.graphics_group.set_visible(camoufox)
@@ -753,7 +778,7 @@ class ProfileEditor(Adw.Dialog):
             group.add(self.appearance_row)
         self.entry_row = Adw.SwitchRow(
             title="Show in the app grid",
-            subtitle="A desktop entry of its own, so GNOME launches this profile like any app",
+            subtitle="launch it like any app",
             active=profile.desktop_entry,
         )
         group.add(self.entry_row)
@@ -862,9 +887,11 @@ class ProfileEditor(Adw.Dialog):
         page.add(group)
 
         # ----------------------------------------------------------- graphics
-        group = Adw.PreferencesGroup(
-            title="Graphics",
-            description="Firefox tells a page the series a card belongs to, never the card.",
+        group = Adw.PreferencesGroup(title="Graphics")
+        explain(
+            group,
+            "Firefox tells a page the series a card belongs to, never the card.",
+            app=APP,
         )
         self.graphics = GraphicsChooser(group)
         self.graphics.load(profile, fp)
@@ -872,10 +899,13 @@ class ProfileEditor(Adw.Dialog):
 
         # --------------------------------------------------------- user agent
         group = Adw.PreferencesGroup(
-            title="User agent",
-            description="The engine's own is stock Firefox of its version, on Windows. "
-            "Windows 10 and 11 cannot be told apart here: Firefox sends the same string "
-            "for both.",
+            title="User agent", description="Stock Firefox on Windows by default"
+        )
+        explain(
+            group,
+            "The engine's own is stock Firefox of its version, on Windows. Windows 10 and "
+            "11 cannot be told apart here: Firefox sends the same string for both.",
+            app=APP,
         )
         self.ua_row = Adw.EntryRow(title="User agent")
         self.ua_row.set_text(profile.user_agent or fp.ua)
@@ -1125,10 +1155,12 @@ class EnginesDialog(Adw.Dialog):
         super().__init__(title="Browser engines", content_width=600, content_height=440)
         self._on_setup = on_setup
         page = Adw.PreferencesPage()
-        group = Adw.PreferencesGroup(
-            description="Each profile runs one of these, mounted read-only. Firefox and Tor "
-            "Browser are checked against their publishers' signing keys before they are "
-            "installed."
+        group = Adw.PreferencesGroup(description="Each profile runs one of these")
+        explain(
+            group,
+            "Mounted read-only into the profile's container. Firefox and Tor Browser are "
+            "checked against their publishers' signing keys before they are installed.",
+            app=APP,
         )
         self._rows: dict[str, Adw.ActionRow] = {}
         for engine in ENGINES:

@@ -697,3 +697,39 @@ def test_everything_now_from_the_window(snapshot_device, tmp_path):
     assert "1 profile" in win._take_all() and "1 running" in win._take_all()
     assert len(fox.snap.history("profile", a.id)) >= 1
     assert fox.snap.history("profile", b.id) == []
+
+
+def test_new_profiles_start_from_the_general_preferences():
+    from kiwi_fox.core import settings
+    from kiwi_fox.ui.dialogs import NewProfileDialog
+
+    a = _exit("first-exit")
+    b = _exit("second-exit")
+    dialog = NewProfileDialog(Adw.ApplicationWindow(), lambda p: None)
+    assert dialog.engine == "camoufox" and dialog.exits.selected_id in (a.id, b.id)
+    settings.save(settings.Settings(new_engine="firefox", new_exit=b.id))
+    dialog = NewProfileDialog(Adw.ApplicationWindow(), lambda p: None)
+    assert dialog.engine == "firefox" and dialog.exits.selected_id == b.id
+    settings.save(settings.Settings(new_engine="firefox", new_exit="none"))
+    dialog = NewProfileDialog(Adw.ApplicationWindow(), lambda p: None)
+    assert dialog.exits.selected_id is None
+
+
+def test_the_general_page_has_its_three_groups(monkeypatch):
+    from kiwi_fox.ui.window import Window
+
+    monkeypatch.setattr(Window, "_check_environment", lambda self, announce=False: None)
+    win = Window()
+    page = win._general_page()
+    titles = []
+    child = page.get_first_child()
+    stack = [child]
+    while stack:
+        w = stack.pop()
+        if w is None:
+            continue
+        if isinstance(w, Adw.PreferencesGroup):
+            titles.append(w.get_title())
+        stack += [w.get_first_child(), w.get_next_sibling()]
+    assert set(titles) == {"Browser and container", "New profiles", "Window"}
+    win.destroy()
