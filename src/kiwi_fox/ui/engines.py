@@ -345,7 +345,7 @@ class EnginesPage(Adw.PreferencesPage):
             if newest:
                 latest = Adw.ActionRow(title="Newest release", use_markup=False)
                 latest.set_subtitle(
-                    newest + (" — installed" if newest in have else " — not installed")
+                    newest + (" · installed" if newest in have else " · not installed")
                 )
                 if newest not in have:
                     install = Gtk.Button(label="Install", valign=Gtk.Align.CENTER)
@@ -359,11 +359,11 @@ class EnginesPage(Adw.PreferencesPage):
 
     def _on_install(self, button, engine: str, version: str, row) -> None:
         button.set_sensitive(False)
-        row.set_subtitle(f"{version} — downloading…")
+        row.set_subtitle(f"{version} · downloading…")
 
         def progress(done: int, total: int) -> None:
             if total:
-                GLib.idle_add(row.set_subtitle, f"{version} — {done >> 20} of {total >> 20} MiB…")
+                GLib.idle_add(row.set_subtitle, f"{version} · {done >> 20} of {total >> 20} MiB…")
 
         worker.run(
             lambda: ev.install(engine, version, progress=progress),

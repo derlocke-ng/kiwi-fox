@@ -604,7 +604,7 @@ def test_the_engines_page_says_who_uses_what(monkeypatch, tmp_path):
     _pump_until(lambda: page._built)
     subtitles = [row.get_subtitle() for _g, row in page._built if isinstance(row, Adw.ActionRow)]
     assert any("158.0 (1 profile, 1 pinned)" in (s or "") for s in subtitles)
-    assert any((s or "").startswith("160.0 — not installed") for s in subtitles)
+    assert any((s or "").startswith("160.0 · not installed") for s in subtitles)
 
 
 def test_the_window_opens_large_and_remembers_its_size():
