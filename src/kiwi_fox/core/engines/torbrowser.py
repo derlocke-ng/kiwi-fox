@@ -15,7 +15,7 @@ from pathlib import Path
 
 from ..models import ContainerSpec, Fingerprint, Profile
 from . import torbrowser_fetch
-from .gecko import FORWARDER_HOST, FORWARDER_PORT, base_spec, network_prefs
+from .gecko import FORWARDER_HOST, FORWARDER_PORT, base_spec, is_dark, network_prefs
 
 ENGINE_MOUNT = "/opt/torbrowser"
 IMAGE = "kiwi-fox/browser:latest"
@@ -73,9 +73,15 @@ class TorBrowser:
 
     # ---------------------------------------------------------------- prefs
     def prefs(self, fp: Fingerprint | None, profile: Profile) -> dict[str, object]:
-        # Only the proxy/DNS/leak block, DNS forced remote. No spoofing, no UI,
-        # no fingerprint prefs: Tor Browser's own defaults must stand.
-        return network_prefs(profile, force_remote_dns=True)
+        # Only the proxy/DNS/leak block, DNS forced remote, and the profile's
+        # light or dark for the browser's own window. No spoofing, no fingerprint
+        # prefs: Tor Browser's own defaults must stand. Pages still see light, as
+        # in every Tor Browser (resistFingerprinting reports light).
+        prefs = network_prefs(profile, force_remote_dns=True)
+        dark = is_dark(profile)
+        if dark is not None:
+            prefs["ui.systemUsesDarkTheme"] = int(dark)
+        return prefs
 
     def config(
         self, fp: Fingerprint | None, profile: Profile, exit_ip: str | None
@@ -89,6 +95,7 @@ class TorBrowser:
             "TOR_SOCKS_HOST": SOCKS_HOST,
             "TOR_SOCKS_PORT": SOCKS_PORT,
             "MOZ_ENABLE_WAYLAND": "1",
+            **({"GTK_THEME": "Adwaita:dark"} if is_dark(profile) else {}),
             # Tor Browser's start-tor-browser sets both; keep its shader cache and
             # gsettings out of the read-only bundle.
             "GSETTINGS_BACKEND": "memory",

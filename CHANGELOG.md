@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.10.4
+
+- **Tor Browser in dark.** Its window follows the profile's appearance (the
+  desktop's by default), like the other browsers; pages still see light, as in
+  every Tor Browser. Edit… shows Appearance for Tor Browser profiles too, and
+  `kiwi-fox new --engine torbrowser --appearance` keeps it.
+- Preferences → Engines: "157.0.1 · not installed", the middle dot like the other rows.
+
 ## 0.10.3
 
 - **New Identity, the circuit display and onion-site keys in Tor Browser.** On a

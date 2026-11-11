@@ -772,10 +772,12 @@ class ProfileEditor(Adw.Dialog):
             "Appearance",
             [label for _key, label in APPEARANCES],
             [key for key, _label in APPEARANCES].index(profile.appearance),
-            "light or dark, for the browser and for what pages are told",
+            # Tor Browser: its window only; pages see light, as in every Tor Browser.
+            "the window; pages see light"
+            if engine == "torbrowser"
+            else "light or dark, for the browser and for what pages are told",
         )
-        if engine != "torbrowser":  # Tor Browser keeps its own look
-            group.add(self.appearance_row)
+        group.add(self.appearance_row)
         self.entry_row = Adw.SwitchRow(
             title="Show in the app grid",
             subtitle="launch it like any app",
@@ -1016,8 +1018,7 @@ class ProfileEditor(Adw.Dialog):
             updates["language"] = LANGUAGES[self.language_row.get_selected()][0]
             ua = self.ua_row.get_text().strip()
             updates["user_agent"] = ua if ua and ua != new.ua else None
-        if profile.engine != "torbrowser":
-            updates["appearance"] = APPEARANCES[self.appearance_row.get_selected()][0]
+        updates["appearance"] = APPEARANCES[self.appearance_row.get_selected()][0]
         picked = self.exits.selected
         if profile.engine == "torbrowser":
             try:
@@ -1056,8 +1057,7 @@ class ProfileDetails(Adw.Dialog):
             browser.add(
                 _row("Circuits", "one per first-party site; New Identity and New Circuit work")
             )
-        else:
-            browser.add(_row("Appearance", dict(APPEARANCES)[profile.appearance]))
+        browser.add(_row("Appearance", dict(APPEARANCES)[profile.appearance]))
         browser.add(
             _row("App grid", "yes — a desktop entry launches it" if profile.desktop_entry else "no")
         )

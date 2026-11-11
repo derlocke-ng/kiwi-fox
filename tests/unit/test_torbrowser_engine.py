@@ -80,6 +80,17 @@ def test_prefs_are_leak_only_and_remote_dns():
         assert leak not in prefs
 
 
+@pytest.mark.parametrize(
+    ("appearance", "pref", "theme"), [("dark", 1, "Adwaita:dark"), ("light", 0, None)]
+)
+def test_the_window_follows_the_profiles_light_or_dark(appearance, pref, theme):
+    p = _tb_profile(appearance=appearance)
+    assert TorBrowser().prefs(None, p)["ui.systemUsesDarkTheme"] == pref
+    assert TorBrowser().env(p).get("GTK_THEME") == theme
+    # What pages are told stays Tor Browser's own (resistFingerprinting: light).
+    assert "layout.css.prefers-color-scheme.content-override" not in TorBrowser().prefs(None, p)
+
+
 def test_prefs_force_remote_even_on_a_resolver_exit():
     p = _tb_profile()
     ex = exits.load(p.exit)
@@ -331,3 +342,25 @@ def test_fetch_refuses_a_key_that_is_not_the_pinned_one(signer, monkeypatch, tmp
     with pytest.raises(torbrowser_fetch.FetchError, match="not the pinned"):
         torbrowser_fetch.fetch("15.0.26")
     assert torbrowser_fetch.installed() == []
+
+
+def test_new_keeps_the_appearance_for_tor_browser(capsys):
+    from kiwi_fox import cli
+
+    _tor_exit("tb-exit")
+    assert (
+        cli.main(
+            [
+                "new",
+                "tb-dark",
+                "--exit",
+                "tb-exit",
+                "--engine",
+                "torbrowser",
+                "--appearance",
+                "dark",
+            ]
+        )
+        == 0
+    )
+    assert store.find_by_name("tb-dark").appearance == "dark"

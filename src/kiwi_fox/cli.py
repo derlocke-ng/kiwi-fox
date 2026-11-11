@@ -160,10 +160,10 @@ def _new_torbrowser(a: argparse.Namespace, ex) -> int:
         )
     except store.StoreError as exc:
         return _fail(str(exc))
-    if a.desktop_entry or a.tag:
-        profile.desktop_entry = bool(a.desktop_entry)
-        profile.tags = store.normalize_tags(a.tag or [])
-        store.save(profile)
+    profile.appearance = a.appearance  # the window; pages see light
+    profile.desktop_entry = bool(a.desktop_entry)
+    profile.tags = store.normalize_tags(a.tag or [])
+    store.save(profile)
     _p(f"created {profile.name}  {profile.id}")
     if version:
         _p(f"  engine  : Tor Browser {version}")
