@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.10.6
+
+- A profile on a VPN exit says where it goes ("vpn · 94.16.108.143"), not the
+  exit's internal id; other modules' leases by their own word ("port 60001",
+  "node 0x…"). A full regression on the VM (snapshots, boxes, containers, Tor
+  lists, Tor Browser's control port and New Identity, engine versions) passes
+  against kiwi-proxy 0.16.
+
 ## 0.10.5
 
 - A profile's DNS line names every service its exit asks, as kiwi-proxy 0.14 can

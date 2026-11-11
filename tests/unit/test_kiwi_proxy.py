@@ -512,3 +512,17 @@ def test_the_dns_line_names_every_service():
     assert store.dns_services(one) == "google"
     several = SimpleNamespace(dns=SimpleNamespace(upstream="quad9", services=["quad9", "mullvad"]))
     assert store.dns_services(several) == "the fastest of quad9, mullvad"
+
+
+def test_a_module_exit_is_labelled_the_way_a_person_thinks_of_it():
+    from kiwi_fox.core import modules
+    from kiwi_fox.core.models import Endpoint
+
+    vpn = Endpoint(
+        host="94.16.108.143", port=51820, module="vpn", lease="5c6dcb77-0ffa-45be-a39b-a2906f9c78bb"
+    )
+    assert modules.exit_label(vpn) == "vpn · 94.16.108.143"  # its server, not its id
+    other = Endpoint(
+        host="10.89.231.23", port=60001, module="nomodule", lease="60001", country="de"
+    )
+    assert modules.exit_label(other) == "nomodule · DE · lease 60001"

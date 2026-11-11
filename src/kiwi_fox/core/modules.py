@@ -8,6 +8,7 @@ little kiwi-fox still needs: what is installed, and how a module exit reads.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 from kiwi_proxy import providers
@@ -61,8 +62,23 @@ def exit_label(endpoint: Endpoint) -> str:
     elif endpoint.country:
         bits.append(endpoint.country.upper())
     if endpoint.lease:
-        bits.append(f"lease {endpoint.lease}")
+        if re.fullmatch(
+            r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", endpoint.lease
+        ):
+            # an exit of its own (a VPN: kiwi-proxy keys its tunnel by the exit's
+            # id): the server it connects to says more than the id
+            bits.append(endpoint.host)
+        else:
+            bits.append(f"{_lease_noun(endpoint.module)} {endpoint.lease}")
     return " · ".join(bits)
+
+
+def _lease_noun(module: str) -> str:
+    """What the module calls a lease: "port" (9proxy), "node" (Mysterium)."""
+    try:
+        return providers.lease_noun_of(providers.get_provider(module))
+    except Exception:  # noqa: BLE001 - an older kiwi-proxy, a module not installed
+        return "lease"
 
 
 def install_hint(name: str) -> str:
