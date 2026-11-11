@@ -26,6 +26,33 @@ IMAGE = "kiwi-fox/browser:latest"
 SOCKS_HOST = FORWARDER_HOST
 SOCKS_PORT = str(FORWARDER_PORT)
 
+# kiwi-proxy 0.10's gateway filter for Tor's control port (New Identity, the
+# circuit display, onion-site keys), on the namespace's loopback.
+CONTROL_PORT = "9151"
+
+
+def _tor_control(profile: Profile) -> dict[str, str]:
+    """Tor Browser on its exit's own Tor through the gateway's control filter, when
+    the exit has one (kiwi-proxy 0.10); otherwise proxy-only (no control port),
+    as before. The filter authenticates to Tor itself: the password here is a
+    placeholder it ignores."""
+    try:
+        from kiwi_proxy import exits, selection
+
+        ex = exits.load(profile.exit) if profile.exit else None
+        has = ex is not None and hasattr(selection, "wants_control") and selection.wants_control(ex)
+    except Exception:  # noqa: BLE001 - no exit, an older kiwi-proxy
+        has = False
+    if not has:
+        return {"TOR_PROVIDER": "none"}
+    return {
+        "TOR_SKIP_LAUNCH": "1",
+        "TOR_CONTROL_HOST": "127.0.0.1",
+        "TOR_CONTROL_PORT": CONTROL_PORT,
+        "TOR_CONTROL_PASSWD": "kiwi",
+    }
+
+
 # Only tor exits make sense for Tor Browser; this is the provider module name.
 REQUIRED_MODULE = "tor"
 
@@ -58,9 +85,7 @@ class TorBrowser:
     # ----------------------------------------------------------------- env
     def env(self, profile: Profile) -> dict[str, str]:
         return {
-            # Proxy-only: no bundled tor, no control port. Tor Browser then
-            # applies the SOCKS target below to its prefs at once.
-            "TOR_PROVIDER": "none",
+            **_tor_control(profile),
             "TOR_SOCKS_HOST": SOCKS_HOST,
             "TOR_SOCKS_PORT": SOCKS_PORT,
             "MOZ_ENABLE_WAYLAND": "1",

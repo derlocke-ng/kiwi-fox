@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.10.3
+
+- **New Identity, the circuit display and onion-site keys in Tor Browser.** On a
+  Tor exit with kiwi-proxy 0.10's control filter, Tor Browser talks to its own
+  Tor through the gateway (TOR_SKIP_LAUNCH, 127.0.0.1:9151) instead of running
+  proxy-only; with an older kiwi-proxy it stays proxy-only, as before.
+
 ## 0.10.2
 
 - **An icon per profile in the app grid** (Edit… → Its icon, `kiwi-fox set

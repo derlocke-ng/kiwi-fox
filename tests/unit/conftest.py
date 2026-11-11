@@ -29,6 +29,10 @@ def _hermetic(tmp_path, monkeypatch):
     # podman (the window does at start) or connects to a proxy.
     monkeypatch.setattr("kiwi_fox.core.launch.ensure_watcher", lambda profile: None)
     monkeypatch.setattr("kiwi_fox.core.launch.repair", lambda: [])
+    from kiwi_proxy import gateway as _gw
+
+    if hasattr(_gw, "_ensure_current_gateway_image"):  # never a real image build
+        monkeypatch.setattr(_gw, "_ensure_current_gateway_image", lambda: None)
     from kiwi_proxy import endpoint
 
     if hasattr(endpoint, "reachable"):
