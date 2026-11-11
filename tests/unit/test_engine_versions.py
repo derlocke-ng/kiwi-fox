@@ -91,3 +91,12 @@ def test_a_camoufox_profile_moves_with_its_fingerprint(fp, monkeypatch):
     assert refused == [] and store.fingerprint_of(p).engine_version == "156.0.1"
     with pytest.raises(ev.VersionError, match="not installed"):
         ev.move(p, "999.0")
+
+
+def test_a_tor_browser_folder_without_a_linux_download_is_not_offered(monkeypatch):
+    html = '<a href="16.0.2/">16.0.2/</a> <a href="16.0.1/">16.0.1/</a> <a href="14.5/">14.5/</a>'
+    monkeypatch.setattr(ev, "_get", lambda url, timeout=30: html.encode())
+    monkeypatch.setattr(ev, "_exists", lambda url, timeout=15: "16.0.1" in url)
+    assert [r.version for r in ev._fetch_releases("torbrowser")] == [
+        "16.0.1"
+    ]  # 14.5 is below the floor

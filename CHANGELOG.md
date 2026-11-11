@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.10.1
+
+- **Tor Browser 16.0.2 was offered and its download was a 404.** A version folder
+  on dist.torproject.org need not hold a Linux release; the list now keeps only
+  versions whose Linux download is there (16.0.1 today).
+
 ## 0.10.0
 
 **Engine versions.**

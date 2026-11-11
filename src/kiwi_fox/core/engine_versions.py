@@ -57,6 +57,15 @@ def _get(url: str, timeout: int = 30) -> bytes:
         return resp.read()
 
 
+def _exists(url: str, timeout: int = 15) -> bool:
+    req = urllib.request.Request(url, method="HEAD", headers={"User-Agent": "kiwi-fox"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310
+            return resp.status == 200
+    except Exception:  # noqa: BLE001 - a 404, the network
+        return False
+
+
 def _fetch_releases(engine: str) -> list[Release]:
     if engine == "camoufox":
         out = []
@@ -76,10 +85,24 @@ def _fetch_releases(engine: str) -> list[Release]:
                 out.append(Release(str(info["version"])))
         return out
     if engine == "torbrowser":
+        # A folder on dist.torproject.org is not a Linux release: 16.0.2 had only
+        # other platforms' files and its Linux download was a 404. Keep the ones
+        # whose Linux tarball is there, newest first.
         html = _get(TORBROWSER_DIST).decode("utf-8", "replace")
         found = set(re.findall(r'href="(\d+\.\d+(?:\.\d+)?)/"', html))
         floor = torbrowser_fetch._version_key(torbrowser_fetch.MIN_VERSION)
-        return [Release(v) for v in found if torbrowser_fetch._version_key(v) >= floor]
+        candidates = sorted(
+            (v for v in found if torbrowser_fetch._version_key(v) >= floor),
+            key=torbrowser_fetch._version_key,
+            reverse=True,
+        )
+        out = []
+        for v in candidates:
+            if len(out) >= SHOWN:
+                break
+            if _exists(torbrowser_fetch.TARBALL.format(v=v)):
+                out.append(Release(v))
+        return out
     raise VersionError(f"unknown engine {engine!r}")
 
 
