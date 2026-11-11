@@ -7,7 +7,7 @@ import gi
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 
-from gi.repository import Adw, Gio, GLib, Gtk  # noqa: E402
+from gi.repository import Adw, Gio, GLib, GObject, Gtk  # noqa: E402
 from kiwi_proxy import endpoint as proxy  # noqa: E402
 from kiwi_proxy import exits, providers  # noqa: E402
 from kiwi_proxy import secrets as proxy_secrets  # noqa: E402
@@ -782,6 +782,18 @@ class ProfileEditor(Adw.Dialog):
             active=profile.desktop_entry,
         )
         group.add(self.entry_row)
+        from ..core import icons
+
+        self._icons = icons.choices()
+        self.icon_row = Adw.ComboRow(
+            title="Its icon", model=Gtk.StringList.new([i.title for i in self._icons])
+        )
+        keys = [i.key for i in self._icons]
+        self.icon_row.set_selected(keys.index(profile.icon) if profile.icon in keys else 0)
+        self.entry_row.bind_property(
+            "active", self.icon_row, "sensitive", GObject.BindingFlags.SYNC_CREATE
+        )
+        group.add(self.icon_row)
         self.tags_row = Adw.EntryRow(title="Tags (comma-separated; the list groups by the first)")
         self.tags_row.set_text(", ".join(profile.tags))
         group.add(self.tags_row)
@@ -1014,6 +1026,7 @@ class ProfileEditor(Adw.Dialog):
                 return self._say(str(exc))
         updates["exit"] = picked.id if picked else None
         updates["desktop_entry"] = self.entry_row.get_active()
+        updates["icon"] = self._icons[self.icon_row.get_selected()].key
         updates["tags"] = store.normalize_tags([self.tags_row.get_text()])
 
         saved = profile.model_copy(update=updates)
@@ -1064,7 +1077,10 @@ class ProfileDetails(Adw.Dialog):
             net.add(_row("DNS", "at the exit — Tor resolves every name, .onion included"))
         elif ex is not None:
             blocking = ", ad-blocking" if ex.dns.blocklists else ""
-            net.add(_row("DNS", f"{ex.dns.mode} via {ex.dns.upstream}{blocking}"))
+            if ex.dns.mode == "remote":
+                net.add(_row("DNS", f"at the exit — the proxy resolves every name{blocking}"))
+            else:
+                net.add(_row("DNS", f"a resolver in the gateway, via {ex.dns.upstream}{blocking}"))
         else:
             net.add(_row("DNS", "this machine's own"))
         if e := store.seen_exit(profile):

@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.10.2
+
+- **An icon per profile in the app grid** (Edit… → Its icon, `kiwi-fox set
+  --icon`): Kiwi Fox's own, a colored Kiwi Fox (orange to start with; more go into
+  `data/profile-icons/kiwi-fox-*.svg`), the icon an installed engine ships (your
+  own copy of Firefox's, Camoufox's or Tor Browser's; a copy is kept if the engine
+  goes), or the icon theme's generic browser.
+- **A Tor exit's Only and Never lists** show wherever a profile names its exit;
+  the old single country showed nothing for them.
+- DNS reads in words: "names at the exit", "a resolver in the gateway, via
+  google", not "remote" and "resolver via google" for an exit that does not use it.
+
 ## 0.10.1
 
 - **Tor Browser 16.0.2 was offered and its download was a 404.** A version folder

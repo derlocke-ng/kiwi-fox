@@ -308,7 +308,9 @@ def test_kiwi_fox_makes_no_exits():
     assert not hasattr(store, "create_exit")
     ex = _exit("plain", dns=DnsConfig(mode="remote"))
     p = _firefox(exit_id=ex.id)
-    assert store.describe_exit(store.exit_of(p)).startswith("plain · 10.64.0.1:1080 · dns remote")
+    assert store.describe_exit(store.exit_of(p)).startswith(
+        "plain · 10.64.0.1:1080 · names at the exit"
+    )
 
 
 def test_new_with_an_endpoint_points_at_kiwi_proxy_add(capsys):

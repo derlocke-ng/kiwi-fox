@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import contextlib
 import datetime as dt
+import json
 import uuid
 from pathlib import Path
 
@@ -83,7 +84,8 @@ def describe_exit(ex: Exit | None) -> str:
         return "no proxy — this machine's own connection"
     from . import modules
 
-    bits = [ex.name, modules.exit_label(ex.endpoint), f"dns {ex.dns.mode}"]
+    names = "names at the exit" if ex.dns.mode == "remote" else f"names via {ex.dns.upstream}"
+    bits = [ex.name, modules.exit_label(ex.endpoint), names]
     bits.append(f"lists {','.join(ex.dns.blocklists)}" if ex.dns.blocklists else "no ad-blocking")
     return " · ".join(bits)
 
@@ -211,7 +213,10 @@ def entry_description(profile: Profile) -> str:
 
 
 def save(profile: Profile) -> None:
-    _write_json(paths.profile_dir(profile.id) / "profile.json", profile.model_dump_json(indent=2))
+    data = profile.model_dump(mode="json")
+    if not data.get("icon"):
+        data.pop("icon", None)  # so an older Kiwi Fox still reads the profile
+    _write_json(paths.profile_dir(profile.id) / "profile.json", json.dumps(data, indent=2))
     # The app-grid entry follows the profile: written while it wants one (a rename
     # rewrites it), removed as soon as it does not.
     desktop.sync_entry(profile, entry_description(profile))

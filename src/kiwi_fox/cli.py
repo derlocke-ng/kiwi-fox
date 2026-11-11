@@ -171,8 +171,15 @@ def _new_torbrowser(a: argparse.Namespace, ex) -> int:
         _p("  engine  : Tor Browser (none installed — kiwi-fox engine fetch --engine torbrowser)")
     _p("  identity: Tor Browser's own uniform fingerprint, untouched")
     _p("  circuits: one per first-party site (New Identity / New Circuit work)")
-    if ex.endpoint.country or ex.endpoint.lease:
-        _p("  note    : pinning a Tor exit shrinks your anonymity set")
+    try:
+        from kiwi_proxy import selection
+
+        sel = selection.of(ex.endpoint)
+        chosen = bool(sel and (sel.only_countries or sel.only_nodes))
+    except ImportError:
+        chosen = bool(ex.endpoint.country)
+    if chosen or ex.endpoint.lease:
+        _p("  note    : holding a Tor exit to some countries or relays shrinks your anonymity set")
     _p(f"  exit    : {store.describe_exit(ex)}")
     if profile.desktop_entry:
         _p(f"  app grid: {desktop.entry_path(profile.id)}")
@@ -1158,6 +1165,15 @@ def cmd_set(a: argparse.Namespace) -> int:
         tags = [t for t in tags if t.lower() not in drop]
         if tags != profile.tags:
             updates["tags"] = tags
+    if getattr(a, "icon", None) is not None:
+        from .core import icons
+
+        keys = {i.key for i in icons.choices()}
+        if a.icon not in keys and a.icon != "kiwi-fox":
+            return _fail(
+                f"no icon {a.icon!r}; one of: kiwi-fox, {', '.join(sorted(k for k in keys if k))}"
+            )
+        updates["icon"] = "" if a.icon == "kiwi-fox" else a.icon
     if a.desktop_entry and a.no_desktop_entry:
         return _fail("--desktop-entry and --no-desktop-entry exclude each other")
     if a.desktop_entry and not profile.desktop_entry:
@@ -1813,6 +1829,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     se.add_argument("ref")
     se.add_argument("--name", help="rename the profile")
+    se.add_argument(
+        "--icon",
+        help="its app-grid icon: kiwi-fox, a colored kiwi-fox-…, firefox, camoufox, torbrowser, web-browser",
+    )
     se.add_argument("--screen", metavar="WxH", help="claimed screen, e.g. 2560x1440")
     se.add_argument("--form", choices=["desktop", "laptop"])
     se.add_argument("--cores", type=int, help="logical CPU cores")

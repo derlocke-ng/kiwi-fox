@@ -100,3 +100,27 @@ def test_a_tor_browser_folder_without_a_linux_download_is_not_offered(monkeypatc
     assert [r.version for r in ev._fetch_releases("torbrowser")] == [
         "16.0.1"
     ]  # 14.5 is below the floor
+
+
+def test_a_profile_entry_can_show_an_engines_own_icon(engines):
+    from kiwi_fox.core import desktop, icons
+
+    png = paths.engines_dir() / "firefox-159.0.1" / icons.ENGINE_ICONS["firefox"]
+    png.parent.mkdir(parents=True, exist_ok=True)
+    png.write_bytes(b"\x89PNG fake")
+    keys = [i.key for i in icons.choices()]
+    assert keys[0] == "" and "firefox" in keys and "web-browser" in keys
+    assert "kiwi-fox-orange" in keys
+    ff = store.create("ff", _exit(), None, engine="firefox")
+    ff.icon = "firefox"
+    ff.desktop_entry = True
+    store.save(ff)
+    entry = desktop.entry_path(ff.id).read_text()
+    kept = paths.data_dir() / "icons" / f"{ff.id}.png"
+    assert f"Icon={kept}" in entry and kept.read_bytes() == b"\x89PNG fake"
+    # the engine goes; the copy stays
+    import shutil
+
+    shutil.rmtree(paths.engines_dir() / "firefox-159.0.1")
+    store.save(store.load(ff.id))
+    assert f"Icon={kept}" in desktop.entry_path(ff.id).read_text()

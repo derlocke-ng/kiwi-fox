@@ -50,7 +50,15 @@ def exit_label(endpoint: Endpoint) -> str:
     if not endpoint.module:
         return f"{endpoint.host}:{endpoint.port}"
     bits = [endpoint.module]
-    if endpoint.country:
+    try:  # kiwi-proxy 0.9: a Tor exit's Only and Never lists
+        from kiwi_proxy import selection
+
+        chosen = selection.summary(endpoint)
+    except ImportError:
+        chosen = ""
+    if chosen:
+        bits.append(chosen)
+    elif endpoint.country:
         bits.append(endpoint.country.upper())
     if endpoint.lease:
         bits.append(f"lease {endpoint.lease}")

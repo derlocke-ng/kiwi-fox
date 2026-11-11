@@ -53,6 +53,10 @@ do_install() {
     rm -rf "$LIBDIR/kiwi_fox" "$LIBDIR/containers"
     cp -r "$SRC/src/kiwi_fox" "$LIBDIR/kiwi_fox"
     cp -r "$SRC/containers" "$LIBDIR/containers"
+    # the icons a profile's app-grid entry can pick (colored Kiwi Fox variants)
+    rm -rf "$LIBDIR/data"
+    mkdir -p "$LIBDIR/data"
+    cp -r "$SRC/data/profile-icons" "$LIBDIR/data/profile-icons"
 
     cat > "$KIWI_PREFIX/bin/$APP" <<EOF
 #!/usr/bin/env bash

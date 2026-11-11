@@ -77,6 +77,17 @@ def _exec_arg(value: str) -> str:
     return value
 
 
+def _icon(profile: Profile) -> str:
+    if not profile.icon:
+        return APP_ID
+    from . import icons
+
+    found = icons.entry_icon(profile.icon, profile.id)
+    if found == APP_ID and (kept := icons.kept_icon(profile.id)):
+        return kept  # the engine it came from is gone; the copy stays
+    return found
+
+
 def render_entry(profile: Profile, describe: str) -> str:
     """The entry: the profile's name, the Kiwi Fox icon, `kiwi-fox run <id>`, and a
     Stop action. `describe` is the browser and the proxy, for the comment."""
@@ -91,7 +102,7 @@ def render_entry(profile: Profile, describe: str) -> str:
         "GenericName=Kiwi Fox profile",
         f"Comment={describe} — a Kiwi Fox browser identity",
         f"Exec={cmd} run {profile.id}",
-        f"Icon={APP_ID}",
+        f"Icon={_icon(profile)}",
         "Terminal=false",
         "Categories=Network;WebBrowser;",
         f"Keywords=kiwi;browser;profile;{keyword};",
