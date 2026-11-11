@@ -84,7 +84,7 @@ def describe_exit(ex: Exit | None) -> str:
         return "no proxy — this machine's own connection"
     from . import modules
 
-    names = "names at the exit" if ex.dns.mode == "remote" else f"names via {ex.dns.upstream}"
+    names = "names at the exit" if ex.dns.mode == "remote" else f"names via {dns_services(ex)}"
     bits = [ex.name, modules.exit_label(ex.endpoint), names]
     bits.append(f"lists {','.join(ex.dns.blocklists)}" if ex.dns.blocklists else "no ad-blocking")
     return " · ".join(bits)
@@ -343,3 +343,10 @@ def delete(profile_id: str, *, purge: bool = False) -> None:
 def touch(profile: Profile) -> None:
     profile.last_used = dt.datetime.now(dt.UTC)
     save(profile)
+
+
+def dns_services(ex) -> str:
+    """The DNS services an exit's resolver asks: "quad9" or "the fastest of quad9,
+    mullvad" (kiwi-proxy 0.14 asks several; an older one has one, `upstream`)."""
+    names = list(getattr(ex.dns, "services", None) or [ex.dns.upstream])
+    return names[0] if len(names) == 1 else "the fastest of " + ", ".join(names)

@@ -503,3 +503,12 @@ def test_heal_exits_is_kiwi_proxys_heal_and_never_raises(monkeypatch):
     assert launch.heal_exits() == ["kf-gw-x"]
     monkeypatch.setattr(gateway, "heal", lambda: (_ for _ in ()).throw(RuntimeError("podman gone")))
     assert launch.heal_exits() == []
+
+
+def test_the_dns_line_names_every_service():
+    from types import SimpleNamespace
+
+    one = SimpleNamespace(dns=SimpleNamespace(upstream="google"))  # an older kiwi-proxy
+    assert store.dns_services(one) == "google"
+    several = SimpleNamespace(dns=SimpleNamespace(upstream="quad9", services=["quad9", "mullvad"]))
+    assert store.dns_services(several) == "the fastest of quad9, mullvad"

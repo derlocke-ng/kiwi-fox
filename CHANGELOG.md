@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.10.5
+
+- A profile's DNS line names every service its exit asks, as kiwi-proxy 0.14 can
+  ask several ("via the fastest of quad9, mullvad, cloudflare, google"). Checked
+  on the VM: a Camoufox profile on a VPN exit loads pages through the VPN.
+
 ## 0.10.4
 
 - **Tor Browser in dark.** Its window follows the profile's appearance (the

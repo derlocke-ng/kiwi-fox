@@ -1080,7 +1080,12 @@ class ProfileDetails(Adw.Dialog):
             if ex.dns.mode == "remote":
                 net.add(_row("DNS", f"at the exit — the proxy resolves every name{blocking}"))
             else:
-                net.add(_row("DNS", f"a resolver in the gateway, via {ex.dns.upstream}{blocking}"))
+                net.add(
+                    _row(
+                        "DNS",
+                        f"a resolver in the gateway, via {store.dns_services(ex)}{blocking}",
+                    )
+                )
         else:
             net.add(_row("DNS", "this machine's own"))
         if e := store.seen_exit(profile):
