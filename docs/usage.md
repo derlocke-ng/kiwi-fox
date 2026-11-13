@@ -133,6 +133,19 @@ The app groups the list by each profile's first tag, with the untagged
 profiles last, and shows every tag on the row. A profile's app-grid entry
 lists its tags as keywords, so the app grid finds it by them.
 
+## Colour
+
+Each profile has a colour, so that you can tell profiles apart at a glance.
+Its Kiwi Fox icon is drawn in that colour, in the app's list and in its
+app-grid entry. A new profile gets a colour that no other profile has yet, and
+the first colours it hands out are far apart on the colour wheel: ember,
+ocean, forest, violet and so on. When all 15 colours are taken, a new profile
+gets the one that fewest profiles have. Profiles created before 0.14.0 keep
+Kiwi Fox's own colours until you choose one.
+
+You change the colour in the app, with the **Colour** row in **Edit…**. The
+command line has no option for it.
+
 ## A profile in the app grid
 
 A profile can have a desktop entry of its own, so that your desktop starts it
@@ -154,9 +167,10 @@ its icon and a **Stop** action. Renaming the profile updates it, and deleting
 the profile removes it. `desktop sync` is needed only after the install moved;
 the installer runs it.
 
-The icon is one of `kiwi-fox` (the default), `kiwi-fox-orange`, `firefox`,
-`camoufox`, `torbrowser` or `web-browser`. The three engine icons are copies
-of the icons an installed engine ships.
+The icon is one of `kiwi-fox` (the default: Kiwi Fox in the profile's
+[colour](#colour)), `kiwi-fox-orange`, `firefox`, `camoufox`, `torbrowser` or
+`web-browser`. The three engine icons are copies of the icons an installed
+engine ships.
 
 While the browser runs, its window carries the entry's id, so the dock and the
 overview show the profile's name and icon. A profile without an entry shows as

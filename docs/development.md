@@ -53,8 +53,8 @@ A release is a signed tag. `kiwi` installs an app's newest version tag, so the
 tag is the release. A maintainer makes and signs it; CI holds no key:
 
 ```bash
-git tag -s v0.13.0 -m v0.13.0
-git push origin v0.13.0
+git tag -s v1.2.0 -m v1.2.0
+git push origin v1.2.0
 ```
 
 For a pushed `v*` tag, `.github/workflows/release.yml` checks that the tag is

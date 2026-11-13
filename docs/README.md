@@ -12,7 +12,7 @@ seal a profile's network, belong to
 | Page | For | What it covers |
 |---|---|---|
 | [Install](install.md) | everyone | requirements, install, first setup, hardware rendering, update, uninstall |
-| [Using kiwi-fox](usage.md) | everyone | profiles, the browser and its container, preferences, tags, the app grid, every command |
+| [Using kiwi-fox](usage.md) | everyone | profiles, the browser and its container, preferences, tags and colours, the app grid, every command |
 | [Proxies and provider modules](proxies.md) | everyone | putting a profile on an exit, sharing an exit, Tor, VPN and other modules |
 | [Browser engines](engines.md) | everyone | Camoufox, Firefox and Tor Browser, their downloads and versions |
 | [The Camoufox identity](camoufox.md) | everyone with Camoufox profiles | what a new profile reports, changing it, graphics, language, location |

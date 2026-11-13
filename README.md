@@ -22,7 +22,7 @@ authorised to run, and who do not want these accounts linked to each other
 through the browser fingerprint or the IP address. It is part of the Kiwi
 desktop, next to kiwi-proxy and kiwi-custodia.
 
-- Latest release: **v0.13.0**, in the
+- Latest release: **v0.14.0**, in the
   [Kiwi catalog](https://kiwi-network.eu/docs/desktop/catalogs/) (user scope,
   no root needed)
 - Runs on: Linux with rootless Podman, Python 3.12 or newer and kiwi-proxy.
@@ -63,7 +63,7 @@ Fox** in your app grid, does the same without a terminal.
 | Page | What it covers |
 |---|---|
 | [Install](docs/install.md) | requirements, install, first setup, update, uninstall |
-| [Using kiwi-fox](docs/usage.md) | profiles, the browser and its container, tags, the app grid, every command |
+| [Using kiwi-fox](docs/usage.md) | profiles, the browser and its container, tags and colours, the app grid, every command |
 | [Proxies and provider modules](docs/proxies.md) | putting a profile on an exit, Tor, VPN and other modules |
 | [Browser engines](docs/engines.md) | Camoufox, Firefox and Tor Browser, their versions and downloads |
 | [The Camoufox identity](docs/camoufox.md) | what a new profile reports, and how to change it |
