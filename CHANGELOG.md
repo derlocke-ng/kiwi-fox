@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.10.8
+
+- **Installing an engine from Preferences → Engines hung the page**: it rebuilt
+  itself in a loop and showed the new version only after a restart. The
+  background worker's callbacks now run once, whatever they return.
+
 ## 0.10.7
 
 - A profile whose browser is open on a VPN exit says "VPN not answering" while

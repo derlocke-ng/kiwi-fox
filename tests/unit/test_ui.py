@@ -791,3 +791,52 @@ def test_the_general_page_has_its_three_groups(monkeypatch):
         stack += [w.get_first_child(), w.get_next_sibling()]
     assert set(titles) == {"Browser and container", "New profiles", "Window"}
     win.destroy()
+
+
+def test_installing_from_the_engines_page_shows_it_installed_and_settles(monkeypatch, tmp_path):
+    from gi.repository import Gtk
+
+    from kiwi_fox.core import engine_versions as ev
+    from kiwi_fox.core import paths
+    from kiwi_fox.ui.engines import EnginesPage
+
+    _engines(monkeypatch, tmp_path)
+    collected = []
+
+    def install(engine, version, *, progress=None):
+        (paths.engines_dir() / f"camoufox-{version}").mkdir(parents=True)
+        (paths.engines_dir() / f"camoufox-{version}" / "camoufox").write_text("x")
+        return version
+
+    monkeypatch.setattr(ev, "install", install)
+    page = EnginesPage(lambda: None)
+    _pump_until(lambda: page._built)
+    collect = page._collect
+    monkeypatch.setattr(page, "_collect", lambda: (collected.append(1), collect())[1])
+    latest = next(
+        r for _g, r in page._built if (r.get_subtitle() or "") == "157.0.1 · not installed"
+    )
+    button = latest.get_first_child()
+    stack = [latest]
+    while stack:
+        w = stack.pop()
+        if isinstance(w, Gtk.Button) and w.get_label() == "Install":
+            button = w
+            break
+        c = w.get_first_child()
+        while c is not None:
+            stack.append(c)
+            c = c.get_next_sibling()
+    button.emit("clicked")
+    _pump_until(
+        lambda: any((r.get_subtitle() or "") == "157.0.1 · installed" for _g, r in page._built)
+    )
+    import time
+
+    from gi.repository import GLib
+
+    time.sleep(0.3)
+    ctx = GLib.MainContext.default()
+    while ctx.pending():
+        ctx.iteration(False)
+    assert len(collected) == 1  # once, not in a loop
