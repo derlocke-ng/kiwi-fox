@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.14.0
+
+- **Each profile has a colour.** Its Kiwi Fox icon, in the list and in its
+  app-grid entry, comes in a colour of its own from the kiwi-icons kit (ember,
+  ocean, forest, violet, ...), so profiles can be told apart at a glance. A new
+  profile gets a colour no other profile has, far apart on the colour wheel from
+  the ones before; the profile's dialog has a Colour row to change it. Profiles
+  made before keep Kiwi Fox's own colours until you pick one. The kit
+  (`kiwi_icon.py`) is copied unchanged from github.com/derlocke-ng/kiwi-icons.
+
 ## 0.13.0
 
 - **Location is a per-profile setting, and by default Firefox asks** (New

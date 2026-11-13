@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "kiwi-fox"
-version = "0.13.0"
+version = "0.14.0"
 description = "Isolated browser identities in rootless Podman: Camoufox (a spoofed Windows 11), Firefox or Tor Browser"
 requires-python = ">=3.12"
 license = { text = "GPL-3.0-or-later" }
@@ -19,6 +19,8 @@ where = ["src"]
 [tool.ruff]
 line-length = 100
 target-version = "py312"
+# kiwi_icon.py is the kiwi-icons kit, copied unchanged (github.com/derlocke-ng/kiwi-icons).
+extend-exclude = ["src/kiwi_fox/core/kiwi_icon.py"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]

@@ -6,10 +6,12 @@ ship), or the icon theme's generic browser."""
 from __future__ import annotations
 
 import shutil
+from collections import Counter
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import paths
+from . import kiwi_icon, paths
 from .engines import TITLES, installed_versions
 
 APP_ID = "eu.kiwinetwork.KiwiFox"
@@ -53,6 +55,81 @@ def choices() -> list[Icon]:
                 out.append(Icon(engine, TITLES[engine], file=f))
     out.append(Icon("web-browser", "Generic browser", name="web-browser"))
     return out
+
+
+# ------------------------------------------------------------------- colours
+# A profile's Kiwi Fox in a colour of its own, from the kiwi-icons kit
+# (kiwi_icon.py, copied unchanged from github.com/derlocke-ng/kiwi-icons, kit/),
+# so profiles can be told apart in the app grid, the dash and the list.
+COLORS = list(kiwi_icon.COLORWAYS)
+# The order new ones get them in: far apart on the colour wheel first, so the
+# first few already look different side by side (the kit's own order runs
+# through the warm hues first).
+SPREAD = [
+    c
+    for c in (
+        "ember",
+        "ocean",
+        "forest",
+        "violet",
+        "honey",
+        "teal",
+        "crimson",
+        "indigo",
+        "kiwi",
+        "orchid",
+        "rose",
+        "graphite",
+    )
+    if c in kiwi_icon.COLORWAYS
+] + [
+    c
+    for c in kiwi_icon.COLORWAYS
+    if c
+    not in {
+        "ember",
+        "ocean",
+        "forest",
+        "violet",
+        "honey",
+        "teal",
+        "crimson",
+        "indigo",
+        "kiwi",
+        "orchid",
+        "rose",
+        "graphite",
+    }
+]
+
+
+def color_label(key: str) -> str:
+    return kiwi_icon.COLORWAYS[key]["label"] if key in kiwi_icon.COLORWAYS else "Kiwi Fox's own"
+
+
+def next_color(used: Iterable[str]) -> str:
+    """The first colourway no profile has yet; once every one is taken, the
+    least used."""
+    count = Counter(c for c in used if c)
+    return min(SPREAD, key=lambda c: (count[c], SPREAD.index(c)))
+
+
+def colored_icon(profile) -> Path | None:
+    """The profile's coloured Kiwi Fox as a file, rendered once per colour; None
+    for Kiwi Fox's own."""
+    if profile.color not in kiwi_icon.COLORWAYS:
+        return None
+    folder = paths.data_dir() / "icons"
+    f = folder / f"{profile.id}-{profile.color}.svg"
+    if not f.exists():
+        try:
+            folder.mkdir(parents=True, exist_ok=True)
+            for old in folder.glob(f"{profile.id}-*.svg"):
+                old.unlink()
+            f.write_text(kiwi_icon.render("fox", colorway=profile.color, title=profile.name))
+        except OSError:
+            return None
+    return f
 
 
 def entry_icon(key: str, profile_id: str) -> str:

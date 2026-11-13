@@ -815,6 +815,16 @@ class ProfileEditor(Adw.Dialog):
             "active", self.icon_row, "sensitive", GObject.BindingFlags.SYNC_CREATE
         )
         group.add(self.icon_row)
+        self._colors = ["", *icons.COLORS]
+        self.color_row = Adw.ComboRow(
+            title="Colour",
+            subtitle="its Kiwi Fox, in the list and the app grid",
+            model=Gtk.StringList.new([icons.color_label(c) for c in self._colors]),
+        )
+        self.color_row.set_selected(
+            self._colors.index(profile.color) if profile.color in self._colors else 0
+        )
+        group.add(self.color_row)
         self.tags_row = Adw.EntryRow(title="Tags (comma-separated; the list groups by the first)")
         self.tags_row.set_text(", ".join(profile.tags))
         group.add(self.tags_row)
@@ -1056,6 +1066,7 @@ class ProfileEditor(Adw.Dialog):
         updates["exit"] = picked.id if picked else None
         updates["desktop_entry"] = self.entry_row.get_active()
         updates["icon"] = self._icons[self.icon_row.get_selected()].key
+        updates["color"] = self._colors[self.color_row.get_selected()]
         updates["tags"] = store.normalize_tags([self.tags_row.get_text()])
 
         saved = profile.model_copy(update=updates)

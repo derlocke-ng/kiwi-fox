@@ -212,6 +212,9 @@ class Profile(Strict):
     desktop_entry: bool = False
     # The app-grid entry's icon (kiwi_fox.core.icons): "" is Kiwi Fox's own.
     icon: str = ""
+    # The colour of the profile's Kiwi Fox icon: a kiwi-icons colourway (ember,
+    # ocean, ...), "" for Kiwi Fox's own. A new profile gets one no other has.
+    color: str = ""
     # Free-form tags, for grouping and finding profiles: the GUI groups the list
     # by the first one, `kiwi-fox list --tag` filters, the desktop entry lists
     # them as keywords. Kept as typed, without duplicates (store.normalize_tags).
