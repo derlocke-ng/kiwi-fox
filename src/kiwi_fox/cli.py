@@ -251,6 +251,7 @@ def _new_profile(a: argparse.Namespace, ex) -> int:
     profile.webgl_renderer = a.webgl_renderer if mode == "custom" else None
     profile.appearance = a.appearance
     profile.language = a.language
+    profile.location = a.location
     profile.desktop_entry = bool(a.desktop_entry)
     profile.tags = store.normalize_tags(a.tag or [])
     store.save(profile)
@@ -370,6 +371,10 @@ def cmd_show(a: argparse.Namespace) -> int:
     said = w11.browser_languages(fp.locale, fp.languages, p.language)
     build = w11.firefox_build(fp.locale) if p.language == "local" else "en-US"
     _p(f"  language  {build} Firefox, announcing {w11.accept_language_for(said)}")
+    _p(
+        "  location  "
+        + ("the exit's, to every site that asks" if p.location == "exit" else "Firefox asks")
+    )
     _p(
         f"  machine   {fp.form_factor} / {fp.hardware_concurrency} cores / touch={fp.max_touch_points}"
     )
@@ -1136,6 +1141,8 @@ def cmd_set(a: argparse.Namespace) -> int:
         updates["appearance"] = a.appearance
     if a.language:
         updates["language"] = a.language
+    if getattr(a, "location", None):
+        updates["location"] = a.location
     if a.user_agent:
         updates["user_agent"] = a.user_agent
     if a.default_user_agent:
@@ -1653,6 +1660,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="local (default): the Firefox of the profile's region, in its language; "
         "english: an English Firefox used there",
     )
+    n.add_argument(
+        "--location",
+        choices=["ask", "exit"],
+        default="ask",
+        help="ask (default): Firefox asks a page that wants the location, and Allow "
+        "gives none; exit: every site gets the exit's measured location, unasked",
+    )
     n.add_argument("--webgl-vendor", help="custom mode only")
     n.add_argument("--webgl-renderer", help="custom mode only")
     n.add_argument(
@@ -1843,6 +1857,7 @@ def build_parser() -> argparse.ArgumentParser:
     se.add_argument("--font-add", action="append", metavar="FAMILY")
     se.add_argument("--font-remove", action="append", metavar="FAMILY")
     se.add_argument("--appearance", choices=["host", "light", "dark"])
+    se.add_argument("--location", choices=["ask", "exit"], help="Camoufox: see `new --help`")
     se.add_argument(
         "--language",
         choices=["local", "english"],

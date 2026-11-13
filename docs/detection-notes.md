@@ -29,12 +29,13 @@ and surfaced in the UI.
 | --- | --- |
 | WebGL rendered-pixel output (`readPixels`) | the real GPU and Mesa draw it; identical whichever GPU series is reported (measured) |
 | Hardware performance / timing | the real CPU |
-| `Math.*` precision | identical for every Firefox on earth — carries no information about this machine |
-| AudioContext output | deterministic software DSP — likewise harmless |
+| AudioContext output | deterministic software DSP: identical for everyone, so it cannot tell your profiles apart |
 
-The last two are worth stating because they invert the usual intuition: a value
-identical for everyone cannot distinguish your identities from each other or from
-anyone else.
+`Math.sin`, `cos`, `tan` and `pow` used to be in this table as "identical for
+every Firefox". They are not: Linux's C library and the Windows one round the
+last bit differently for about 1% of inputs, so one call can show that a
+"Windows" browser runs on Linux. Since 0.12, on Camoufox 158, a profile computes
+them as the Windows C library does (see [Camoufox 158](#camoufox-158)).
 
 ## Varies per profile
 
@@ -80,6 +81,31 @@ engine's own schema lists are sent at all.
 | `battery:*`, `canvas:seed`, `fonts:spacing_seed`, `voices:fakeCompletion` | accepted (the seed keys did nothing) | no longer in the schema |
 | GPU probe helper | `glxtest` + `vaapitest`, not shipped | one `gfxtest`, shipped with the engine |
 | `navigator.languages`, `Accept-Language` | set key by key | one `locale:all` list; Firefox derives both from it, with its own q-values (0.9, 0.8, …) |
+
+## Camoufox 158
+
+Camoufox 158 (November 2026) knows how a Windows identity still gives away a
+Linux host, and fixes it, but only through its own launcher. kiwi-fox has its
+own launcher, so since 0.12 it sets the same things itself. Each was measured
+upstream against stock Firefox 158 on Windows 11. The first two were checked
+again on the test VM, and for the third, that its settings are in effect:
+
+- `Math.sin`, `cos`, `tan` and `pow` give the Windows results: 12 of 12 cases
+  where the VM's own C library differs.
+- Media devices have Windows names after a page is allowed to use them
+  ("Microphone Array (Intel® Smart Sound Technology …)"), and none before, as in
+  Firefox. A sound card's microphone and speakers share one `groupId`. The names
+  come from Camoufox's catalogue, drawn once per profile; the number of devices
+  is the profile's own.
+- Middle click does not paste, a double click selects a word with its trailing
+  space, and scrollbars are drawn as Windows 11 draws them.
+- Windows' keyboard shortcuts apply in text fields (Ctrl+Up goes to the start
+  of the line, AltGr reports Alt).
+- The browser does not try IPv6.
+
+Not needed: Camoufox's codec spoofing. The browser already says it can play
+H.264, HEVC, AV1 and AAC (all "probably", measured on the VM), so the host's
+codecs do not show.
 
 ## What each graphics setting reports
 
@@ -179,6 +205,76 @@ Found on the way: a profile given "Lato" cannot be seen to have it. The files ar
 in the image and fontconfig lists them, but no page measurement detects the family.
 Open.
 
+## fingerprint.com and amiunique.org, November 2026
+
+Measured on 2026-11-13 on the test VM: Camoufox 158.0.1, kiwi-fox 0.12, one
+profile per variant, all on one WireGuard exit (a data-centre address in Paris).
+Each profile opened fingerprint.com's playground and amiunique.org. Read the
+numbers with three limits in mind. The VM has a virtual GPU, not a real one. The
+playground says itself that it runs a reduced set of signals and an older
+model. amiunique compares against everything it collected since 2014, so a new
+Firefox version or a Windows 11 value looks rarer there than it is today.
+
+### What fingerprint.com saw
+
+For every variant, fingerprint.com reported no bot, no tampering, no
+anti-detect browser, no virtual machine, no privacy settings and no rare device.
+Its own scores stayed low: tampering 0.02 to 0.07, virtual machine 0.03 to 0.36.
+The highest virtual-machine score came from a profile that names an NVIDIA card
+while the VM draws with its virtual GPU. The rare-device bucket was p95–p99 for
+every variant, so none of the settings below moves it.
+
+The only flags were about the exit: "public VPN IP" and "data centre proxy",
+which make a suspect score of 11. They come from the IP address. No browser
+setting changes them; a residential exit does.
+
+### Profiles on one exit can be linked
+
+fingerprint.com gives every browser a *visitor ID*. Profiles that shared the
+exit got the **same** visitor ID whenever they had the same number of CPU cores:
+four profiles with 6 cores had one ID, two with 12 cores another, the one with
+16 cores its own. A different language, graphics group or machine type did not
+separate them. Canvas did not link them (each profile drew a different canvas).
+
+If two profiles must not be linked, give each its own exit.
+
+### What amiunique.org saw
+
+Every variant was unique among 5.7 million fingerprints, as most real browsers
+are: canvas and the font list alone have no match. The share of browsers with
+the same value shows which settings make a profile rarer than it needs to be:
+
+| Attribute | Value | Same value |
+| --- | --- | --- |
+| Content language | `fr,fr-FR,en-US,en` (a French exit, language "Local") | 0.16% |
+| Content language | `en-US,en` (language "English") | 21.88% |
+| Permissions | geolocation granted (location "The exit's location") | 0.03% |
+| Permissions | geolocation "prompt" (location "Ask") | 9.71% |
+| WebGL renderer | the AMD APU group (the VM's own card) | 0.32% |
+| WebGL renderer | the Intel HD Graphics group | 0.87% |
+| WebGL renderer | the GTX 980 group (an RTX 3060, for example) | 1.55% |
+| CPU cores | 6 / 12 / 16 | 2.09% / 6.74% / 9.58% |
+| Available screen height | 1032 (1080 minus Windows 11's taskbar) | 3.81% |
+
+### What follows
+
+- **Good:** the defaults since 0.12 (1920x1080, Windows 11 core fonts, the
+  Windows behaviour of Camoufox 158). Nothing in the browser itself was flagged.
+- **Good:** location "Ask", the default. A page sees "prompt", like most
+  browsers. If you allow it, the page gets "position unavailable": the browser
+  has no location service to ask (measured), so it cannot reveal where this
+  machine is.
+- **Rare:** location "The exit's location". It hands every site the exit's
+  position without asking. That matches the IP, but almost no browser grants
+  every site its location.
+- **Rare, not flagged:** a language that fits the exit's country but is rare
+  worldwide. "English" is common everywhere; "Local" is what a person in that
+  country would use. Neither was flagged.
+- **Common:** the GTX 980 group is what 45% of Windows Firefox users report, but
+  on a machine that draws with another GPU it raised the virtual-machine score.
+  On real hardware, see "What came back clean" above.
+- **Not good:** profiles that share an exit can be linked (see above).
+
 ## Language
 
 Measured on 156.0.1 against what stock Firefox does (sources:
@@ -222,8 +318,9 @@ region — `en-US, en`, English strings, US formats, the region's timezone.
 
 ## Open
 
-- fingerprint.com with everything above in place (0.1.3 defaults: 1080p, core
-  fonts, a window that fits, language pack) has not been run yet.
+- fingerprint.com with the current defaults has been run on the test VM only
+  (see [fingerprint.com and amiunique.org](#fingerprintcom-and-amiuniqueorg-november-2026)),
+  not on real hardware.
 - Whether "My graphics card" is really treated differently from the identical
   GTX 980 preset: flip that one setting on a profile that is otherwise clean.
 - Stencil mask defaults on 156, and the window-chrome deltas, are the known

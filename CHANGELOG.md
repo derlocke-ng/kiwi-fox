@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.13.0
+
+- **Location is a per-profile setting, and by default Firefox asks** (New
+  profile, Edit, `--location ask|exit`). 0.12 gave every site the exit's
+  position without asking; measured since, a browser that grants every site its
+  location is rare (amiunique: 0.03% for that permission set, 9.71% with
+  "prompt"), and the leak it was meant to prevent does not exist: allowed
+  without a spoofed position, a page gets "position unavailable", because the
+  browser has no location service to ask (checked on the VM). "The exit's
+  location" is still there for whoever wants it.
+- **docs/detection-notes.md** has what fingerprint.com's playground and
+  amiunique.org saw of Camoufox 158 profiles with different settings, what is
+  good and what is not, and corrects an old line: `Math` results differ between
+  Linux and Windows.
+
 ## 0.12.0
 
 - **A Windows identity behaves like Windows, on Linux too** (Camoufox 158;

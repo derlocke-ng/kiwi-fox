@@ -192,6 +192,13 @@ class Profile(Strict):
     # read at each launch — which is what stock Firefox does, and what it cannot
     # do by itself from inside a container.
     appearance: Literal["host", "light", "dark"] = "host"
+    # What a page asking for the location gets (Camoufox). "ask": Firefox asks,
+    # as most browsers do; Allow gives "position unavailable", since the browser
+    # has no location service to ask (measured on the dev VM, 2026-11-13).
+    # "exit": the coordinates the exit was measured at, to every site, without a
+    # prompt (granted): it matches the IP, but a granted location is rare among
+    # browsers (amiunique: 0.03% vs 9.71% for the permission set).
+    location: Literal["ask", "exit"] = "ask"
     # Which Firefox this is, language-wise. "local": the build for the profile's
     # region, announcing that build's own language list and formatting dates the
     # local way. "english": an English Firefox used there — "en-US, en", US formats

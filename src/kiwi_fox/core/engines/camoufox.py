@@ -491,6 +491,8 @@ def exit_coords(profile: Profile, fp: Fingerprint) -> tuple[float, float] | None
 
     from .. import store
 
+    if profile.location != "exit":
+        return None
     find = getattr(endpoint, "coords", None)
     known = engine_keys(paths.engines_dir() / f"camoufox-{fp.engine_version}")
     if find is None or (known is not None and "geolocation:latitude" not in known):

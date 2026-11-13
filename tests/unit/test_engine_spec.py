@@ -659,6 +659,11 @@ def test_geolocation_and_its_permission_come_together_or_not_at_all(
         raising=False,
     )
     cfg, prefs = engine.config(fp, profile, None), engine.prefs(fp, profile)
+    # The default: Firefox asks, nothing is spoofed or granted.
+    assert profile.location == "ask"
+    assert "geolocation:latitude" not in cfg and "permissions.default.geo" not in prefs
+    profile.location = "exit"
+    cfg, prefs = engine.config(fp, profile, None), engine.prefs(fp, profile)
     assert (cfg["geolocation:latitude"], cfg["geolocation:longitude"]) == (52.37, 4.89)
     assert prefs["permissions.default.geo"] == 1
     monkeypatch.setattr(endpoint, "coords", lambda ip: None, raising=False)  # not measured

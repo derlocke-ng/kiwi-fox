@@ -512,6 +512,12 @@ class NewProfileDialog(Adw.Dialog):
         )
         self.language_row.set_model(Gtk.StringList.new([label for _key, label in LANGUAGES]))
         self.identity.add(self.language_row)
+        self.location_row = Adw.ComboRow(
+            title="Location", subtitle="what a page asking for it gets"
+        )
+        self.location_row.set_model(Gtk.StringList.new([label for _key, label in LOCATIONS]))
+        explain(self.location_row, LOCATION_HINT, app=APP)
+        self.identity.add(self.location_row)
         page.add(self.identity)
 
         self.graphics_group = Adw.PreferencesGroup(title="Graphics")
@@ -632,6 +638,7 @@ class NewProfileDialog(Adw.Dialog):
         form = None if form.startswith("(") else form
         graphics = self.graphics.value()
         language = LANGUAGES[self.language_row.get_selected()][0]
+        location = LOCATIONS[self.location_row.get_selected()][0]
         app_grid = self.entry_row.get_active()
         tags = store.normalize_tags([self.tags_row.get_text()])
 
@@ -695,6 +702,7 @@ class NewProfileDialog(Adw.Dialog):
             for field, value in graphics.items():
                 setattr(profile, field, value)
             profile.language = language  # type: ignore[assignment]
+            profile.location = location  # type: ignore[assignment]
             profile.desktop_entry = app_grid
             profile.tags = tags
             store.save(profile)
@@ -716,6 +724,17 @@ LANGUAGES: list[tuple[str, str]] = [
     ("local", "Local"),
     ("english", "English"),
 ]
+
+LOCATIONS: list[tuple[str, str]] = [
+    ("ask", "Ask"),
+    ("exit", "The exit's location"),
+]
+LOCATION_HINT = (
+    "Ask: Firefox asks, as most browsers do; Allow gives no position, since the "
+    "browser has no location service. The exit's location: every site that asks "
+    "gets the city the exit was measured in, without asking. It matches the IP, "
+    "but a browser that grants every site its location is rare."
+)
 
 APPEARANCES: list[tuple[str, str]] = [
     ("host", "Follow this desktop"),
@@ -880,6 +899,14 @@ class ProfileEditor(Adw.Dialog):
         )
         self.language_row.set_subtitle_lines(0)
         group.add(self.language_row)
+        self.location_row = _combo(
+            "Location",
+            [label for _key, label in LOCATIONS],
+            [key for key, _label in LOCATIONS].index(profile.location),
+            "what a page asking for it gets",
+        )
+        explain(self.location_row, LOCATION_HINT, app=APP)
+        group.add(self.location_row)
         page.add(group)
 
         # -------------------------------------------------------------- fonts
@@ -1016,6 +1043,7 @@ class ProfileEditor(Adw.Dialog):
                 return self._say("Not saved: " + "; ".join(i.message for i in hard))
             updates.update(self.graphics.value())
             updates["language"] = LANGUAGES[self.language_row.get_selected()][0]
+            updates["location"] = LOCATIONS[self.location_row.get_selected()][0]
             ua = self.ua_row.get_text().strip()
             updates["user_agent"] = ua if ua and ua != new.ua else None
         updates["appearance"] = APPEARANCES[self.appearance_row.get_selected()][0]
@@ -1058,6 +1086,8 @@ class ProfileDetails(Adw.Dialog):
                 _row("Circuits", "one per first-party site; New Identity and New Circuit work")
             )
         browser.add(_row("Appearance", dict(APPEARANCES)[profile.appearance]))
+        if profile.engine == "camoufox":
+            browser.add(_row("Location", dict(LOCATIONS)[profile.location]))
         browser.add(
             _row("App grid", "yes — a desktop entry launches it" if profile.desktop_entry else "no")
         )
