@@ -1,4 +1,5 @@
-"""The engine must only ever use config keys that exist at the pinned tag."""
+"""The engine must only ever use config keys that exist at the pinned tag (v158.0.1-beta.41;
+older engines get the keys they lack filtered out at launch, see engine_keys)."""
 
 import json
 from pathlib import Path
@@ -9,7 +10,7 @@ from kiwi_proxy import podman
 from kiwi_fox.core.engines.camoufox import CHUNK, Camoufox, chunk_env, fontconfig_xml
 from kiwi_fox.core.fingerprint import fonts
 
-PROPS = Path(__file__).parent / "data" / "camoufox-properties-152.0.4.json"
+PROPS = Path(__file__).parent / "data" / "camoufox-properties-158.0.1.json"
 
 
 @pytest.fixture(scope="module")
@@ -614,3 +615,54 @@ def test_a_missing_language_pack_is_a_note_not_a_failure(fp, profile, tmp_path, 
     monkeypatch.setattr(fetch, "langpack", offline)
     note = launch.install_langpack(profile, fp, tmp_path / "browser-data")
     assert note and "English" in note and "de" in note
+
+
+def test_device_names_match_the_counts_and_stay_per_profile():
+    from kiwi_fox.core.fingerprint.media import device_names
+
+    a = device_names("seed-a", micros=2, webcams=1, speakers=2)
+    assert len(a["mediaDevices:microphoneLabels"]) == 2 == len(a["mediaDevices:microphoneGroups"])
+    assert len(a["mediaDevices:speakerLabels"]) == 2 and len(a["mediaDevices:webcamLabels"]) == 1
+    assert a == device_names("seed-a", micros=2, webcams=1, speakers=2)  # the same every launch
+    # A sound card's microphone and speakers are one piece of hardware: one group.
+    assert a["mediaDevices:microphoneGroups"][0] == a["mediaDevices:speakerGroups"][0]
+    assert all("(" in n for n in a["mediaDevices:speakerLabels"])  # WASAPI friendly names
+    none = device_names("seed-b", micros=0, webcams=0, speakers=1)
+    assert (
+        none["mediaDevices:microphoneLabels"] == [] and len(none["mediaDevices:speakerLabels"]) == 1
+    )
+
+
+def test_a_windows_identity_gets_windows_behaviour_on_linux(engine, fp, profile):
+    from kiwi_fox.core.engines.camoufox import WINDOWS_PARITY_CONFIG, WINDOWS_PARITY_PREFS
+
+    prefs = engine.prefs(fp, profile)
+    assert {k: prefs[k] for k in WINDOWS_PARITY_PREFS} == WINDOWS_PARITY_PREFS
+    cfg = engine.config(fp, profile, None)
+    assert {k: cfg[k] for k in WINDOWS_PARITY_CONFIG} == WINDOWS_PARITY_CONFIG
+
+
+def test_geolocation_and_its_permission_come_together_or_not_at_all(
+    engine, fp, profile, monkeypatch
+):
+    from types import SimpleNamespace
+
+    from kiwi_proxy import endpoint
+
+    from kiwi_fox.core import store
+
+    monkeypatch.setattr(store, "seen_exit", lambda p: SimpleNamespace(ip="198.51.100.7"))
+    monkeypatch.setattr(
+        endpoint,
+        "coords",
+        lambda ip: (52.37, 4.89) if ip == "198.51.100.7" else None,
+        raising=False,
+    )
+    cfg, prefs = engine.config(fp, profile, None), engine.prefs(fp, profile)
+    assert (cfg["geolocation:latitude"], cfg["geolocation:longitude"]) == (52.37, 4.89)
+    assert prefs["permissions.default.geo"] == 1
+    monkeypatch.setattr(endpoint, "coords", lambda ip: None, raising=False)  # not measured
+    cfg, prefs = engine.config(fp, profile, None), engine.prefs(fp, profile)
+    assert "geolocation:latitude" not in cfg and "permissions.default.geo" not in prefs
+    monkeypatch.delattr(endpoint, "coords", raising=False)  # an older kiwi-proxy
+    assert "permissions.default.geo" not in engine.prefs(fp, profile)

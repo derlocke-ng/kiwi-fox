@@ -156,6 +156,10 @@ class Camoufox:
             # Light or dark, for the chrome and for prefers-color-scheme alike —
             # one setting, as on a real machine. Left alone when unknown.
             **({} if dark is None else {"ui.systemUsesDarkTheme": int(dark)}),
+            **WINDOWS_PARITY_PREFS,
+            # The exit's city goes to a site that asks, as for a user who chose
+            # "Always allow"; only together with that position (exit_coords).
+            **({"permissions.default.geo": 1} if exit_coords(profile, fp) else {}),
             # WebGL must work unless the profile turns it off. Without glxtest
             # Firefox cannot probe the GPU, concludes nothing is usable and
             # disables WebGL entirely; force-enabled bypasses that verdict.
@@ -242,6 +246,9 @@ class Camoufox:
             # 154 packaged engines, so shipping our own would only add a profile
             # deviation for nothing. The image still carries it as a fallback.
         }
+        cfg.update(WINDOWS_PARITY_CONFIG)
+        if where := exit_coords(profile, fp):
+            cfg["geolocation:latitude"], cfg["geolocation:longitude"] = where
         if exit_ip:
             # Mullvad's SOCKS5 exits report IPv6 — measured — so the family has
             # to decide the key. Writing a v6 address into webrtc:ipv4 would be
@@ -442,6 +449,56 @@ def webgl_prefs(fp: Fingerprint, profile: Profile) -> dict[str, object]:
     return webgl.firefox_prefs(told.series, vendor=told.vendor, renderer=told.unmasked)
 
 
+# A Windows 11 identity on a Linux host: the answers that come from the host
+# build's platform code, set as stock Firefox on Windows gives them. These are
+# what Camoufox's own launcher sets in that case (docs/HOST-PARITY.md and
+# launcher-constants.json, v158.0.1-beta.41), measured upstream against stock
+# Firefox 158 on Windows 11: Math.sin/cos/tan/pow as the Windows CRT computes
+# them, Windows' middle-click, word selection, fullscreen and scrollbar habits,
+# and its own 17 px scrollbars (overlay, as Windows 11 draws them by default).
+# Prefs an engine does not know are ignored by it.
+WINDOWS_PARITY_PREFS: dict[str, object] = {
+    "javascript.options.use_ucrt_math": True,
+    "layout.word_select.eat_space_to_next_word": True,
+    "general.autoScroll": True,
+    "middlemouse.paste": False,
+    "middlemouse.scrollbarPosition": False,
+    "full-screen-api.transition-duration.enter": "200 200",
+    "full-screen-api.transition-duration.leave": "200 200",
+    "ui.scrollToClick": 0,
+    "slider.snapMultiplier": 6,
+    "layout.scrollbars.click_and_hold_track.continue_to_end": False,
+    "ui.useOverlayScrollbars": 1,
+    "widget.non-native-theme.scrollbar.style": 5,
+}
+# Keys a 156+ engine knows for the same: Windows' keyboard tables (Ctrl+Up to
+# line start, AltGr as keyCode 18, ...), and no IPv6: an exit is IPv4, and a
+# browser trying IPv6 first behaves unlike one on the network it claims.
+WINDOWS_PARITY_CONFIG: dict[str, object] = {
+    "input:windowsKeyboard": True,
+    "network:ipv4Only": True,
+}
+
+
+def exit_coords(profile: Profile, fp: Fingerprint) -> tuple[float, float] | None:
+    """Where the profile's exit was last measured to be (kiwi-proxy 0.20+ keeps
+    the ip-echo answer's coordinates), when the engine can be given a position.
+    Both the position (config) and the permission that hands it out (prefs) are
+    decided here, from the same record, so neither ever comes without the other:
+    a granted permission with no position would let Firefox's own lookup reveal
+    this machine's location."""
+    from kiwi_proxy import endpoint
+
+    from .. import store
+
+    find = getattr(endpoint, "coords", None)
+    known = engine_keys(paths.engines_dir() / f"camoufox-{fp.engine_version}")
+    if find is None or (known is not None and "geolocation:latitude" not in known):
+        return None
+    seen = store.seen_exit(profile)
+    return find(seen.ip) if seen else None
+
+
 def _media_devices(fp: Fingerprint) -> dict[str, object]:
     micros = fp.media_devices.get("micros", 0)
     webcams = fp.media_devices.get("webcams", 0)
@@ -453,11 +510,16 @@ def _media_devices(fp: Fingerprint) -> dict[str, object]:
     # so it is repaired here rather than trusted.
     if webcams and not micros:
         micros = 1
+    speakers = fp.media_devices.get("speakers", 1)
+    from ..fingerprint.media import device_names
+
     return {
         "mediaDevices:enabled": True,
         "mediaDevices:micros": micros,
         "mediaDevices:webcams": webcams,
-        "mediaDevices:speakers": fp.media_devices.get("speakers", 1),
+        "mediaDevices:speakers": speakers,
+        # Without names, a granted page sees the fake engine's own: a spoof tell.
+        **device_names(fp.seed, micros, webcams, speakers),
     }
 
 

@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.12.0
+
+- **A Windows identity behaves like Windows, on Linux too** (Camoufox 158;
+  the settings Camoufox's own launcher uses, measured upstream against stock
+  Firefox 158 on Windows 11): Math.sin/cos/tan/pow as the Windows CRT computes
+  them (checked on the VM: 12 of 12 cases where Linux differs), Windows'
+  keyboard tables, middle click, word selection, fullscreen and scrollbars, and
+  no IPv6. Older engines ignore what they do not know.
+- **Media devices have Windows names after a grant** ("Microphone Array
+  (Realtek(R) Audio)"), drawn per profile from Camoufox's catalogue; a sound
+  card's microphone and speakers share a group. Before a grant, none, as in
+  Firefox. The counts are each profile's own, unchanged.
+- **Geolocation is the exit's.** A site that asks gets the coordinates the
+  exit was measured at, without a prompt, as for a user who chose "Always
+  allow"; never this machine's. The position and the permission come only
+  together: an exit not yet measured gives neither. Needs kiwi-proxy 0.20.
+- Not needed: Camoufox's `media:spoof_codecs`. The browser already claims
+  H.264, HEVC, AV1 and AAC (checked on the VM).
+
 ## 0.11.0
 
 - **Preferences behind a gear, a slim menu.** The gear beside the menu opens
