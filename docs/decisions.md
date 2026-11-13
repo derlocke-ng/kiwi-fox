@@ -116,7 +116,7 @@ is a proxy the user defined once — a SOCKS5 they were given, or a provider mod
 profiles may use one, and so may kiwi-pentesting's tools and applications on the
 host: they share its gateway, one namespace with one exit IP and one set of Tor
 circuits. That was chosen (0.4.0) over a gateway per profile: fewer containers,
-one place a proxy is defined, and identities that must not share an exit simply
+one place a proxy is defined, and identities that must not share an exit
 take different proxies. kiwi-fox never writes an exit's settings — `kiwi-proxy
 set` and kiwi-proxy's editor do (the GUI opens that editor) — and reads them at
 launch, so an edit on either side meets. kiwi-fox makes no exits at all (0.6.0;
