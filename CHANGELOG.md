@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.14.1
+
+- **The documentation follows the kiwi-docs guide**, so kiwi-network.eu can show
+  it: a short README, and pages in `docs/` for installing, using, profiles and
+  engines, Camoufox, proxies, isolation, snapshots and development, with the
+  detection notes and decisions. No change to the app.
+
 ## 0.14.0
 
 - **Each profile has a colour.** Its Kiwi Fox icon, in the list and in its
