@@ -104,19 +104,16 @@ class Window(Adw.ApplicationWindow):
         new_button.connect("clicked", self._on_new)
         header.pack_start(new_button)
 
+        # The menu keeps what acts on the profiles now; engines, snapshots and
+        # setting up, checking and repairing are in Preferences, behind the gear.
         menu = Gio.Menu()
-        menu.append("Preferences", "win.preferences")
-        menu.append("Browser engines", "win.engines")
-        if snapshot_ui is not None:
-            menu.append("Snapshot everything now", "win.snapshot-all")
-        menu.append("Set up environment", "win.setup")
-        menu.append("Check environment", "win.doctor")
-        if storage_ui is not None:
-            menu.append("Check and repair", "win.storage")
         menu.append("Stop everything", "win.stop-all")
         menu.append("About Kiwi Fox", "app.about")
         menu_button = Gtk.MenuButton(icon_name="open-menu-symbolic", menu_model=menu)
         header.pack_end(menu_button)
+        prefs_button = Gtk.Button(icon_name="emblem-system-symbolic", tooltip_text="Preferences")
+        prefs_button.connect("clicked", lambda *_: self._open_preferences())
+        header.pack_end(prefs_button)
 
         self.refresh_button = Gtk.Button(icon_name="view-refresh-symbolic", tooltip_text="Refresh")
         self.refresh_button.connect("clicked", lambda *_: self.refresh())
@@ -925,12 +922,22 @@ class Window(Adw.ApplicationWindow):
         return group
 
     def _open_preferences(self) -> None:
+        from .maintenance import MaintenancePage
+
         general = self._general_page()
         engines = EnginesPage(self._open_engines)
+        jobs = [
+            ("Set up environment", "images, engines, blocklists", "Set up", "win.setup"),
+            ("Check environment", "what is missing", "Check", "win.doctor"),
+        ]
+        if storage_ui is not None:
+            jobs.append(("Check and repair", "Podman's storage, leftovers", "Open…", "win.storage"))
+        upkeep = MaintenancePage(self, jobs)
         if snapshot_ui is None:
             dialog = Adw.PreferencesDialog(title="Preferences")
             dialog.add(general)
             dialog.add(engines)
+            dialog.add(upkeep)
             dialog.present(self)
             return
         page = snapshot_ui.SnapshotsPage(
@@ -939,7 +946,7 @@ class Window(Adw.ApplicationWindow):
             take_all=self._take_all,
             take_all_text="every stopped profile; a running one is taken when it stops",
         )
-        snapshot_ui.preferences_dialog(general, engines, page).present(self)
+        snapshot_ui.preferences_dialog(general, engines, page, upkeep).present(self)
 
     def _take_all(self) -> str:
         taken = skipped = size = 0

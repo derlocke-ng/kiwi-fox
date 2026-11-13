@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.11.0
+
+- **Preferences behind a gear, a slim menu.** The gear beside the menu opens
+  Preferences; the menu keeps **Stop everything** and **About**. Browser engines
+  are the Engines page, "Snapshot everything now" is on the Snapshots page, and
+  Set up environment, Check environment and Check and repair are on a new
+  **Maintenance** page.
+
 ## 0.10.8
 
 - **Installing an engine from Preferences → Engines hung the page**: it rebuilt

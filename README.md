@@ -73,7 +73,7 @@ the exit when the container ends.
 **Repair on start** (Preferences → General, on by default) removes Kiwi Fox's
 containers an unclean shutdown left, clears stale profile locks and gives running
 containers their watcher; `kiwi-fox repair` does it by hand. **Check and repair**
-in the menu runs podman's quick storage check and names every broken container,
+(Preferences → Maintenance) runs podman's quick storage check and names every broken container,
 Kiwi's or not, before anything is removed.
 
 ## Tags
@@ -116,7 +116,7 @@ kiwi-fox snapshot restore work --fetch                 # --fetch installs its en
 ```
 
 - **When:** after a profile ran and stopped, after you change its settings, and
-  whenever you ask (Snapshots… in its menu, or "Snapshot everything now"). Never
+  whenever you ask (Snapshots… in its menu, or Preferences → Snapshots). Never
   while its browser runs.
 - **Starting an older copy asks first.** When the folder holds a newer snapshot
   from another device, Launch (and the app-grid entry) asks: restore and start,
