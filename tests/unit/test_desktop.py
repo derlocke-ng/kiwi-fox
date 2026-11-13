@@ -31,7 +31,8 @@ def test_an_entry_is_written_only_when_asked_and_removed_when_not():
     text = path.read_text()
     assert text.startswith("[Desktop Entry]\nType=Application\nName=work\n")
     assert f"Exec=/home/me/.local/bin/kiwi-fox run {p.id}\n" in text
-    assert f"Icon={APP_ID}\n" in text
+    # A new profile has a colour of its own: its Kiwi Fox in that colour.
+    assert p.color and f"Icon={paths.data_dir()}/icons/{p.id}-{p.color}.svg\n" in text
     assert "Comment=Firefox · work — a Kiwi Fox browser identity\n" in text
     assert f"X-KiwiFox-Profile={p.id}\n" in text
     assert f"StartupWMClass={APP_ID}.profile-{p.id[:8]}\n" in text
@@ -145,3 +146,16 @@ def test_cli_flags_and_the_desktop_command(capsys):
     assert cli.main(["desktop", "sync"]) == 0
     assert desktop.entry_path(p.id).exists()
     assert "entries: 1 (ff)" in capsys.readouterr().out
+
+
+def test_each_new_profile_gets_a_colour_no_other_has():
+    from kiwi_fox.core import icons
+
+    made = [store.create(f"p{i}", None, None, engine="firefox") for i in range(3)]
+    assert len({p.color for p in made}) == 3 and all(p.color in icons.COLORS for p in made)
+    assert [p.color for p in made] == icons.SPREAD[:3]  # far apart first
+    assert icons.next_color([*icons.COLORS, icons.SPREAD[0]]) == icons.SPREAD[1]  # least used
+    svg = icons.colored_icon(made[0]).read_text()
+    assert svg.startswith("<svg") and "p0" in svg
+    made[0].color = ""
+    assert icons.colored_icon(made[0]) is None  # Kiwi Fox's own

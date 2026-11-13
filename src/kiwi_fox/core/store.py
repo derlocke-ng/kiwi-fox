@@ -189,6 +189,9 @@ def create(
         exit=ex.id if ex else None,
         notes=notes,
     )
+    from .icons import next_color
+
+    profile.color = next_color(p.color for p in list_profiles())
     pdir = paths.profile_dir(profile.id)
     for sub in ("browser-data", "downloads"):
         (pdir / sub).mkdir(parents=True, exist_ok=True)
@@ -214,8 +217,9 @@ def entry_description(profile: Profile) -> str:
 
 def save(profile: Profile) -> None:
     data = profile.model_dump(mode="json")
-    if not data.get("icon"):
-        data.pop("icon", None)  # so an older Kiwi Fox still reads the profile
+    for optional in ("icon", "color"):
+        if not data.get(optional):
+            data.pop(optional, None)  # so an older Kiwi Fox still reads the profile
     _write_json(paths.profile_dir(profile.id) / "profile.json", json.dumps(data, indent=2))
     # The app-grid entry follows the profile: written while it wants one (a rename
     # rewrites it), removed as soon as it does not.

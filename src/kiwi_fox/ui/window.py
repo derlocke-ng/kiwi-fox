@@ -253,6 +253,10 @@ class Window(Adw.ApplicationWindow):
     def _build_row(self, profile) -> Adw.ActionRow:
         row = Adw.ActionRow(title=profile.name, activatable=True)
         row.connect("activated", lambda *_: ProfileDetails(profile, self._after_edit).present(self))
+        # Its Kiwi Fox in its own colour: profiles told apart at a glance.
+        mark = Gtk.Image(pixel_size=32)
+        row.add_prefix(mark)
+        row.color_mark = mark  # type: ignore[attr-defined]
 
         browser_button = Gtk.Button(valign=Gtk.Align.CENTER)
         browser_button.connect("clicked", self._on_browser, profile)
@@ -301,6 +305,14 @@ class Window(Adw.ApplicationWindow):
             self.add_action(action)
 
     def _update_row(self, row: Adw.ActionRow, profile) -> None:
+        from ..core import icons
+
+        colored = icons.colored_icon(profile)
+        mark = row.color_mark  # type: ignore[attr-defined]
+        if colored:
+            mark.set_from_file(str(colored))
+        else:
+            mark.set_from_icon_name(icons.APP_ID)
         container = launch.container_running(profile)
         browser = container and launch.running(profile)
         exit_bits = []
