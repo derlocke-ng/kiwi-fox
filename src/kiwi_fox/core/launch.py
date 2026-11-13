@@ -684,6 +684,24 @@ def down(profile: Profile) -> None:
     stop(profile)
 
 
+def silent_exits(profiles) -> set[str]:
+    """The profiles whose VPN exit is up but passes no traffic right now:
+    kiwi-proxy (0.18+) asks the tunnel itself, and the tunnel reconnects by itself
+    once its server answers again. Never raises; a refresh tick asks."""
+    passes = getattr(gateway, "tunnel_passes", None)
+    silent: set[str] = set()
+    if passes is None:
+        return silent
+    for profile in profiles:
+        try:
+            ex = exit_of(profile)
+            if ex is not None and passes(ex) is False:
+                silent.add(profile.id)
+        except Exception:  # noqa: BLE001 - a refresh tick, not a command
+            continue
+    return silent
+
+
 def heal_exits() -> list[str]:
     """kiwi-proxy's own recovery, asked for from kiwi-fox's refresh while windows
     are open: a tunnel node that failed closed (a Mysterium session ended) is

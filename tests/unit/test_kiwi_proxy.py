@@ -505,6 +505,24 @@ def test_heal_exits_is_kiwi_proxys_heal_and_never_raises(monkeypatch):
     assert launch.heal_exits() == []
 
 
+def test_silent_exits_are_the_vpn_exits_kiwi_proxy_says_pass_nothing(monkeypatch):
+    from types import SimpleNamespace
+
+    vpn, other, plain, broken = (SimpleNamespace(id=i) for i in ("p1", "p2", "p3", "p4"))
+    exits_of = {"p1": "ex-vpn", "p2": "ex-ok", "p3": None}
+
+    def exit_of(profile):
+        if profile.id == "p4":
+            raise launch.LaunchError("gone")
+        return exits_of[profile.id]
+
+    monkeypatch.setattr(launch, "exit_of", exit_of)
+    monkeypatch.setattr(gateway, "tunnel_passes", lambda ex: {"ex-vpn": False, "ex-ok": True}[ex])
+    assert launch.silent_exits([vpn, other, plain, broken]) == {"p1"}
+    monkeypatch.delattr(gateway, "tunnel_passes")  # an older kiwi-proxy
+    assert launch.silent_exits([vpn]) == set()
+
+
 def test_the_dns_line_names_every_service():
     from types import SimpleNamespace
 

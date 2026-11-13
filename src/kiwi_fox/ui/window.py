@@ -95,6 +95,7 @@ class Window(Adw.ApplicationWindow):
         self._snap_polling = False
         self._ticks = 0
         self._was_running: set[str] = set()
+        self._silent: set[str] = set()  # profiles whose VPN is not answering
 
         self.toasts = Adw.ToastOverlay()
         header = Adw.HeaderBar()
@@ -218,7 +219,14 @@ class Window(Adw.ApplicationWindow):
             # An exit whose tunnel node died comes back on its own (kiwi-proxy's
             # heal), off the main loop; the next tick shows it.
             worker.run(launch.heal_exits, lambda _healed: None, lambda _exc: None)
+        mine = [p for p in store.list_profiles() if p.id in running]
+        worker.run(lambda: launch.silent_exits(mine), self._on_silent, lambda _exc: None)
         return True
+
+    def _on_silent(self, silent: set[str]) -> None:
+        if silent != self._silent:
+            self._silent = silent
+            self.refresh(rebuild=False)
 
     def refresh(self, rebuild: bool = True) -> None:
         profiles = store.list_profiles()
@@ -311,6 +319,8 @@ class Window(Adw.ApplicationWindow):
             "browser open" if browser else "browser closed",
             "container running" if container else "container stopped",
         ]
+        if browser and profile.id in self._silent:
+            state.append("VPN not answering")
         if note := self._snapshot_note(profile):
             state.append(note)
         subtitle += "\n" + " · ".join(state)

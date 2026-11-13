@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.10.7
+
+- A profile whose browser is open on a VPN exit says "VPN not answering" while
+  the VPN server does not answer (Kiwi Proxy 0.18 asks the tunnel itself). The
+  tunnel reconnects by itself once the server answers again; nothing leaves
+  meanwhile.
+
 ## 0.10.6
 
 - A profile on a VPN exit says where it goes ("vpn · 94.16.108.143"), not the
