@@ -249,6 +249,10 @@ def browser_spec(
     its own mount namespace, so in resolver mode it mounts the file that points at
     the resolver inside the namespace. None in remote DNS mode, and with no proxy."""
     spec = get_engine(profile.engine).build_spec(profile, fp, gateway=gateway, exit_ip=exit_ip)
+    from . import uifont
+
+    # The desktop's interface font, for the browser's own interface (uifont.py).
+    spec.volumes += uifont.volumes(paths.profile_dir(profile.id), profile.engine)
     # The window's app id, so the desktop shows the profile's (or Kiwi Fox's)
     # name and icon instead of "camoufox" and a blank.
     spec.args = [*desktop.window_args(profile), *spec.args]

@@ -103,6 +103,17 @@ repair off.
 quick storage check and names every broken container and whose it is. Repair
 removes the ones that belong to Kiwi apps, and others only when you say so.
 
+## The interface font
+
+The browser's own interface (tabs, menus, the address bar) uses your desktop's
+interface font size and text scaling, read at each start. A stock Firefox
+profile also uses the font itself. Camoufox and Tor Browser use the size only,
+because their fonts are a fixed set that a page can list, and your desktop's
+font must not appear in it. Pages cannot read the interface font: with
+Camoufox they read the Windows identity's, with Tor Browser its own fixed
+answer (measured). On a machine without a GNOME desktop, set `KF_UI_FONT`, for
+example `KF_UI_FONT="Noto Sans 11"`.
+
 ## Preferences
 
 | Page | What you set there |

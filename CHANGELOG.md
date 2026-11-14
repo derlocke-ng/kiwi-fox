@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.15.0
+
+- **The browser's interface uses the desktop's font size.** In its container
+  the browser had no desktop settings, so tabs, menus and the address bar came
+  out in GTK's fallback, "Sans 10" (13.3 px). Each start now hands it the
+  desktop's interface font and text scaling. Stock Firefox also gets the font's
+  files; Camoufox and Tor Browser get the size only, so the font cannot show up
+  among the fonts a page can list. Checked on the VM: the interface changed,
+  and what a page reads of the system fonts did not (Camoufox 12 px Segoe UI,
+  Tor Browser 15 px Arimo, before and after).
+
 ## 0.14.2
 
 - **A profile has one icon everywhere.** The list showed Kiwi Fox's icon even
