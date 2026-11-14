@@ -113,6 +113,7 @@ def test_a_profile_entry_can_show_an_engines_own_icon(engines):
     assert "kiwi-fox-orange" in keys
     ff = store.create("ff", _exit(), None, engine="firefox")
     ff.icon = "firefox"
+    ff.color = ""  # no colour: the engine's icon as it is
     ff.desktop_entry = True
     store.save(ff)
     entry = desktop.entry_path(ff.id).read_text()

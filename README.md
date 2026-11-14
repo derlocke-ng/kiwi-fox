@@ -22,7 +22,7 @@ authorised to run, and who do not want these accounts linked to each other
 through the browser fingerprint or the IP address. It is part of the Kiwi
 desktop, next to kiwi-proxy and kiwi-custodia.
 
-- Latest release: **v0.14.1**, in the
+- Latest release: **v0.14.2**, in the
   [Kiwi catalog](https://kiwi-network.eu/docs/desktop/catalogs/) (user scope,
   no root needed)
 - Runs on: Linux with rootless Podman, Python 3.12 or newer and kiwi-proxy.

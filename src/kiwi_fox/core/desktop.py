@@ -80,14 +80,7 @@ def _exec_arg(value: str) -> str:
 def _icon(profile: Profile) -> str:
     from . import icons
 
-    if not profile.icon:
-        colored = icons.colored_icon(profile)
-        return str(colored) if colored else APP_ID
-
-    found = icons.entry_icon(profile.icon, profile.id)
-    if found == APP_ID and (kept := icons.kept_icon(profile.id)):
-        return kept  # the engine it came from is gone; the copy stays
-    return found
+    return icons.shown_icon(profile)
 
 
 def render_entry(profile: Profile, describe: str) -> str:

@@ -307,12 +307,15 @@ class Window(Adw.ApplicationWindow):
     def _update_row(self, row: Adw.ActionRow, profile) -> None:
         from ..core import icons
 
-        colored = icons.colored_icon(profile)
+        # The same icon as its app-grid entry: chosen icon, colour and all.
+        shown = icons.shown_icon(profile)
         mark = row.color_mark  # type: ignore[attr-defined]
-        if colored:
-            mark.set_from_file(str(colored))
-        else:
-            mark.set_from_icon_name(icons.APP_ID)
+        if getattr(mark, "shown", None) != shown:
+            mark.shown = shown  # type: ignore[attr-defined]
+            if shown.startswith("/"):
+                mark.set_from_file(shown)
+            else:
+                mark.set_from_icon_name(shown)
         container = launch.container_running(profile)
         browser = container and launch.running(profile)
         exit_bits = []

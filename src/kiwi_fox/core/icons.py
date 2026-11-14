@@ -132,6 +132,59 @@ def colored_icon(profile) -> Path | None:
     return f
 
 
+def ringed_icon(profile, source: Path) -> Path | None:
+    """An engine's own icon (your copy of Tor Browser's, Firefox's, Camoufox's)
+    on a disc in the profile's colour, composed here from the installed file and
+    kept with the app, so it stays when the engine is removed."""
+    import base64
+
+    cw = kiwi_icon.COLORWAYS.get(profile.color)
+    if cw is None or profile.icon not in ENGINE_ICONS or source.suffix not in (".png", ".svg"):
+        return None
+    folder = paths.data_dir() / "icons"
+    f = folder / f"{profile.id}-{profile.icon}-{profile.color}.svg"
+    if f.exists():
+        return f
+    try:
+        pal = kiwi_icon.palette(cw["hue"], cw.get("tone", 1), cw.get("accent"))
+        mime = "image/png" if source.suffix == ".png" else "image/svg+xml"
+        data = base64.b64encode(source.read_bytes()).decode()
+        folder.mkdir(parents=True, exist_ok=True)
+        for old in folder.glob(f"{profile.id}-*.svg"):
+            old.unlink()
+        f.write_text(
+            '<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" '
+            'viewBox="0 0 128 128" width="128" height="128">'
+            f'<circle cx="64" cy="64" r="62" fill="{pal["rim"]}"/>'
+            f'<circle cx="64" cy="64" r="53" fill="{pal["core"]}"/>'
+            f'<image x="22" y="22" width="84" height="84" xlink:href="data:{mime};base64,{data}"/>'
+            "</svg>"
+        )
+    except (OSError, KeyError):
+        return None
+    return f
+
+
+def shown_icon(profile) -> str:
+    """The one icon a profile has everywhere, the list and the app grid alike: a
+    file path, or an icon-theme name. Its chosen icon (on a disc in its colour
+    when it has one), else its Kiwi Fox in its colour, else Kiwi Fox's own."""
+    if not profile.icon:
+        colored = colored_icon(profile)
+        return str(colored) if colored else APP_ID
+    folder = paths.data_dir() / "icons"
+    ready = folder / f"{profile.id}-{profile.icon}-{profile.color}.svg"
+    if profile.color and ready.exists():
+        return str(ready)
+    found = {i.key: i for i in choices()}.get(profile.icon)
+    if found is not None and found.file is not None and (ring := ringed_icon(profile, found.file)):
+        return str(ring)
+    plain = entry_icon(profile.icon, profile.id)
+    if plain == APP_ID and (kept := kept_icon(profile.id)):
+        return kept  # the engine it came from is gone; the copy stays
+    return plain
+
+
 def entry_icon(key: str, profile_id: str) -> str:
     """What the entry's Icon= says for a choice: a theme name, or a copy of the
     file kept with the app (an engine can be removed later)."""

@@ -3,6 +3,8 @@ naming the installed launcher, so GNOME launches the profile like any app."""
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 from kiwi_proxy import exits
 
@@ -159,3 +161,23 @@ def test_each_new_profile_gets_a_colour_no_other_has():
     assert svg.startswith("<svg") and "p0" in svg
     made[0].color = ""
     assert icons.colored_icon(made[0]) is None  # Kiwi Fox's own
+
+
+def test_a_chosen_engine_icon_shows_everywhere_on_a_disc_in_the_profiles_colour(
+    monkeypatch, tmp_path
+):
+    from kiwi_fox.core import icons
+
+    png = tmp_path / "tb.png"
+    png.write_bytes(b"\x89PNG fake")
+    monkeypatch.setattr(
+        icons, "choices", lambda: [icons.Icon("torbrowser", "Tor Browser", file=png)]
+    )
+    p = store.create("onion", None, None, engine="firefox")
+    p.icon = "torbrowser"
+    shown = icons.shown_icon(p)
+    assert shown.endswith(f"{p.id}-torbrowser-{p.color}.svg")
+    assert "data:image/png;base64," in Path(shown).read_text()
+    assert f"Icon={shown}\n" in desktop.render_entry(p, "x")  # the entry and the list agree
+    p.color = ""
+    assert icons.shown_icon(p).endswith(f"{p.id}.png")  # no colour: the engine's icon as it is

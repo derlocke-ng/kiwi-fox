@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.14.2
+
+- **A profile has one icon everywhere.** The list showed Kiwi Fox's icon even
+  when the profile had Tor Browser's, Firefox's or the generic one; it now shows
+  what the app grid shows. An engine's icon sits on a disc in the profile's
+  colour, so coloured Tor Browsers and Firefoxes can be told apart too. The
+  icon can be chosen without an app-grid entry.
+
 ## 0.14.1
 
 - **The documentation follows the kiwi-docs guide**, so kiwi-network.eu can show

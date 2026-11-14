@@ -7,7 +7,7 @@ import gi
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 
-from gi.repository import Adw, Gio, GLib, GObject, Gtk  # noqa: E402
+from gi.repository import Adw, Gio, GLib, Gtk  # noqa: E402
 from kiwi_proxy import endpoint as proxy  # noqa: E402
 from kiwi_proxy import exits, providers  # noqa: E402
 from kiwi_proxy import secrets as proxy_secrets  # noqa: E402
@@ -811,9 +811,6 @@ class ProfileEditor(Adw.Dialog):
         )
         keys = [i.key for i in self._icons]
         self.icon_row.set_selected(keys.index(profile.icon) if profile.icon in keys else 0)
-        self.entry_row.bind_property(
-            "active", self.icon_row, "sensitive", GObject.BindingFlags.SYNC_CREATE
-        )
         group.add(self.icon_row)
         self._colors = ["", *icons.COLORS]
         self.color_row = Adw.ComboRow(
