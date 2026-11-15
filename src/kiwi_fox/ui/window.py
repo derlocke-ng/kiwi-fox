@@ -1064,6 +1064,12 @@ class Window(Adw.ApplicationWindow):
                 for image in (proxy_paths.GATEWAY_IMAGE, launch.BROWSER_IMAGE):
                     if not podman.image_exists(image):
                         missing.append(image.split("/")[-1].split(":")[0] + " image")
+                from ..core import setup as fox_setup
+
+                # After an update the image is still the old one until it is
+                # built again (sound, Tor Browser's save dialog came that way).
+                if any(fox_setup.image_state(i, n) == "stale" for i, n in fox_setup.IMAGES):
+                    missing.append("the browser image of this version (Set up builds it)")
             present = {m.name for m in modules.installed()}
             by_id = {e.id: e for e in exits.list_exits()}
             needed = {

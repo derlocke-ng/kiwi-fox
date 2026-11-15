@@ -52,6 +52,8 @@ def parse(name: str) -> tuple[str, float] | None:
 def host_font() -> tuple[str, float, float] | None:
     """The desktop's interface font: (family, points, text scaling). KF_UI_FONT
     ("Family 12") says it for a session without a desktop."""
+    if os.environ.get("KF_UI_FONT", "").strip().lower() == "off":
+        return None  # leave the browser's interface font alone
     found = parse(os.environ.get("KF_UI_FONT") or _gsetting("font-name"))
     if found is None:
         return None

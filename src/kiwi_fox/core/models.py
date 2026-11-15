@@ -212,6 +212,9 @@ class Profile(Strict):
     desktop_entry: bool = False
     # The app-grid entry's icon (kiwi_fox.core.icons): "" is Kiwi Fox's own.
     icon: str = ""
+    # Sound: the desktop's audio server reaches into the browser's container, so
+    # pages can play (and, where you allow a page, record). Off: no audio device.
+    sound: bool = True
     # The colour of the profile's Kiwi Fox icon: a kiwi-icons colourway (ember,
     # ocean, ...), "" for Kiwi Fox's own. A new profile gets one no other has.
     color: str = ""

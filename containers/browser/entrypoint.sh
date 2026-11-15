@@ -45,11 +45,18 @@ fi
 # Browser/ directory, the way start-tor-browser sets it up. Wire that without
 # start-tor-browser (which would try to write into the read-only bundle).
 if [ -n "${KF_TORBROWSER:-}" ]; then
-    tb_fc="$ENGINE/Browser/TorBrowser/Data/fontconfig"
-    if [ -f "$tb_fc/fonts.conf" ]; then
-        export FONTCONFIG_PATH="$tb_fc"
-        export FONTCONFIG_FILE="$tb_fc/fonts.conf"
-    fi
+    # Tor Browser's own fonts.conf: Browser/fonts since 13.5 (16.0 has only
+    # that), TorBrowser/Data/fontconfig before. Without it nothing in the
+    # container has a font for GTK, and its save dialog sized itself from
+    # nonsense metrics ("Native Windows taller than 65535 pixels") and took the
+    # browser down with a segmentation fault.
+    for tb_fc in "$ENGINE/Browser/fonts" "$ENGINE/Browser/TorBrowser/Data/fontconfig"; do
+        if [ -f "$tb_fc/fonts.conf" ]; then
+            export FONTCONFIG_PATH="$tb_fc"
+            export FONTCONFIG_FILE="$tb_fc/fonts.conf"
+            break
+        fi
+    done
     cd "$ENGINE/Browser" || { echo "browser: no Browser dir at $ENGINE" >&2; exit 2; }
 fi
 

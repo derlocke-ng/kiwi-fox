@@ -54,7 +54,24 @@ def choices() -> list[Icon]:
             if f.is_file():
                 out.append(Icon(engine, TITLES[engine], file=f))
     out.append(Icon("web-browser", "Generic browser", name="web-browser"))
+    out += custom_icons()
     return out
+
+
+def custom_dir() -> Path:
+    """Your own icons: PNG or SVG files put here are offered for every profile."""
+    return paths.config_dir() / "icons"
+
+
+def custom_icons() -> list[Icon]:
+    folder = custom_dir()
+    if not folder.is_dir():
+        return []
+    return [
+        Icon(f"custom:{f.name}", f.stem, file=f)
+        for f in sorted(folder.iterdir())
+        if f.is_file() and f.suffix.lower() in (".svg", ".png")
+    ]
 
 
 # ------------------------------------------------------------------- colours

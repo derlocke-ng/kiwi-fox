@@ -811,7 +811,20 @@ class ProfileEditor(Adw.Dialog):
         )
         keys = [i.key for i in self._icons]
         self.icon_row.set_selected(keys.index(profile.icon) if profile.icon in keys else 0)
+        folder = Gtk.Button(
+            icon_name="folder-open-symbolic",
+            valign=Gtk.Align.CENTER,
+            tooltip_text="Your own icons: put PNG or SVG files in this folder, then open "
+            "this dialog again",
+        )
+        folder.add_css_class("flat")
+        folder.connect("clicked", self._open_icons_folder)
+        self.icon_row.add_suffix(folder)
         group.add(self.icon_row)
+        self.sound_row = Adw.SwitchRow(
+            title="Sound", subtitle="pages can play audio", active=profile.sound
+        )
+        group.add(self.sound_row)
         self._colors = ["", *icons.COLORS]
         self.color_row = Adw.ComboRow(
             title="Colour",
@@ -851,6 +864,13 @@ class ProfileEditor(Adw.Dialog):
         view.add_top_bar(header)
         view.set_content(page)
         self.set_child(view)
+
+    def _open_icons_folder(self, *_args) -> None:
+        from ..core import icons
+
+        folder = icons.custom_dir()
+        folder.mkdir(parents=True, exist_ok=True)
+        Gtk.FileLauncher.new(Gio.File.new_for_path(str(folder))).launch(None, None, None)
 
     def _build_identity(self, page: Adw.PreferencesPage, profile, fp) -> None:
         """The Windows machine a Camoufox profile claims to be."""
@@ -1064,6 +1084,7 @@ class ProfileEditor(Adw.Dialog):
         updates["desktop_entry"] = self.entry_row.get_active()
         updates["icon"] = self._icons[self.icon_row.get_selected()].key
         updates["color"] = self._colors[self.color_row.get_selected()]
+        updates["sound"] = self.sound_row.get_active()
         updates["tags"] = store.normalize_tags([self.tags_row.get_text()])
 
         saved = profile.model_copy(update=updates)

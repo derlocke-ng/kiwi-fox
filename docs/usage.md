@@ -157,6 +157,25 @@ Kiwi Fox's own colours until you choose one.
 You change the colour in the app, with the **Colour** row in **Edit…**. The
 command line has no option for it.
 
+## Icons of your own
+
+A profile's icon is Kiwi Fox's, an installed engine's, the generic browser
+icon, or one of your own. Put PNG or SVG files into
+`~/.config/kiwi-fox/icons/`; the folder button beside **Its icon** in
+**Edit…** opens it. The files are offered for every profile the next time you
+open the dialog. A profile keeps a copy of its icon, so it stays when you
+remove the file.
+
+## Sound
+
+Pages can play audio: the profile's container is given your desktop's audio
+connection (PulseAudio, which PipeWire also provides). The same connection
+would let a page record from your microphone, but only after you allow that
+page in the browser, as in any Firefox. Switch **Sound** off in **Edit…**, or
+with `kiwi-fox set NAME --sound off`, for a profile that should have no audio
+device at all. After updating from a version before 0.16.0, run **Set up
+environment** once (the app says so): sound needs the rebuilt browser image.
+
 ## A profile in the app grid
 
 A profile can have a desktop entry of its own, so that your desktop starts it

@@ -282,7 +282,21 @@ def browser_spec(
         spec.volumes.append((src, dst, "rw"))
         spec.env["XDG_RUNTIME_DIR"] = runtime
         spec.env["WAYLAND_DISPLAY"] = Path(dst).name
+    if profile.sound and (pulse := _pulse_socket()):
+        # Sound: the desktop's PulseAudio socket (PipeWire speaks it too), at a
+        # path of its own so it does not depend on the runtime dir above.
+        spec.volumes.append((pulse, PULSE_MOUNT, "rw"))
+        spec.env["PULSE_SERVER"] = f"unix:{PULSE_MOUNT}"
     return spec
+
+
+PULSE_MOUNT = "/run/kf-pulse"
+
+
+def _pulse_socket() -> str | None:
+    rt = os.environ.get("XDG_RUNTIME_DIR")
+    sock = Path(rt) / "pulse" / "native" if rt else None
+    return str(sock) if sock and sock.exists() else None
 
 
 def _wayland_mount() -> tuple[str, str] | None:

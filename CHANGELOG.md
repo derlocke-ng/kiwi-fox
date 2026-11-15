@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.16.0
+
+- **Sound.** Pages can play audio in every engine: the container gets the
+  desktop's audio connection, and the browser image the library for it. A
+  **Sound** switch per profile (Edit…, `set --sound on|off`) turns it off.
+  Checked on the VM: the desktop's audio server sees Firefox, Tor Browser and
+  Camoufox playing. Needs the browser image rebuilt once: **Set up
+  environment**; the app now says when the image is from an older version.
+- **Tor Browser no longer crashes on a save dialog.** Saving a file or choosing
+  the download folder took the browser down: Tor Browser 16 keeps its font
+  configuration in `Browser/fonts`, the start script looked in the older place,
+  and GTK's file dialog, left without any font, sized itself beyond what a
+  window can be. Also fixed by the rebuilt image.
+- **Icons of your own**: PNG or SVG files in `~/.config/kiwi-fox/icons/` are
+  offered for every profile; a folder button beside the icon opens it.
+- `KF_UI_FONT=off` leaves the browser's interface font alone.
+
 ## 0.15.0
 
 - **The browser's interface uses the desktop's font size.** In its container

@@ -29,7 +29,7 @@ RUN dnf install -y --setopt=install_weak_deps=False \
       gtk3 \
       libxkbcommon libxkbcommon-x11 \
       mesa-dri-drivers mesa-libgbm mesa-libEGL mesa-libGL \
-      alsa-lib dbus-libs \
+      alsa-lib pulseaudio-libs dbus-libs \
       pango cairo gdk-pixbuf2 \
       freetype fontconfig \
       nss nspr \

@@ -220,6 +220,8 @@ def save(profile: Profile) -> None:
     for optional in ("icon", "color"):
         if not data.get(optional):
             data.pop(optional, None)  # so an older Kiwi Fox still reads the profile
+    if data.get("sound", True):
+        data.pop("sound", None)  # the default; likewise
     _write_json(paths.profile_dir(profile.id) / "profile.json", json.dumps(data, indent=2))
     # The app-grid entry follows the profile: written while it wants one (a rename
     # rewrites it), removed as soon as it does not.

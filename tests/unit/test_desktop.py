@@ -181,3 +181,36 @@ def test_a_chosen_engine_icon_shows_everywhere_on_a_disc_in_the_profiles_colour(
     assert f"Icon={shown}\n" in desktop.render_entry(p, "x")  # the entry and the list agree
     p.color = ""
     assert icons.shown_icon(p).endswith(f"{p.id}.png")  # no colour: the engine's icon as it is
+
+
+def test_your_own_icons_are_offered_and_used(tmp_path):
+    from kiwi_fox.core import icons
+
+    folder = icons.custom_dir()
+    folder.mkdir(parents=True)
+    (folder / "work.png").write_bytes(b"\x89PNG mine")
+    (folder / "notes.txt").write_text("not an icon")
+    assert [i.key for i in icons.custom_icons()] == ["custom:work.png"]
+    assert "custom:work.png" in [i.key for i in icons.choices()]
+    p = store.create("mine", None, None, engine="firefox")
+    p.icon = "custom:work.png"
+    shown = icons.shown_icon(p)
+    assert Path(shown).read_bytes() == b"\x89PNG mine"  # as it is, no disc
+    assert f"Icon={shown}\n" in desktop.render_entry(p, "x")
+
+
+def test_sound_reaches_the_container_unless_switched_off(monkeypatch, tmp_path):
+    from kiwi_fox.core import launch
+
+    rt = tmp_path / "rt"
+    (rt / "pulse").mkdir(parents=True)
+    (rt / "pulse" / "native").write_text("")
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(rt))
+    assert launch._pulse_socket() == str(rt / "pulse" / "native")
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path / "none"))
+    assert launch._pulse_socket() is None
+    p = store.create("quiet", None, None, engine="firefox")
+    assert p.sound is True
+    p.sound = False
+    store.save(p)
+    assert store.load(p.id).sound is False

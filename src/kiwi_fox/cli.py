@@ -1143,6 +1143,8 @@ def cmd_set(a: argparse.Namespace) -> int:
         updates["language"] = a.language
     if getattr(a, "location", None):
         updates["location"] = a.location
+    if getattr(a, "sound", None):
+        updates["sound"] = a.sound == "on"
     if a.user_agent:
         updates["user_agent"] = a.user_agent
     if a.default_user_agent:
@@ -1858,6 +1860,7 @@ def build_parser() -> argparse.ArgumentParser:
     se.add_argument("--font-remove", action="append", metavar="FAMILY")
     se.add_argument("--appearance", choices=["host", "light", "dark"])
     se.add_argument("--location", choices=["ask", "exit"], help="Camoufox: see `new --help`")
+    se.add_argument("--sound", choices=["on", "off"], help="whether pages can play audio")
     se.add_argument(
         "--language",
         choices=["local", "english"],
