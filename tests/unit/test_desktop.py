@@ -214,3 +214,27 @@ def test_sound_reaches_the_container_unless_switched_off(monkeypatch, tmp_path):
     p.sound = False
     store.save(p)
     assert store.load(p.id).sound is False
+
+
+def test_the_host_network_is_only_for_a_profile_without_a_proxy(monkeypatch):
+    from kiwi_proxy.models import ContainerSpec
+
+    from kiwi_fox.core import launch
+
+    class Engine:
+        def build_spec(self, profile, fp, *, gateway, exit_ip):
+            net = f"container:{gateway}" if gateway else "pasta"
+            return ContainerSpec(name="b", image="i", network=net)
+
+    monkeypatch.setattr(launch, "get_engine", lambda name: Engine())
+    monkeypatch.setattr(launch, "_wayland_mount", lambda: None)
+    monkeypatch.setattr(launch, "_pulse_socket", lambda: None)
+    p = store.create("local", None, None, engine="firefox")
+    assert launch.browser_spec(p, None, None, None).network == "pasta"  # a namespace of its own
+    p.host_network = True
+    assert launch.browser_spec(p, None, None, None).network == "host"
+    assert (
+        launch.browser_spec(p, None, "kf-gw-x", None).network == "container:kf-gw-x"
+    )  # a proxy wins
+    store.save(p)
+    assert store.load(p.id).host_network is True

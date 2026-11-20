@@ -9,12 +9,12 @@ through its own **exit**, a named proxy connection that
 browser container has no route of its own: if the exit stops, the profile loses
 its connection instead of falling back to yours.
 
-A profile runs one of three browsers, which kiwi-fox calls **engines**:
+A profile runs one of four browsers, which kiwi-fox calls **engines**:
 
 - **Camoufox** (the default) shows a page an ordinary Windows 11 machine with
   its own region. Its values fit together and stay the same from one session
   to the next.
-- **Firefox** is Mozilla's own build and spoofs nothing.
+- **Firefox** and **LibreWolf** run as they come; kiwi-fox spoofs nothing.
 - **Tor Browser** is the unmodified Tor Browser, through an exit on Tor.
 
 kiwi-fox is for people who manage several accounts that they own or are
@@ -22,7 +22,7 @@ authorised to run, and who do not want these accounts linked to each other
 through the browser fingerprint or the IP address. It is part of the Kiwi
 desktop, next to kiwi-proxy and kiwi-custodia.
 
-- Latest release: **v0.16.0**, in the
+- Latest release: **v0.17.0**, in the
   [Kiwi catalog](https://kiwi-network.eu/docs/desktop/catalogs/) (user scope,
   no root needed)
 - Runs on: Linux with rootless Podman, Python 3.12 or newer and kiwi-proxy.
@@ -65,7 +65,7 @@ Fox** in your app grid, does the same without a terminal.
 | [Install](docs/install.md) | requirements, install, first setup, update, uninstall |
 | [Using kiwi-fox](docs/usage.md) | profiles, the browser and its container, tags and colours, the app grid, every command |
 | [Proxies and provider modules](docs/proxies.md) | putting a profile on an exit, Tor, VPN and other modules |
-| [Browser engines](docs/engines.md) | Camoufox, Firefox and Tor Browser, their versions and downloads |
+| [Browser engines](docs/engines.md) | Camoufox, Firefox, LibreWolf and Tor Browser, their versions and downloads |
 | [The Camoufox identity](docs/camoufox.md) | what a new profile reports, and how to change it |
 | [Snapshots](docs/snapshots.md) | your profiles on your other devices, encrypted |
 | [Isolation and its limits](docs/isolation.md) | how a profile is sealed, and what it does not hide |
@@ -88,8 +88,8 @@ no automation and is made for interactive browsing only.
 GPL-3.0-or-later; see [LICENSE](LICENSE).
 
 The engines ([Camoufox](https://github.com/daijro/camoufox) under MPL-2.0,
-Mozilla's Firefox and the Tor Project's Tor Browser) are downloaded to your
-machine and never redistributed here. Three small pieces derived from MPL-2.0
+Mozilla's Firefox, LibreWolf and the Tor Project's Tor Browser) are downloaded
+to your machine and never redistributed here. Three small pieces derived from MPL-2.0
 sources are included and stay under that license:
 
 - `src/kiwi_fox/core/fingerprint/data/webgl-windows.json`: WebGL records of

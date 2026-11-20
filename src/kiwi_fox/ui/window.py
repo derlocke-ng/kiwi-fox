@@ -883,7 +883,7 @@ class Window(Adw.ApplicationWindow):
         from ..core.engines import TITLES as ENGINE_TITLES
 
         group = Adw.PreferencesGroup(title="New profiles")
-        engines = ["camoufox", "firefox", "torbrowser"]
+        engines = ["camoufox", "firefox", "librewolf", "torbrowser"]
         engine = Adw.ComboRow(
             title="Engine", model=Gtk.StringList.new([ENGINE_TITLES[e] for e in engines])
         )

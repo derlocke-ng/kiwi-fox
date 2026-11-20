@@ -107,7 +107,7 @@ def volumes(profile_dir: Path, engine: str) -> list[tuple[str, str, str]]:
     except OSError:
         return []
     out = [(str(ini), SETTINGS_MOUNT, "ro,z")]
-    if engine == "firefox":
+    if engine in ("firefox", "librewolf"):
         for n, d in enumerate(font_dirs(font[0])):
             out.append((str(d), f"{FIREFOX_FONT_MOUNT}-{n}", "ro"))
     return out

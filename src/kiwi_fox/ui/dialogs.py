@@ -30,21 +30,25 @@ from .help import APP, explain  # noqa: E402
 COUNTRIES = ["(from the exit)", "DE", "AT", "CH", "NL", "SE", "FR", "FI", "NO", "DK", "GB", "US"]
 
 # The three browsers a profile can run, in the order they are offered.
-ENGINES = ["camoufox", "firefox", "torbrowser"]
+ENGINES = ["camoufox", "firefox", "librewolf", "torbrowser"]
 ENGINE_ABOUT = {
     "camoufox": "a spoofed Windows 11 PC",
     "firefox": "stock Firefox, nothing spoofed",
+    "librewolf": "LibreWolf, hardened Firefox",
     "torbrowser": "Tor Browser, through the tor module",
 }
 ENGINES_HELP = (
     "Camoufox: a spoofed, frozen Windows 11 machine; websites see an ordinary Windows "
     "PC with its own region, screen and graphics card.\n\nFirefox: stock, nothing "
     "spoofed; websites see this machine's own values. Less unique, and nothing faked "
-    "that could slip.\n\nTor Browser: the bundle, unmodified, through the tor module; "
+    "that could slip.\n\nLibreWolf: the hardened Firefox build, as it comes: its own "
+    "fingerprinting resistance, no telemetry, uBlock Origin. Nothing spoofed by Kiwi Fox."
+    "\n\nTor Browser: the bundle, unmodified, through the tor module; "
     "its own uniform fingerprint and a circuit per site."
 )
 ENGINE_IDENTITY = {
     "firefox": "None — this machine's own Firefox, nothing spoofed",
+    "librewolf": "LibreWolf's own protections, nothing spoofed by Kiwi Fox",
     "torbrowser": "Tor Browser's own uniform fingerprint, untouched",
 }
 
@@ -821,6 +825,21 @@ class ProfileEditor(Adw.Dialog):
         folder.connect("clicked", self._open_icons_folder)
         self.icon_row.add_suffix(folder)
         group.add(self.icon_row)
+        self.host_network_row = Adw.SwitchRow(
+            title="This Computer's Network",
+            subtitle="without a proxy only: reaches localhost and your network",
+            active=profile.host_network,
+        )
+        explain(
+            self.host_network_row,
+            "A profile with no proxy normally gets a network of its own that leaves through "
+            "this machine's connection. With this on, the browser shares this computer's "
+            "network itself: it reaches services on localhost (a development server), your "
+            "local network and whatever VPN the desktop is on. Nothing separates its "
+            "network from the desktop's then. Ignored while the profile has a proxy.",
+            app=APP,
+        )
+        group.add(self.host_network_row)
         self.sound_row = Adw.SwitchRow(
             title="Sound", subtitle="pages can play audio", active=profile.sound
         )
@@ -1085,6 +1104,7 @@ class ProfileEditor(Adw.Dialog):
         updates["icon"] = self._icons[self.icon_row.get_selected()].key
         updates["color"] = self._colors[self.color_row.get_selected()]
         updates["sound"] = self.sound_row.get_active()
+        updates["host_network"] = self.host_network_row.get_active()
         updates["tags"] = store.normalize_tags([self.tags_row.get_text()])
 
         saved = profile.model_copy(update=updates)

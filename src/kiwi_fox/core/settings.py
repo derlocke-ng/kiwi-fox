@@ -30,6 +30,7 @@ class Settings:
     # choice (the preferred / newest installed).
     camoufox_default: str = ""
     firefox_default: str = ""
+    librewolf_default: str = ""
     torbrowser_default: str = ""
     # A new engine release: "tell" (and you install it), "auto" (installed by
     # itself), "off" (you look yourself).

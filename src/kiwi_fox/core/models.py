@@ -49,7 +49,7 @@ GpuTier = Literal["integrated", "mid", "high"]
 # "torbrowser" carry no spoofed identity: stock Firefox shows this machine's own
 # values, Tor Browser its own uniform crowd. Only camoufox profiles have a
 # fingerprint; see store.create.
-EngineName = Literal["camoufox", "firefox", "torbrowser"]
+EngineName = Literal["camoufox", "firefox", "librewolf", "torbrowser"]
 
 
 class Strict(BaseModel):
@@ -212,6 +212,11 @@ class Profile(Strict):
     desktop_entry: bool = False
     # The app-grid entry's icon (kiwi_fox.core.icons): "" is Kiwi Fox's own.
     icon: str = ""
+    # Only for a profile with no proxy: share this computer's network itself
+    # (podman's host network) instead of a namespace of its own, so the browser
+    # reaches services on localhost and everything the desktop reaches. No
+    # isolation of the network at all.
+    host_network: bool = False
     # Sound: the desktop's audio server reaches into the browser's container, so
     # pages can play (and, where you allow a page, record). Off: no audio device.
     sound: bool = True

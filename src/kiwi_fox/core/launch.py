@@ -249,6 +249,10 @@ def browser_spec(
     its own mount namespace, so in resolver mode it mounts the file that points at
     the resolver inside the namespace. None in remote DNS mode, and with no proxy."""
     spec = get_engine(profile.engine).build_spec(profile, fp, gateway=gateway, exit_ip=exit_ip)
+    if gateway is None and profile.host_network:
+        # No proxy, and this computer's own network: localhost and the LAN as the
+        # desktop has them. Nothing separates the browser's network from it.
+        spec.network = "host"
     from . import uifont
 
     # The desktop's interface font, for the browser's own interface (uifont.py).

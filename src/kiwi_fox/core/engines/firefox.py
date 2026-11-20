@@ -31,6 +31,7 @@ IMAGE = "kiwi-fox/browser:latest"
 class Firefox:
     name = "firefox"
     binary = firefox_fetch.BINARY
+    engine_mount = ENGINE_MOUNT  # LibreWolf, a subclass, has its own
 
     def engine_dir(self, profile: Profile, fp: Fingerprint | None = None) -> Path:
         from ..engine_versions import version_of
@@ -94,8 +95,8 @@ class Firefox:
             **({"GTK_THEME": "Adwaita:dark"} if is_dark(profile) else {}),
             "FONTCONFIG_FILE": FONTCONFIG_MOUNT,
             "KF_PROFILE_DIR": "/profile",
-            "KF_ENGINE_DIR": ENGINE_MOUNT,
-            "KF_ENGINE_BIN": firefox_fetch.BINARY,
+            "KF_ENGINE_DIR": self.engine_mount,
+            "KF_ENGINE_BIN": self.binary,
         }
         return env
 
@@ -108,6 +109,6 @@ class Firefox:
             image=IMAGE,
             gateway=gateway,
             engine_dir=self.engine_dir(profile, fp),
-            engine_mount=ENGINE_MOUNT,
+            engine_mount=self.engine_mount,
             env=self.env(profile),
         )

@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.17.0
+
+- **LibreWolf, a fourth engine.** `kiwi-fox engine fetch --engine librewolf`,
+  then `new NAME --engine librewolf` (or pick it in **New profile**). It runs
+  as it comes, with LibreWolf's own hardening and uBlock Origin; Kiwi Fox
+  spoofs nothing. The download is LibreWolf's own Linux build, checked against
+  the LibreWolf Maintainers' OpenPGP key, pinned by fingerprint. Checked on
+  the VM: it installs, starts, and plays sound.
+- **This Computer's Network**, for a profile without a proxy: a switch in
+  **Edit…** (`set --host-network on|off`) that puts the browser on your
+  computer's own network, so it reaches `localhost` and your LAN, for a
+  development server or a router's page. Such a browser is not isolated from
+  your network. Checked on the VM: with it on, the browser reaches a server on
+  the VM's `localhost`; with it off, it does not.
+- For a browser without a proxy that stays sealed and gets kiwi's ad-blocking,
+  use kiwi-proxy 0.26.0's new **Direct** exit.
+
 ## 0.16.0
 
 - **Sound.** Pages can play audio in every engine: the container gets the

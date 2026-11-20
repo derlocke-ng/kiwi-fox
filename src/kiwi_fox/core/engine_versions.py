@@ -25,11 +25,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import paths, settings, store
-from .engines import TITLES, firefox_fetch, installed_versions, torbrowser_fetch
+from .engines import TITLES, firefox_fetch, installed_versions, librewolf_fetch, torbrowser_fetch
 from .engines import fetch as camoufox_fetch
 from .models import Profile
 
-ENGINES = ("camoufox", "firefox", "torbrowser")
+ENGINES = ("camoufox", "firefox", "librewolf", "torbrowser")
 CACHE_SECONDS = 6 * 3600
 FIREFOX_RELEASES = "https://product-details.mozilla.org/1.0/firefox.json"
 TORBROWSER_DIST = "https://dist.torproject.org/torbrowser/"
@@ -41,7 +41,8 @@ class VersionError(RuntimeError):
 
 
 def key(version: str) -> tuple[int, ...]:
-    return tuple(int(p) if p.isdigit() else 0 for p in re.split(r"[.a-z]", version))
+    # LibreWolf adds its build after a dash: 160.0.1-1.
+    return tuple(int(p) if p.isdigit() else 0 for p in re.split(r"[.a-z-]", version))
 
 
 # ------------------------------------------------------------------ releases
@@ -84,6 +85,8 @@ def _fetch_releases(engine: str) -> list[Release]:
             if info.get("category") in ("major", "stability") and info.get("version"):
                 out.append(Release(str(info["version"])))
         return out
+    if engine == "librewolf":
+        return [Release(v) for v in librewolf_fetch.releases()]
     if engine == "torbrowser":
         # A folder on dist.torproject.org is not a Linux release: 16.0.2 had only
         # other platforms' files and its Linux download was a 404. Keep the ones
@@ -199,6 +202,7 @@ def target_dir(engine: str, version: str) -> Path:
     return {
         "camoufox": camoufox_fetch.target_dir,
         "firefox": firefox_fetch.target_dir,
+        "librewolf": librewolf_fetch.target_dir,
         "torbrowser": torbrowser_fetch.target_dir,
     }[engine](version)
 
@@ -214,6 +218,8 @@ def install(engine: str, version: str | None = None, *, progress=None) -> str:
         return installed
     if engine == "firefox":
         return firefox_fetch.fetch(version, progress=progress).name.removeprefix("firefox-")
+    if engine == "librewolf":
+        return librewolf_fetch.fetch(version, progress=progress).name.removeprefix("librewolf-")
     if engine == "torbrowser":
         return torbrowser_fetch.fetch(version, progress=progress).name.removeprefix("torbrowser-")
     raise VersionError(f"unknown engine {engine!r}")

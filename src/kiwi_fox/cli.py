@@ -109,21 +109,22 @@ def _spoof_flags_given(a: argparse.Namespace) -> list[str]:
 
 
 def _new_firefox(a: argparse.Namespace, ex) -> int:
-    from .core.engines import firefox_fetch
+    """A stock Firefox or a LibreWolf profile: neither is spoofed."""
+    from .core.engines import TITLES, installed_versions
 
+    engine, title = a.engine, TITLES[a.engine]
     given = _spoof_flags_given(a)
     if given:
-        return _fail(
-            f"stock Firefox shows this machine's own values, so {', '.join(given)} do not apply"
-        )
+        return _fail(f"{title} is not spoofed by Kiwi Fox, so {', '.join(given)} do not apply")
     # No version given: the profile follows (the default, else the newest installed).
-    if a.engine_version and a.engine_version not in firefox_fetch.installed():
+    if a.engine_version and a.engine_version not in installed_versions(engine):
         return _fail(
-            f"Firefox {a.engine_version} is not installed (kiwi-fox engine fetch --engine firefox {a.engine_version})"
+            f"{title} {a.engine_version} is not installed "
+            f"(kiwi-fox engine fetch --engine {engine} {a.engine_version})"
         )
     version = a.engine_version or None
     profile = store.create(
-        a.name, ex.id if ex else None, None, engine="firefox", engine_version=version
+        a.name, ex.id if ex else None, None, engine=engine, engine_version=version
     )
     profile.appearance = a.appearance
     profile.desktop_entry = bool(a.desktop_entry)
@@ -195,7 +196,7 @@ def cmd_new(a: argparse.Namespace) -> int:
 
 
 def _new_profile(a: argparse.Namespace, ex) -> int:
-    if a.engine == "firefox":
+    if a.engine in ("firefox", "librewolf"):
         return _new_firefox(a, ex)
     if a.engine == "torbrowser":
         return _new_torbrowser(a, ex)
@@ -331,6 +332,8 @@ def _show_common(p) -> None:
         _p(f"  exit      {store.describe_exit(ex)}" + ("  (kiwi-proxy)" if ex else ""))
         if ex and ex.endpoint.username:
             _p(f"  auth      user {ex.endpoint.username}")
+    if p.host_network and not p.exit:
+        _p("  network   this computer's own (localhost and the LAN; no isolation)")
     if p.desktop_entry:
         _p(f"  app grid  yes — {desktop.entry_path(p.id)}")
     if p.tags:
@@ -357,6 +360,14 @@ def cmd_show(a: argparse.Namespace) -> int:
         from .core.engines import firefox_fetch
 
         _show_common(p)
+        if p.engine == "librewolf":
+            from .core.engines import librewolf_fetch
+
+            version = p.engine_version or librewolf_fetch.latest_installed() or "none installed"
+            _p(f"  engine    LibreWolf {version}")
+            _p(f"  looks     {p.appearance}")
+            _p("  identity  LibreWolf's own protections; nothing spoofed by Kiwi Fox")
+            return 0
         version = p.engine_version or firefox_fetch.latest_installed() or "none installed"
         _p(f"  engine    stock Firefox {version}")
         _p(f"  looks     {p.appearance}")
@@ -759,6 +770,11 @@ def cmd_engine(a: argparse.Namespace) -> int:
         for v in firefox_fetch.installed():
             any_found = True
             _p(f"firefox    {v}  {firefox_fetch.target_dir(v)}  [signature verified]")
+        from .core.engines import librewolf_fetch
+
+        for v in librewolf_fetch.installed():
+            any_found = True
+            _p(f"librewolf  {v}  {librewolf_fetch.target_dir(v)}  [signature verified]")
         for v in torbrowser_fetch.installed():
             any_found = True
             _p(f"torbrowser {v}  {torbrowser_fetch.target_dir(v)}  [signature verified]")
@@ -781,6 +797,18 @@ def cmd_engine(a: argparse.Namespace) -> int:
             return _fail(str(exc))
         print()
         _p(f"firefox ready at {path}")
+        return 0
+
+    if getattr(a, "engine", "camoufox") == "librewolf":
+        from .core.engines import librewolf_fetch
+
+        try:
+            path = librewolf_fetch.fetch(a.version, force=a.force, progress=progress)
+        except Exception as exc:  # noqa: BLE001
+            print()
+            return _fail(str(exc))
+        print()
+        _p(f"librewolf ready at {path}")
         return 0
 
     if getattr(a, "engine", "camoufox") == "torbrowser":
@@ -1145,6 +1173,8 @@ def cmd_set(a: argparse.Namespace) -> int:
         updates["location"] = a.location
     if getattr(a, "sound", None):
         updates["sound"] = a.sound == "on"
+    if getattr(a, "host_network", None):
+        updates["host_network"] = a.host_network == "on"
     if a.user_agent:
         updates["user_agent"] = a.user_agent
     if a.default_user_agent:
@@ -1318,6 +1348,10 @@ def cmd_doctor(a: argparse.Namespace) -> int:
     line = f"camoufox: {', '.join(engines) or 'none'}"
     if ff:
         line += f"; firefox: {', '.join(ff)}"
+    from .core.engines import librewolf_fetch
+
+    if lw := librewolf_fetch.installed():
+        line += f"; librewolf: {', '.join(lw)}"
     if tb:
         line += f"; torbrowser: {', '.join(tb)}"
     _p(
@@ -1625,7 +1659,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     n.add_argument(
         "--engine",
-        choices=["camoufox", "firefox", "torbrowser"],
+        choices=["camoufox", "firefox", "librewolf", "torbrowser"],
         default="camoufox",
         help="camoufox (default): a spoofed Windows identity; firefox: stock Firefox, "
         "this machine's own values; torbrowser: Tor Browser through an exit on the tor "
@@ -1772,7 +1806,7 @@ def build_parser() -> argparse.ArgumentParser:
     ef.add_argument("version", nargs="?", help="e.g. 152.0.4; latest non-prerelease by default")
     ef.add_argument(
         "--engine",
-        choices=["camoufox", "firefox", "torbrowser"],
+        choices=["camoufox", "firefox", "librewolf", "torbrowser"],
         default="camoufox",
         help="which engine to fetch (default camoufox)",
     )
@@ -1785,12 +1819,16 @@ def build_parser() -> argparse.ArgumentParser:
     el.add_argument("--refresh", action="store_true", help="ask the publishers now, not the cache")
     erm = esub.add_parser("remove", help="remove an installed version no profile uses")
     erm.add_argument("version")
-    erm.add_argument("--engine", choices=["camoufox", "firefox", "torbrowser"], default="camoufox")
+    erm.add_argument(
+        "--engine", choices=["camoufox", "firefox", "librewolf", "torbrowser"], default="camoufox"
+    )
     edf = esub.add_parser(
         "default", help="the version new Camoufox profiles get, or unpinned ones use"
     )
     edf.add_argument("version", help="a version, or 'newest' for the engine's own choice")
-    edf.add_argument("--engine", choices=["camoufox", "firefox", "torbrowser"], default="camoufox")
+    edf.add_argument(
+        "--engine", choices=["camoufox", "firefox", "librewolf", "torbrowser"], default="camoufox"
+    )
     esub.add_parser(
         "check", help="look for new releases now (installs them when the preference says so)"
     )
@@ -1861,6 +1899,11 @@ def build_parser() -> argparse.ArgumentParser:
     se.add_argument("--appearance", choices=["host", "light", "dark"])
     se.add_argument("--location", choices=["ask", "exit"], help="Camoufox: see `new --help`")
     se.add_argument("--sound", choices=["on", "off"], help="whether pages can play audio")
+    se.add_argument(
+        "--host-network",
+        choices=["on", "off"],
+        help="without a proxy: share this computer's network (localhost, LAN); no isolation",
+    )
     se.add_argument(
         "--language",
         choices=["local", "english"],

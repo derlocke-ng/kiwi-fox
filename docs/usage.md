@@ -35,7 +35,7 @@ exit. Other options that every engine takes:
 
 | Option | Meaning |
 |---|---|
-| `--engine camoufox\|firefox\|torbrowser` | The browser. The default is `camoufox`. See [Browser engines](engines.md). |
+| `--engine camoufox\|firefox\|librewolf\|torbrowser` | The browser. The default is `camoufox`. See [Browser engines](engines.md). |
 | `--tag TAG` | A tag for grouping, repeatable or comma-separated. See [Tags](#tags). |
 | `--desktop-entry` | An entry of its own in the app grid. See [A profile in the app grid](#a-profile-in-the-app-grid). |
 | `--appearance host\|light\|dark` | Light or dark. `host`, the default, follows your desktop. |
@@ -198,8 +198,8 @@ the profile removes it. `desktop sync` is needed only after the install moved;
 the installer runs it.
 
 The icon is one of `kiwi-fox` (the default: Kiwi Fox in the profile's
-[colour](#colour)), `kiwi-fox-orange`, `firefox`, `camoufox`, `torbrowser` or
-`web-browser`. The three engine icons are copies of the icons an installed
+[colour](#colour)), `kiwi-fox-orange`, `firefox`, `camoufox`, `librewolf`, `torbrowser` or
+`web-browser`. The four engine icons are copies of the icons an installed
 engine ships.
 
 While the browser runs, its window carries the entry's id, so the dock and the
@@ -214,6 +214,8 @@ Kiwi Fox.
 |---|---|
 | `--name NAME` | Rename it. |
 | `--exit EXIT`, `--no-proxy` | Move it to another exit, or take it off its exit. |
+| `--host-network on\|off` | Without a proxy: share this computer's network. See [No proxy](proxies.md#no-proxy). |
+| `--sound on\|off` | Audio for its pages. See [Sound](#sound). |
 | `--appearance host\|light\|dark` | Light or dark. |
 | `--icon ICON` | Its app-grid icon. |
 | `--tag`, `--untag`, `--no-tags` | Its tags. |

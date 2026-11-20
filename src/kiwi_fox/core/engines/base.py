@@ -32,7 +32,12 @@ class Engine(Protocol):
 
 
 # What each engine is called where a person reads it.
-TITLES = {"camoufox": "Camoufox", "firefox": "Firefox", "torbrowser": "Tor Browser"}
+TITLES = {
+    "camoufox": "Camoufox",
+    "firefox": "Firefox",
+    "librewolf": "LibreWolf",
+    "torbrowser": "Tor Browser",
+}
 
 
 def installed_versions(name: str) -> list[str]:
@@ -45,6 +50,10 @@ def installed_versions(name: str) -> list[str]:
         from . import firefox_fetch
 
         return firefox_fetch.installed()
+    if name == "librewolf":
+        from . import librewolf_fetch
+
+        return librewolf_fetch.installed()
     if name == "torbrowser":
         from . import torbrowser_fetch
 
@@ -61,6 +70,10 @@ def get_engine(name: str) -> Engine:
         from .firefox import Firefox
 
         return Firefox()
+    if name == "librewolf":
+        from .librewolf import LibreWolf
+
+        return LibreWolf()
     if name == "torbrowser":
         from .torbrowser import TorBrowser
 

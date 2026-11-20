@@ -15,7 +15,7 @@ which means Podman containers that run as your own user.
 | A Wayland session | The browser window opens through your Wayland socket. Without one, the browser starts but its window cannot open. |
 | GTK 4, libadwaita and PyGObject | Only for the app, **Kiwi Fox**. The command works without them. |
 | `secret-tool` | `kiwi install` checks for it, and the environment check reports it when it is missing. |
-| `gpg` and `gpgv` | They verify the Firefox and Tor Browser downloads. Without them, those two engines cannot be installed. |
+| `gpg` and `gpgv` | They verify the Firefox, LibreWolf and Tor Browser downloads. Without them, those engines cannot be installed. |
 | `systemd-run` (optional) | Each profile's watcher runs as a systemd user unit. Without a user manager it runs as a detached process instead. |
 | `nvidia-container-toolkit` with its CDI file | Only on a machine whose desktop runs on the proprietary NVIDIA driver. See [Hardware rendering](#hardware-rendering). |
 
@@ -84,7 +84,7 @@ kiwi-fox keeps its own data in these folders:
 | Path | What it holds |
 |---|---|
 | `~/.local/share/kiwi-fox/profiles/` | One folder per profile: its settings, its fingerprint and its browser data. |
-| `~/.local/share/kiwi-fox/engines/` | The installed versions of Camoufox, Firefox and Tor Browser. |
+| `~/.local/share/kiwi-fox/engines/` | The installed versions of Camoufox, Firefox, LibreWolf and Tor Browser. |
 | `~/.config/kiwi-fox/` | The app's preferences (`settings.json`) and window size. |
 
 ## First setup

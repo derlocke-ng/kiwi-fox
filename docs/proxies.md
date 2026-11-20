@@ -55,6 +55,18 @@ sealed, which means that its traffic can go anywhere your machine can reach.
 A Tor Browser profile cannot run without a proxy, and `selfcheck` needs an
 exit.
 
+Even so, `localhost` in that browser is its container, not your computer, and
+your LAN is out of reach. Switch **This Computer's Network** on in **Edit…**,
+or run `kiwi-fox set NAME --host-network on`, when the browser should share
+your computer's network, for example to open a development server on
+`localhost` or your router's page. Such a browser is not isolated from your
+network at all. The switch does nothing for a profile with an exit.
+
+For a browser without a proxy that stays sealed and gets kiwi's ad-blocking,
+use a **Direct** exit instead: `kiwi-proxy add home direct`, then
+`kiwi-fox new web --exit home`. Its gateway sends traffic out over this
+machine's connection, with kiwi's resolver and blocklists in front.
+
 ## Where a profile goes out
 
 The exit's country, city and IP address that a profile's row and

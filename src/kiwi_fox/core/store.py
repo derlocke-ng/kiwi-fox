@@ -220,6 +220,8 @@ def save(profile: Profile) -> None:
     for optional in ("icon", "color"):
         if not data.get(optional):
             data.pop(optional, None)  # so an older Kiwi Fox still reads the profile
+    if not data.get("host_network"):
+        data.pop("host_network", None)  # the default; older versions do not know it
     if data.get("sound", True):
         data.pop("sound", None)  # the default; likewise
     _write_json(paths.profile_dir(profile.id) / "profile.json", json.dumps(data, indent=2))

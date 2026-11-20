@@ -1,6 +1,6 @@
 # Browser engines
 
-A profile runs one of three browsers, which kiwi-fox calls **engines**. You
+A profile runs one of four browsers, which kiwi-fox calls **engines**. You
 choose the engine when you create the profile, and it stays fixed after that,
 because the browser data of one engine cannot be carried into another. This
 page says what each engine shows a page, how kiwi-fox downloads and checks it,
@@ -10,6 +10,7 @@ and how you manage its versions.
 |---|---|
 | `camoufox` (the default) | An ordinary Windows 11 machine with its own region. The values are spoofed, fit together and stay the same from one session to the next. |
 | `firefox` | Stock Mozilla Firefox, which spoofs nothing. A page sees this machine's own values. |
+| `librewolf` | LibreWolf as it comes: Firefox with LibreWolf's own hardening, and uBlock Origin. kiwi-fox spoofs nothing. |
 | `torbrowser` | The unmodified Tor Browser with its own uniform fingerprint, through an exit on the Tor network. |
 
 Every engine runs in the same kind of container and through the same gateway,
@@ -21,11 +22,12 @@ read-only into the container, so a profile cannot change it.
 ```bash
 kiwi-fox engine fetch                       # Camoufox, the newest release
 kiwi-fox engine fetch --engine firefox      # Mozilla's Firefox
+kiwi-fox engine fetch --engine librewolf    # LibreWolf
 kiwi-fox engine fetch --engine torbrowser   # Tor Browser
 kiwi-fox engine list                        # what is installed, and where
 ```
 
-`kiwi-fox setup` installs Camoufox. Firefox and Tor Browser are installed only
+`kiwi-fox setup` installs Camoufox. The other engines are installed only
 when you ask for them. Engines are kept in
 `~/.local/share/kiwi-fox/engines/`, one folder per engine and version. In the
 app, the **Engines** page of Preferences shows each engine, and **Manage…**
@@ -95,6 +97,30 @@ The identity options of `new` (`--card`, `--form`, `--seed` and the others)
 are refused for a Firefox profile. You can change its name, exit, appearance,
 icon, tags and app-grid entry with `kiwi-fox set`.
 
+## LibreWolf
+
+The `librewolf` engine is [LibreWolf](https://librewolf.net), a Firefox build
+with privacy settings turned on and telemetry taken out. kiwi-fox runs it as it
+comes: what a page sees is decided by LibreWolf's own settings (its
+`librewolf.cfg`), such as fingerprinting resistance, and it brings uBlock
+Origin. Like Firefox, it sets no fingerprint of kiwi-fox's, so the identity
+options of `new` are refused.
+
+- kiwi-fox downloads LibreWolf's own Linux build (x86_64), listed by its
+  releases on Codeberg and served from `dl.librewolf.net`, and checks its
+  OpenPGP signature with `gpgv`. The key is the LibreWolf Maintainers' key,
+  pinned by fingerprint and fetched from `keys.openpgp.org`.
+- LibreWolf's own updates are off. You update it with
+  `kiwi-fox engine fetch --engine librewolf`.
+- Its versions look like `160.0.1-1`: Firefox's version, then LibreWolf's
+  build number.
+
+```bash
+kiwi-fox engine fetch --engine librewolf
+kiwi-fox new wolf --exit work --engine librewolf
+kiwi-fox run wolf
+```
+
 ## Tor Browser
 
 The `torbrowser` engine is the unmodified Tor Browser bundle, connected
@@ -136,7 +162,7 @@ kiwi-fox run anon
 
 A Camoufox profile is tied to the Camoufox version it was created with,
 because its fingerprint (for example its user agent) is made for that version.
-A Firefox or Tor Browser profile follows the engine's default version, or the
+A Firefox, LibreWolf or Tor Browser profile follows the engine's default version, or the
 newest installed one when no default is set, unless you pin it to a version.
 
 ```bash

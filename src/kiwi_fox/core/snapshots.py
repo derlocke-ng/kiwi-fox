@@ -365,6 +365,10 @@ def fetch_engine(engine: str, version: str, progress=None) -> None:
         camoufox_fetch.fetch(wanted)
     elif engine == "firefox":
         firefox_fetch.fetch(wanted, progress=progress)
+    elif engine == "librewolf":
+        from .engines import librewolf_fetch
+
+        librewolf_fetch.fetch(wanted, progress=progress)
     else:
         torbrowser_fetch.fetch(wanted, progress=progress)
 

@@ -125,3 +125,42 @@ def test_a_profile_entry_can_show_an_engines_own_icon(engines):
     shutil.rmtree(paths.engines_dir() / "firefox-159.0.1")
     store.save(store.load(ff.id))
     assert f"Icon={kept}" in desktop.entry_path(ff.id).read_text()
+
+
+def test_librewolf_releases_are_its_linux_tarballs_newest_first():
+    from kiwi_fox.core import engine_versions as ev
+    from kiwi_fox.core.engines import librewolf_fetch as lw
+
+    def rel(tag, *names, **more):
+        return {"tag_name": tag, "assets": [{"name": n} for n in names], **more}
+
+    listing = [
+        rel("160.0-1", "librewolf-160.0-1-linux-x86_64-package.tar.xz"),
+        rel("160.0.1-1", "librewolf-160.0.1-1-linux-x86_64-package.tar.xz"),
+        rel("160.0.1-2", "librewolf-160.0.1-2-windows-x86_64-setup.exe"),  # no Linux file
+        rel("161.0-1", "librewolf-161.0-1-linux-x86_64-package.tar.xz", prerelease=True),
+        rel("nightly", "librewolf-nightly-linux-x86_64-package.tar.xz"),
+    ]
+    assert lw.versions(listing) == ["160.0.1-1", "160.0-1"]
+    assert ev.key("160.0.1-2") > ev.key("160.0.1-1") > ev.key("160.0-1")
+    assert lw.target_dir("160.0.1-1").name == "librewolf-160.0.1-1"
+    import pytest
+
+    with pytest.raises(lw.FetchError, match="not a LibreWolf version"):
+        lw.discover("../../etc")
+
+
+def test_a_librewolf_profile_runs_librewolfs_own_binary(engines):
+    from kiwi_fox.core.engines import get_engine, installed_versions
+    from kiwi_fox.core.engines import librewolf_fetch as lw
+
+    d = lw.target_dir("160.0.1-1")
+    d.mkdir(parents=True)
+    (d / "librewolf").write_text("x")
+    assert installed_versions("librewolf") == ["160.0.1-1"]
+    p = store.create("lw", _exit(), None, engine="librewolf")
+    eng = get_engine("librewolf")
+    env = eng.env(p)
+    assert (env["KF_ENGINE_BIN"], env["KF_ENGINE_DIR"]) == ("librewolf", "/opt/librewolf")
+    assert eng.engine_dir(p) == d
+    assert eng.config(None, p, None) == {}  # nothing spoofed

@@ -17,6 +17,7 @@ from .engines import TITLES, installed_versions
 APP_ID = "eu.kiwinetwork.KiwiFox"
 ENGINE_ICONS = {
     "firefox": "browser/chrome/icons/default/default128.png",
+    "librewolf": "browser/chrome/icons/default/default128.png",
     "camoufox": "browser/chrome/icons/default/default128.png",
     "torbrowser": "Browser/browser/chrome/icons/default/default128.png",
 }
