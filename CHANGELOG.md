@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.18.0
+
+- **A notice under the header when the snapshot folder holds newer copies**
+  of profiles here, with **Import** and ✕. Import restores them (a profile
+  whose browser runs is left alone until it stops) and says when one needs an
+  engine this computer lacks. ✕ hides the notice until another newer snapshot
+  comes. The bar is kiwi-template's kit notice (kit 0.1.4).
+- The installer's closing hint names LibreWolf among the engines to fetch.
+
 ## 0.17.0
 
 - **LibreWolf, a fourth engine.** `kiwi-fox engine fetch --engine librewolf`,

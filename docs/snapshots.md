@@ -52,6 +52,11 @@ profiles.
   in a small window when you start the profile from the app grid, and in the
   terminal for `kiwi-fox run`. `run --restore` and `run --as-is` answer it in
   advance.
+- **The notice.** The window says when the folder holds newer copies, in a
+  line under its header with **Import**, which restores them. A profile whose
+  browser runs is left alone until it stops, and one that changed both here
+  and elsewhere waits for the question above. ✕ hides the notice until
+  another newer snapshot comes.
 - **In use elsewhere.** A profile that is open on another device says so in
   its row, and kiwi-fox asks before it starts here. The folder can tell only
   as fast as your sync client carries it.

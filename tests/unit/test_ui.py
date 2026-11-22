@@ -725,6 +725,56 @@ def test_the_window_offers_profiles_only_in_the_folder(snapshot_device, tmp_path
     _pump_until(lambda: "snapshot" in win._rows[p.id].get_subtitle())
 
 
+def test_the_notice_offers_newer_snapshots_and_imports_them(snapshot_device, tmp_path):
+    """A profile changed on titan: lime's window says so under the header; ✕
+    keeps it away for that news; Import brings the newer copy, but not while
+    the browser runs."""
+    from kiwi_proxy import exits
+    from kiwi_proxy.models import Endpoint
+
+    from kiwi_fox.core import snapshots as fox
+    from kiwi_fox.core import store
+    from kiwi_fox.ui.window import Window, notice_text
+
+    snapshot_device("lime")
+    fox.snap.setup(tmp_path / "shared", "correct horse battery staple", device_name="lime")
+    p, ex = _snap_profile()
+    first = fox.take(p)
+
+    snapshot_device("titan")
+    fox.snap.setup(tmp_path / "shared", "correct horse battery staple", device_name="titan")
+    exits.create("mullvad", Endpoint(host="10.64.0.1", port=1080), exit_id=ex.id)
+    there = fox.restore(p.id, first.id)
+    there.tags = ["shopping"]
+    store.save(there)
+    fox.take(there)
+
+    snapshot_device("lime")
+    win = Window()
+    _pump_until(lambda: win.notice.shown)
+    assert win.notice.label.get_text() == "A newer snapshot of work is in your folder"
+    win.notice.close.emit("clicked")
+    win._tell_newer()
+    assert not win.notice.shown, "dismissed until the news changes"
+
+    toasts = []
+    win._toast = toasts.append
+    snapshot_device.running.add(p.id)
+    win._import_newer()
+    _pump_until(lambda: toasts)
+    assert toasts[-1] == "work is running: stop, then import"
+    assert store.load(p.id).tags == []
+    snapshot_device.running.discard(p.id)
+    _pump_until(lambda: win._newer())  # the folder read again after the first try
+    win._import_newer()
+    _pump_until(lambda: store.load(p.id).tags == ["shopping"])
+    _pump_until(
+        lambda: win._relations.get(p.id) is not None and win._relations[p.id].state == "same"
+    )
+    assert not win.notice.shown
+    assert notice_text(list("abcde")) == "5 newer snapshots in your folder: a, b, c and 2 more"
+
+
 def test_a_browser_that_ended_gets_its_snapshot(snapshot_device, tmp_path):
     from kiwi_fox.core import snapshots as fox
     from kiwi_fox.ui.window import Window

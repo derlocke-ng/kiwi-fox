@@ -114,7 +114,7 @@ EOF
     echo "  $APP new anon --exit tor-de --engine torbrowser  Tor Browser, on a tor-module proxy"
     echo "  $APP new bare --no-proxy                         this machine's own connection"
     echo
-    echo "Firefox / Tor Browser:  $APP engine fetch --engine firefox   (or torbrowser)"
+    echo "Other engines:          $APP engine fetch --engine firefox   (or librewolf, torbrowser)"
     echo "Provider modules:       kiwi install kiwi-plugin-tor   (or -vpn, -9proxy, -myst)"
 }
 
